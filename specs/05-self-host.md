@@ -1,6 +1,6 @@
 # 05 — Self-Host
 
-End-to-end guide to deploying recipes into your own Cloudflare account. The whole thing should take under an hour for someone familiar with Wrangler and GitHub Apps.
+End-to-end guide to deploying runs into your own Cloudflare account. The whole thing should take under an hour for someone familiar with Wrangler and GitHub Apps.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ End-to-end guide to deploying recipes into your own Cloudflare account. The whol
 |---|---|---|
 | Cloudflare account | Workers Paid ($5/mo) | Containers, Workflows, Browser Rendering, and useful R2 quotas are on the Paid plan |
 | `wrangler` CLI | ≥ 4.x | `npm i -g wrangler` |
-| `pnpm` | ≥ 9 | For the recipe repo itself |
+| `pnpm` | ≥ 9 | For the run repo itself |
 | Node | ≥ 20 | For Wrangler |
 | GitHub org admin access | yes | To install the GitHub App |
 | A custom domain on CF (optional) | no | For a nicer endpoint URL — `*.workers.dev` works fine for v0 |
@@ -21,21 +21,21 @@ The Paid plan is the only hard money requirement. Browser Rendering on Workers P
 
 A single Worker (the Dispatcher) bound to:
 
-- 1 × **Workflow** binding — `RECIPES_WORKFLOW`
-- 1 × **Container** binding — `RECIPES_SANDBOX`
-- 1 × **Browser Rendering** binding — `RECIPES_BROWSER`
+- 1 × **Workflow** binding — `RUNS_WORKFLOW`
+- 1 × **Container** binding — `RUNS_SANDBOX`
+- 1 × **Browser Rendering** binding — `RUNS_BROWSER`
 - 1 × **Durable Object** namespace — `COORDINATOR`
-- 1 × **R2 bucket** — `RECIPES_STORAGE`
-- 1 × **D1 database** — `RECIPES_METADATA`
-- 1 × **KV namespace** — `RECIPES_CONFIG`
-- 1 × **Queue** producer + consumer — `RECIPES_FANOUT`
+- 1 × **R2 bucket** — `RUNS_STORAGE`
+- 1 × **D1 database** — `RUNS_METADATA`
+- 3 × **KV namespaces** — `RUNS_CONFIG` (installation map, feature flags), `IDEMPOTENCY_KV` (receiver dedup, 24h TTL), `INSTALL_TOKEN_KV` (App install-token cache, 55min TTL)
+- 1 × **Queue** producer + consumer — `RUNS_FANOUT`
 
-All bindings are declared in `wrangler.jsonc`. The Dispatcher is the only entry point exposed publicly.
+All bindings are declared in `wrangler.jsonc`. The Dispatcher is the only entry point exposed publicly. The `/v1/admin/*` sub-path is additionally gated by a Cloudflare Access application at the edge — the Worker re-verifies the Access JWT in code, so an Access misconfiguration cannot leak the admin surface.
 
 ## Repo layout
 
 ```
-cf-recipes/                                    your fork of the template
+flaredispatch/                                    your fork of the template
 ├── wrangler.jsonc                             bindings + secrets
 ├── package.json
 ├── src/
@@ -44,7 +44,7 @@ cf-recipes/                                    your fork of the template
 │   ├── coordinator.ts                         Durable Object — fan-out state
 │   ├── github.ts                              App auth + check-runs
 │   └── runtime/                               Effect Layers for live CF bindings
-├── recipes/                                   one file per recipe
+├── runs/                                      one file per run
 │   ├── offload-test.ts
 │   ├── matrix-fanout.ts
 │   ├── playwright-e2e.ts
@@ -57,28 +57,28 @@ cf-recipes/                                    your fork of the template
 └── README.md
 ```
 
-The template ships with all built-in recipes wired. Users add their own under `recipes/` — the Dispatcher auto-discovers them from the recipe registry at startup.
+The template ships with all built-in runs wired. Users add their own under `runs/` — the Dispatcher auto-discovers them from the run registry at startup.
 
 ## Wrangler config
 
 ```jsonc
 // wrangler.jsonc
 {
-  "name": "cf-recipes",
+  "name": "flaredispatch",
   "main": "src/dispatcher.ts",
   "compatibility_date": "2026-05-01",
   "compatibility_flags": ["nodejs_compat"],
 
   "workflows": [
-    { "name": "recipes-workflow", "binding": "RECIPES_WORKFLOW", "class_name": "RecipeWorkflow" }
+    { "name": "runs-workflow", "binding": "RUNS_WORKFLOW", "class_name": "RunWorkflow" }
   ],
 
   "containers": [
     {
-      "binding": "RECIPES_SANDBOX",
+      "binding": "RUNS_SANDBOX",
       // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io, or Amazon ECR.
       // GHCR is not a supported pull source — CI mirrors the GHCR image to CF's registry at release.
-      "image": "registry.cloudflare.com/openhackersclub/cf-recipes-node:latest",
+      "image": "registry.cloudflare.com/openhackersclub/flaredispatch-node:latest",
       // Instance types (2026-05): lite (1/16 vCPU, 256 MiB) | basic (1/4, 1 GiB) |
       //   standard-1 (1/2, 4 GiB) | standard-2 (1, 6 GiB) | standard-3 (2, 8 GiB) | standard-4 (4, 12 GiB).
       // "standard" + "dev" are legacy aliases retained for back-compat.
@@ -87,7 +87,7 @@ The template ships with all built-in recipes wired. Users add their own under `r
     }
   ],
 
-  "browser": { "binding": "RECIPES_BROWSER" },
+  "browser": { "binding": "RUNS_BROWSER" },
 
   "durable_objects": {
     "bindings": [
@@ -96,30 +96,32 @@ The template ships with all built-in recipes wired. Users add their own under `r
   },
 
   "r2_buckets": [
-    { "binding": "RECIPES_STORAGE", "bucket_name": "cf-recipes-prod" }
+    { "binding": "RUNS_STORAGE", "bucket_name": "flaredispatch-prod" }
   ],
 
   "d1_databases": [
-    { "binding": "RECIPES_METADATA", "database_name": "cf-recipes", "database_id": "<filled by wrangler>" }
+    { "binding": "RUNS_METADATA", "database_name": "flaredispatch", "database_id": "<filled by wrangler>" }
   ],
 
   "kv_namespaces": [
-    { "binding": "RECIPES_CONFIG", "id": "<filled by wrangler>" }
+    { "binding": "RUNS_CONFIG", "id": "<filled by wrangler>" },
+    { "binding": "IDEMPOTENCY_KV", "id": "<filled by wrangler>" },
+    { "binding": "INSTALL_TOKEN_KV", "id": "<filled by wrangler>" }
   ],
 
   "queues": {
-    "producers": [{ "binding": "RECIPES_FANOUT", "queue": "cf-recipes-fanout" }],
-    "consumers": [{ "queue": "cf-recipes-fanout", "max_batch_size": 10 }]
+    "producers": [{ "binding": "RUNS_FANOUT", "queue": "flaredispatch-fanout" }],
+    "consumers": [{ "queue": "flaredispatch-fanout", "max_batch_size": 10 }]
   },
 
   "migrations": [
-    { "tag": "v1", "new_classes": ["Coordinator", "RecipeWorkflow"] }
+    { "tag": "v1", "new_classes": ["Coordinator", "RunWorkflow"] }
   ],
 
   "observability": { "enabled": true },
 
   "routes": [
-    { "pattern": "recipes.example.com/*", "custom_domain": true }
+    { "pattern": "runs.example.com/*", "custom_domain": true }
   ]
 }
 ```
@@ -128,15 +130,15 @@ The template ships with all built-in recipes wired. Users add their own under `r
 
 Set via `wrangler secret put` — never committed.
 
-| Secret | What it is | How to generate |
-|---|---|---|
-| `HMAC_SECRET` | Shared with GHA Action; verifies inbound dispatches | `openssl rand -base64 32` |
-| `GITHUB_APP_ID` | Numeric App id | From the App's GitHub settings page |
-| `GITHUB_APP_PRIVATE_KEY` | PEM key for App auth | From "Generate a private key" on the App page |
-| `GITHUB_WEBHOOK_SECRET` | Verifies inbound webhook events from GitHub | `openssl rand -base64 32`; configured in App settings |
+| Secret | What it is | How to generate | Required for |
+|---|---|---|---|
+| `HMAC_SECRET` | Shared with GHA Action / direct-POST callers; verifies inbound dispatches | `openssl rand -base64 32` | GHA Action path + direct-POST path. Not used by the App-webhook path. |
+| `GITHUB_APP_ID` | Numeric App id | From the App's GitHub settings page | Always |
+| `GITHUB_APP_PRIVATE_KEY` | PEM key for App auth | From "Generate a private key" on the App page | Always |
+| `GITHUB_WEBHOOK_SECRET` | Verifies inbound App webhooks (`X-Hub-Signature-256`) | `openssl rand -base64 32`; configured in App settings | App-webhook trigger path |
 
 ```sh
-wrangler secret put HMAC_SECRET
+wrangler secret put HMAC_SECRET                    # skip if you don't use the GHA Action / direct POST
 wrangler secret put GITHUB_APP_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY < ./github-app-private-key.pem
 wrangler secret put GITHUB_WEBHOOK_SECRET
@@ -144,19 +146,21 @@ wrangler secret put GITHUB_WEBHOOK_SECRET
 
 `GITHUB_APP_PRIVATE_KEY` is large; pipe it from a file rather than typing it. After upload, delete the local PEM.
 
+Deployments that use **only** the App-webhook trigger (no GHA Action, no external callers) can skip `HMAC_SECRET` entirely — one less long-lived shared secret to rotate. See [04-gha-integration § Secrets the user needs to configure](04-gha-integration.md#secrets-the-user-needs-to-configure).
+
 ## GitHub App setup
 
 A manifest ships in `infra/github-app-manifest.json`:
 
 ```json
 {
-  "name": "CF Recipes",
+  "name": "FlareDispatch",
   "description": "Self-hosted CI offload to Cloudflare",
-  "url": "https://recipes.example.com",
+  "url": "https://runs.example.com",
   "hook_attributes": {
-    "url": "https://recipes.example.com/v1/github/webhook"
+    "url": "https://runs.example.com/v1/github/webhook"
   },
-  "redirect_url": "https://recipes.example.com/v1/github/installed",
+  "redirect_url": "https://runs.example.com/v1/github/installed",
   "default_permissions": {
     "checks": "write",
     "contents": "read",
@@ -179,20 +183,22 @@ Setup:
 
 ```sh
 # 1. Clone the template
-git clone https://github.com/openhackersclub/cf-recipes-template my-cf-recipes
-cd my-cf-recipes
+git clone https://github.com/openhackersclub/flaredispatch-template my-flaredispatch
+cd my-flaredispatch
 pnpm install
 
 # 2. Create the CF resources (Wrangler will prompt for new IDs)
-wrangler r2 bucket create cf-recipes-prod
-wrangler d1 create cf-recipes
-wrangler kv namespace create RECIPES_CONFIG
-wrangler queues create cf-recipes-fanout
+wrangler r2 bucket create flaredispatch-prod
+wrangler d1 create flaredispatch
+wrangler kv namespace create RUNS_CONFIG
+wrangler kv namespace create IDEMPOTENCY_KV
+wrangler kv namespace create INSTALL_TOKEN_KV
+wrangler queues create flaredispatch-fanout
 
 # Wrangler writes the IDs back into wrangler.jsonc.
 
 # 3. Apply the D1 schema
-wrangler d1 execute cf-recipes --file infra/d1-schema.sql
+wrangler d1 execute flaredispatch --file infra/d1-schema.sql
 
 # 4. Set secrets
 wrangler secret put HMAC_SECRET
@@ -202,11 +208,11 @@ wrangler secret put HMAC_SECRET
 wrangler deploy
 
 # 6. Verify
-curl -fsS https://cf-recipes.<your-subdomain>.workers.dev/health
-# {"status":"ok","recipes":["offload-test","matrix-fanout",...]}
+curl -fsS https://flaredispatch.<your-subdomain>.workers.dev/health
+# {"status":"ok","runs":["offload-test","matrix-fanout",...]}
 
 # 7. Create the GitHub App (interactive)
-pnpm cli github-app create --endpoint https://cf-recipes.<your-subdomain>.workers.dev
+pnpm cli github-app create --endpoint https://flaredispatch.<your-subdomain>.workers.dev
 
 # 8. Install the App on your org/repo via the URL it prints.
 
@@ -218,20 +224,20 @@ After step 9, the Dispatcher creates a check-run on the commit and reports `succ
 
 ## CLI
 
-`@cf-recipes/cli` ships as a thin wrapper around the HTTP API. Used for setup, local dispatch, and ops.
+`@flaredispatch/cli` ships as a thin wrapper around the HTTP API. Used for setup, local dispatch, and ops.
 
 ```sh
-cf-recipes init                    # interactive setup; runs the wrangler/d1/kv create steps
-cf-recipes deploy                  # wrangler deploy + run migrations
-cf-recipes github-app create       # manifest-based App creation
-cf-recipes dispatch <recipe> ...   # send a one-off dispatch
-cf-recipes runs list               # list recent runs (D1 query)
-cf-recipes runs view <id>          # show run details + log links
-cf-recipes logs <run-id> <step>    # stream R2 NDJSON log
-cf-recipes recipes list            # list registered recipes
+flaredispatch init                         # interactive setup; runs the wrangler/d1/kv create steps
+flaredispatch deploy                       # wrangler deploy + run migrations
+flaredispatch github-app create            # manifest-based App creation
+flaredispatch dispatch <run> ...           # send a one-off dispatch
+flaredispatch executions list              # list recent executions (D1 query)
+flaredispatch executions view <id>         # show execution details + log links
+flaredispatch logs <execution-id> <step>   # stream R2 NDJSON log
+flaredispatch runs list                    # list registered runs
 ```
 
-The CLI uses `@effect/cli` and the same Effect-TS types as the recipe runtime — so options/args are typed, errors are tagged, and adding a subcommand is one file.
+The CLI uses `@effect/cli` and the same Effect-TS types as the run runtime — so options/args are typed, errors are tagged, and adding a subcommand is one file.
 
 ## Local development
 
@@ -246,24 +252,24 @@ What works locally:
 
 - All Workflow logic — Miniflare implements Workflows.
 - Sandbox / Containers — Wrangler launches actual Docker containers locally for the Container binding. Requires Docker running.
-- R2, D1, KV, Queues — Miniflare's in-memory implementations; data resets between runs unless persisted.
-- Browser Rendering — falls back to a local Puppeteer + Chromium when the binding isn't reachable. Set `RECIPES_LOCAL_BROWSER=puppeteer` to enable.
+- R2, D1, KV, Queues — Miniflare's in-memory implementations; data resets between executions unless persisted.
+- Browser Rendering — falls back to a local Puppeteer + Chromium when the binding isn't reachable. Set `RUNS_LOCAL_BROWSER=puppeteer` to enable.
 
 What doesn't work locally:
 
 - Inbound GitHub webhooks — use `cloudflared tunnel` or `tailscale serve` to expose `localhost:8787` for App setup testing.
 - Multi-region behavior — `wrangler dev` is single-process.
 
-The `pnpm dev` script also exposes the local Dispatcher via Tailscale Serve if available (`tailscale serve --bg 8787`), so PRs in development can dispatch to your laptop while iterating on a recipe. See `## Dev Servers — Expose via Tailscale Serve` in the project CLAUDE.md.
+The `pnpm dev` script also exposes the local Dispatcher via Tailscale Serve if available (`tailscale serve --bg 8787`), so PRs in development can dispatch to your laptop while iterating on a run. See `## Dev Servers — Expose via Tailscale Serve` in the project CLAUDE.md.
 
 ## Operating one Dispatcher across many repos
 
-One deploy can serve an entire org. The Dispatcher uses `installation_id` (from the dispatch body's `github.installation_id` field, signed by HMAC, validated against KV) to scope check-run writes to the right repo. There's no per-repo Worker; recipes don't need to know which repo they came from beyond passing it to `sandbox.git.clone`.
+One deploy can serve an entire org. The Dispatcher uses `installation_id` (from the dispatch body's `github.installation_id` field, signed by HMAC, validated against KV) to scope check-run writes to the right repo. There's no per-repo Worker; runs don't need to know which repo they came from beyond passing it to `sandbox.git.clone`.
 
 To onboard a new repo:
 
 1. Install the existing GitHub App on the new repo (via GitHub UI).
-2. Set repo-level secrets: `CF_RECIPES_ENDPOINT`, `CF_RECIPES_HMAC` (org-level secrets work too).
+2. Set repo-level secrets: `FLAREDISPATCH_ENDPOINT`, `FLAREDISPATCH_HMAC` (org-level secrets work too).
 3. Add the GHA Action to that repo's workflow.
 
 No deploy or config change on the CF side. The first dispatch from the new repo auto-registers the installation in KV.
@@ -276,14 +282,14 @@ Two Dispatcher deploys with separate bindings and HMAC secrets:
 {
   "env": {
     "staging": {
-      "r2_buckets": [{ "binding": "RECIPES_STORAGE", "bucket_name": "cf-recipes-staging" }],
-      "d1_databases": [{ "binding": "RECIPES_METADATA", "database_name": "cf-recipes-staging" }],
-      "routes": [{ "pattern": "recipes-staging.example.com/*", "custom_domain": true }]
+      "r2_buckets": [{ "binding": "RUNS_STORAGE", "bucket_name": "flaredispatch-staging" }],
+      "d1_databases": [{ "binding": "RUNS_METADATA", "database_name": "flaredispatch-staging" }],
+      "routes": [{ "pattern": "runs-staging.example.com/*", "custom_domain": true }]
     },
     "prod": {
-      "r2_buckets": [{ "binding": "RECIPES_STORAGE", "bucket_name": "cf-recipes-prod" }],
-      "d1_databases": [{ "binding": "RECIPES_METADATA", "database_name": "cf-recipes" }],
-      "routes": [{ "pattern": "recipes.example.com/*", "custom_domain": true }]
+      "r2_buckets": [{ "binding": "RUNS_STORAGE", "bucket_name": "flaredispatch-prod" }],
+      "d1_databases": [{ "binding": "RUNS_METADATA", "database_name": "flaredispatch" }],
+      "routes": [{ "pattern": "runs.example.com/*", "custom_domain": true }]
     }
   }
 }
@@ -310,11 +316,11 @@ R2 lifecycle policy in `infra/r2-lifecycle.json`:
 }
 ```
 
-Applied with `wrangler r2 bucket lifecycle set cf-recipes-prod --file infra/r2-lifecycle.json` (replaces the full policy). Individual rules can be appended with `wrangler r2 bucket lifecycle add cf-recipes-prod ...` and removed with `wrangler r2 bucket lifecycle remove cf-recipes-prod --id <rule-id>`. There is no `wrangler r2 bucket lifecycle put` subcommand.
+Applied with `wrangler r2 bucket lifecycle set flaredispatch-prod --file infra/r2-lifecycle.json` (replaces the full policy). Individual rules can be appended with `wrangler r2 bucket lifecycle add flaredispatch-prod ...` and removed with `wrangler r2 bucket lifecycle remove flaredispatch-prod --id <rule-id>`. There is no `wrangler r2 bucket lifecycle put` subcommand.
 
 *Source:* https://developers.cloudflare.com/r2/buckets/object-lifecycles/ (2026-05).
 
-D1 has no built-in lifecycle. A nightly Cron Trigger Worker (`infra/cron-cleanup.ts`) prunes `runs` and `steps` older than 90 days. Schedule defined in `wrangler.jsonc`:
+D1 has no built-in lifecycle. A nightly Cron Trigger Worker (`infra/cron-cleanup.ts`) prunes `executions` and `steps` older than 90 days. Schedule defined in `wrangler.jsonc`:
 
 ```jsonc
 "triggers": { "crons": ["0 3 * * *"] }
@@ -322,40 +328,27 @@ D1 has no built-in lifecycle. A nightly Cron Trigger Worker (`infra/cron-cleanup
 
 ## Cost ceiling — what to expect
 
-For a small team (200 PRs/month, ~8min average recipe wall time, 4-shard matrices):
+For a small team (200 PRs/month, ~8 min average run wall time, 4-shard matrices), expect **~$8–15/month**; at 10× volume, **~$50–100/month**. Container compute is the dominant variable cost; everything else tends to stay within the included Workers Paid quotas.
 
-| Line item | Estimate |
-|---|---|
-| Workers Paid | $5 (base; includes 10M requests + 30M CPU-ms / month, then $0.30/1M req and $0.02/1M CPU-ms) |
-| Workers requests | within included quota |
-| Containers (vCPU-s + memory + disk) | $3-8 above the included 375 vCPU-min + 25 GiB-h + 200 GB-h on the $5 plan ($0.000020/vCPU-s, $0.0000025/GiB-s, $0.00000007/GB-s thereafter) |
-| Browser Rendering | within included 10 browser-hr/month + 10 concurrent-browser-month included (then $0.09/hr, $2.00/extra concurrent browser) |
-| R2 storage (~5GB cache + artifacts) | ~$0.08 |
-| R2 ops + lifecycle expirations | within free tier |
-| D1 | within free tier (10 GB per database, 1 TB account storage on Paid) |
-| Queues | within free tier |
-| **Total** | **~$8-15 / month** |
-
-Same calculus, 10× volume → $50-100/month. Both numbers compare favorably to GHA list pricing on heavy jobs (see prior economic comparison).
-
-*Source:* [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Containers pricing](https://developers.cloudflare.com/containers/pricing/), [Browser Rendering pricing](https://developers.cloudflare.com/browser-rendering/platform/pricing/). 2026-05.
+The full pricing model, per-execution cost anatomy, both worked estimates, the head-to-head with GHA list pricing, and the cost levers are in [07-cost](07-cost.md).
 
 ## Security posture
 
-- **HMAC** on the dispatch path. 32-byte secret, constant-time comparison, rejects on any mismatch.
-- **GitHub webhook secret** on the callback path. Same crypto, separate secret.
-- **App installation tokens** are short-lived (1 hour TTL), scoped to one installation, refreshed on demand. No long-lived PATs.
+- **HMAC** on `/v1/dispatch/:run`. 32-byte secret, constant-time `crypto.subtle.verify("HMAC", ...)` (no `timingSafeEqual` — that's Node-only and isn't on Workers).
+- **App webhook signature** on `/v1/webhooks/github`. `X-Hub-Signature-256` verified against `GITHUB_WEBHOOK_SECRET` with the same `crypto.subtle.verify` primitive. No shared secret with the user's GHA workflows.
+- **Cloudflare Access** on `/v1/admin/*`. Worker re-verifies the Access JWT in code so a misconfigured Access app cannot leak the admin surface. The same `/v1/admin/events/:wf_id` route debounces `(wf_id, decider_email)` in `IDEMPOTENCY_KV` (1h window) so racing approvals are deterministic.
+- **App installation tokens** are short-lived (1 hour TTL), scoped to one installation, refreshed on demand. Cached in `INSTALL_TOKEN_KV` with 55min TTL so the token survives Worker recycles mid-execution. No long-lived PATs.
 - **R2 signed URLs** for artifacts: TTL configurable per upload (default 30 days), can be revoked by rotating the R2 access key.
-- **Container isolation**: each Container instance is a fresh filesystem. No persistence between recipe runs.
+- **Container isolation**: each Container instance is a fresh filesystem. No persistence between executions.
 - **Workers Secrets** for all credentials. Never committed; rotated via `wrangler secret put`.
-- **No outbound network egress restrictions by default** — recipes can hit any external service (npm registry, GitHub for cloning, etc.). Lock down via Cloudflare Zero Trust egress rules if needed.
+- **No outbound network egress restrictions by default** — runs can hit any external service (npm registry, GitHub for cloning, etc.). Lock down via Cloudflare Zero Trust egress rules if needed.
 
 ## What to monitor
 
 | | Where | Threshold |
 |---|---|---|
 | Failed dispatches (4xx, 5xx) | Workers Analytics | > 5% over 1h → page |
-| Workflow step retries | Workflows dashboard | > 10/run → investigate flake |
+| Workflow step retries | Workflows dashboard | > 10/execution → investigate flake |
 | Container launch failures | D1 `steps` table, `ContainerLaunchFailed` errors | > 1% → quota / image issue |
 | Browser Rendering quota | CF dashboard | > 80% of the 10 browser-hr/month included quota → consider in-container mode |
 | R2 storage growth | CF dashboard | > 50GB → review lifecycle policy |
@@ -366,13 +359,14 @@ A `infra/grafana/` dashboard ships in V4 once OTel export is wired.
 ## Reference: ship-ready checklist
 
 - [ ] Workers Paid plan active
-- [ ] `wrangler.jsonc` updated with bucket / db / KV / queue IDs
+- [ ] `wrangler.jsonc` updated with bucket / db / KV / queue IDs (three KVs: `RUNS_CONFIG`, `IDEMPOTENCY_KV`, `INSTALL_TOKEN_KV`)
 - [ ] D1 schema applied
 - [ ] R2 lifecycle policy applied
-- [ ] All four Worker Secrets set
+- [ ] Worker Secrets set (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` always; `HMAC_SECRET` if using the GHA Action / direct-POST path)
 - [ ] GitHub App created and installed on target repos
-- [ ] `health` endpoint returns ok with recipe list
-- [ ] One successful dispatch end-to-end (CLI or via PR)
+- [ ] Cloudflare Access app configured for `/v1/admin/*` (if any run uses `step.waitForEvent`)
+- [ ] `health` endpoint returns ok with run list
+- [ ] One successful dispatch end-to-end (CLI, GHA Action, or App webhook)
 - [ ] Check-run appears on the PR
 - [ ] Required-status-check configured on the protected branch
 - [ ] Cron cleanup Worker scheduled

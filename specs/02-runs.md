@@ -1,10 +1,10 @@
-# 02 — Recipes
+# 02 — Runs
 
-Recipes are the user-facing unit. Each recipe has a stable contract — name, input Schema, output Schema, CF primitives used, declared limits — so GHA workflows can call them without knowing the implementation. Building blocks (`cache-*`, `r2-artifacts`) are composed inside other recipes via the DSL; they aren't directly dispatch-able.
+Runs are the user-facing unit. Each run has a stable contract — name, input Schema, output Schema, CF primitives used, declared limits — so GHA workflows can call them without knowing the implementation. Building blocks (`cache-*`, `r2-artifacts`) are composed inside other runs via the DSL; they aren't directly dispatch-able.
 
-## Recipe contract
+## Run contract
 
-Every shipped recipe exports:
+Every shipped run exports:
 
 ```ts
 {
@@ -15,20 +15,20 @@ Every shipped recipe exports:
   image?: string;                            // default container image
   limits: {
     maxDurationSec: number;                  // wall-time ceiling
-    maxConcurrency?: number;                 // shards or parallel runs
+    maxConcurrency?: number;                 // shards or parallel executions
     requiresBrowser?: boolean;               // declares Browser Rendering binding
   };
-  steps: (input: I) => Effect.Effect<O, RecipeError, RecipeContext>;
+  steps: (input: I) => Effect.Effect<O, RunError, RunContext>;
 }
 ```
 
-A user-defined recipe in their own repo has the same shape. The shipped recipes below are the starter library.
+A user-defined run in their own repo has the same shape. The shipped runs below are the starter library.
 
 ---
 
 ## Catalog
 
-| | Recipe | When to use | Status |
+| | Run | When to use | Status |
 |---|---|---|---|
 | 1 | [`offload-test`](#1-offload-test) | Single command, single container, pass/fail back to GHA | V0 |
 | 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | V1 |
@@ -43,7 +43,7 @@ A user-defined recipe in their own repo has the same shape. The shipped recipes 
 
 ## 1. `offload-test`
 
-The walking-skeleton recipe. Clones a repo, runs a single command in a Sandbox, reports the exit code back to GHA as a check run.
+The walking-skeleton run. Clones a repo, executes a single command in a Sandbox, reports the exit code back to GHA as a check run.
 
 **Inputs:**
 
@@ -78,7 +78,7 @@ Schema.Struct({
 
 ## 2. `matrix-fanout`
 
-Runs the same command across N shards. Each shard is an independent child Workflow with its own check-run annotation. Result: one parent check that's green only if all shards pass.
+Executes the same command across N shards. Each shard is an independent child Workflow with its own check-run annotation. Result: one parent check that's green only if all shards pass.
 
 **Inputs:**
 
@@ -124,7 +124,7 @@ Schema.Struct({
 
 ## 3. `playwright-e2e`
 
-Sharded Playwright runs using Browser Rendering for the page session and Sandbox for the test runner process. Each shard gets its own Browser Rendering session(s); test files are split via Playwright's native `--shard` flag.
+Sharded Playwright executions using Browser Rendering for the page session and Sandbox for the test runner process. Each shard gets its own Browser Rendering session(s); test files are split via Playwright's native `--shard` flag.
 
 **Inputs:**
 
@@ -175,7 +175,7 @@ Schema.Struct({
 
 ## 4. `cdp-acceptance`
 
-Acceptance tests that drive a running app via Chrome DevTools Protocol — the gctrl-board pattern. Boots the app under test in one container, attaches Browser Rendering via CDP, runs assertion scripts that combine UI interactions with CDP observations (network calls, console errors, document counts, heap deltas).
+Acceptance tests that drive a running app via Chrome DevTools Protocol — the gctrl-board pattern. Boots the app under test in one container, attaches Browser Rendering via CDP, executes assertion scripts that combine UI interactions with CDP observations (network calls, console errors, document counts, heap deltas).
 
 **Inputs:**
 
@@ -206,13 +206,13 @@ Schema.Struct({
 
 **Primitives:** Sandbox (app + test runner), Browser Rendering (CDP mode), R2 (observations + reports), D1, Check Runs.
 
-**Limits:** `maxDurationSec: 1800`; one app boot per run (no internal sharding — share boot cost across many tests by writing more tests, not more shards).
+**Limits:** `maxDurationSec: 1800`; one app boot per execution (no internal sharding — share boot cost across many tests by writing more tests, not more shards).
 
 ---
 
 ## 5. `security-scan`
 
-Runs dependency / vulnerability scans against a checked-out repo. One recipe, multiple scanners selectable via input.
+Executes dependency / vulnerability scans against a checked-out repo. One run, multiple scanners selectable via input.
 
 **Inputs:**
 
@@ -249,13 +249,13 @@ Schema.Struct({
 
 **Primitives:** Sandbox (one container per scanner, parallel), R2 (raw scanner outputs), D1, Check Runs.
 
-**Limits:** `maxDurationSec: 1200`; `maxConcurrency: 4` (scanner parallelism within one run).
+**Limits:** `maxDurationSec: 1200`; `maxConcurrency: 4` (scanner parallelism within one execution).
 
 ---
 
 ## 6. `custom-sandbox`
 
-Escape hatch. Run an arbitrary bash script in a Sandbox container with the recipe's typed plumbing (checkout, env, log capture, check-run reporting) but no opinions about the workload.
+Escape hatch. Execute an arbitrary bash script in a Sandbox container with the run's typed plumbing (checkout, env, log capture, check-run reporting) but no opinions about the workload.
 
 **Inputs:**
 
@@ -288,13 +288,13 @@ Schema.Struct({
 
 **Limits:** `maxDurationSec: 3600`.
 
-This recipe exists to keep the cost of forking-a-recipe low: anything that doesn't fit a shipped recipe can run here first, then graduate to its own typed recipe later.
+This run exists to keep the cost of forking-a-run low: anything that doesn't fit a shipped run can execute here first, then graduate to its own typed run later.
 
 ---
 
 ## Building block: `cache-pnpm` / `npm` / `cargo` / `uv`
 
-Not a dispatch-able recipe. A DSL primitive composed inside other recipes. Looks up an R2 key derived from the relevant lockfile hash, downloads the archive into the container if present, runs the install command, and uploads the resulting cache if the key was missing.
+Not a dispatch-able run. A DSL primitive composed inside other runs. Looks up an R2 key derived from the relevant lockfile hash, downloads the archive into the container if present, executes the install command, and uploads the resulting cache if the key was missing.
 
 ```ts
 yield* cache.restoreOr({
@@ -320,12 +320,12 @@ const reportUrl = yield* artifact.upload({
 // reportUrl is a signed R2 URL embedded in the check-run output.
 ```
 
-Signed URLs are issued by the dispatcher's `GET /v1/artifacts/:run/:name` endpoint, which performs auth (public/private toggle per-deploy) and 302-redirects to a short-lived R2 presigned URL. This keeps artifact URLs stable even if R2 keys rotate.
+Signed URLs are issued by the dispatcher's `GET /v1/artifacts/:execution/:name` endpoint, which performs auth (public/private toggle per-deploy) and 302-redirects to a short-lived R2 presigned URL. This keeps artifact URLs stable even if R2 keys rotate.
 
 ---
 
 ## Naming + versioning rules
 
-- Recipe names are kebab-case, lowercase, stable. Renames require a deprecation alias.
-- The DSL package and the recipe package version independently. Recipes pin the DSL version they were tested against.
-- A recipe's input/output Schemas are part of its public API. Breaking changes bump major version. GHA Action references can pin to `@v2` to opt into new majors.
+- Run names are kebab-case, lowercase, stable. Renames require a deprecation alias.
+- The DSL package and the run package version independently. Runs pin the DSL version they were tested against.
+- A run's input/output Schemas are part of its public API. Breaking changes bump major version. GHA Action references can pin to `@v2` to opt into new majors.

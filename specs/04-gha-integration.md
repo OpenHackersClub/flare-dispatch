@@ -1,62 +1,76 @@
-# 04 — GitHub Actions Integration
+# 04 — GitHub Integration
 
-GHA is the trigger and the user-facing surface. Recipes integrate as a custom Action plus a GitHub App that handles check-run callbacks.
+GitHub talks to FlareDispatch through **two trigger modes**. Pick whichever fits — most teams end up running both, side by side, against the same Dispatcher.
 
-## Two pieces
+| Mode | How a run is triggered | GHA workflow file? | GHA minutes per execution | Shared secret to rotate? |
+|---|---|---|---|---|
+| **Action mode** | A GHA workflow calls `openhackersclub/flaredispatch-action`; or any external caller HMAC-signs and POSTs the dispatch endpoint | yes (or none, for direct POST) | ~10 s per dispatch | yes — `FLAREDISPATCH_HMAC` |
+| **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret |
 
-| Piece | Lives in | What it does |
+Both modes hit the same Dispatcher, share the same dedup discipline, and report results through the same check-run callback. The rest of this doc is **one section per mode**, then the parts they share (check-runs callback, dedup, secrets, failure handling).
+
+## Pieces
+
+| Piece | Role | Used by |
 |---|---|---|
-| **`openhackersclub/cf-recipes-action`** | GitHub Marketplace | A composite Action invoked from a user's workflow. POSTs an HMAC-signed dispatch to the user's Dispatcher Worker, then either exits (fire-and-forget) or polls (await mode). |
-| **`CF Recipes` GitHub App** | The user installs it on their org/repo | Owns the check-runs API token. The Dispatcher Worker exchanges App credentials for short-lived installation tokens to create/update check-runs on the user's repos. |
+| **Dispatcher Worker** | Single receiver for both modes. See [01-architecture § Dispatcher Worker](01-architecture.md#control-plane). | both |
+| **`FlareDispatch` GitHub App** | Owns the check-runs API token (writes results back). In Webhook mode, also the trigger source. | both for callback; Webhook mode for trigger |
+| **`openhackersclub/flaredispatch-action`** | Composite Action — HMAC-signs the body, POSTs the dispatch, then exits or polls. | Action mode only |
 
-The Action and the App are independent: the Action sends work to CF; the App is how CF talks back to GitHub. A user installs both during onboarding.
+Installing only the GHA Action still requires the App (for check-run writes). Running only Webhook mode does not require the Action.
 
-## Action contract
+---
+
+## Action mode
+
+A GHA workflow — or any HMAC-signing HTTP caller — POSTs `/v1/dispatch/:run` to start an execution.
+
+### When to use
+
+- The run needs to interleave with other GHA jobs (lint → run → deploy).
+- You want GHA's native trigger filters (`paths:`, `branches:`, `workflow_dispatch`).
+- The caller lives outside GitHub entirely — a cron service, another CI system, a local debugging script. Same HMAC, same body shape; no GHA wrapper required.
+
+### Workflow snippet
 
 ```yaml
 # .github/workflows/ci.yml
-- uses: openhackersclub/cf-recipes-action@v1
+- uses: openhackersclub/flaredispatch-action@v1
   with:
-    recipe: playwright-e2e
-    endpoint: ${{ secrets.CF_RECIPES_ENDPOINT }}
-    hmac-secret: ${{ secrets.CF_RECIPES_HMAC }}
+    run: playwright-e2e
+    endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+    hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
     inputs: |
-      {
-        "baseURL": "https://staging.example.com",
-        "shards": 4,
-        "project": "chromium"
-      }
-    mode: fire-and-forget    # or "await"
-    timeout: 30m             # only used in await mode
+      { "baseURL": "https://staging.example.com", "shards": 4 }
+    mode: fire-and-forget    # default; "await" also supported
 ```
 
 ### Inputs
 
 | Input | Required | Default | Notes |
 |---|---|---|---|
-| `recipe` | yes | — | Recipe slug. Must exist on the target deploy. |
-| `endpoint` | yes | — | `https://recipes.<your-domain>` |
-| `hmac-secret` | yes | — | Shared HMAC secret. Same value set as Worker Secret. |
-| `inputs` | no | `{}` | JSON or YAML mapping. Validated against the recipe's Schema on the Worker side. |
+| `run` | yes | — | Run slug. Must exist on the target deploy. |
+| `endpoint` | yes | — | `https://runs.<your-domain>` |
+| `hmac-secret` | yes | — | Shared HMAC secret. Same value as the Worker's `HMAC_SECRET`. |
+| `inputs` | no | `{}` | JSON or YAML mapping. Validated against the run's Schema on the Worker side. |
 | `mode` | no | `fire-and-forget` | `fire-and-forget` returns 202 immediately; `await` polls until terminal. |
-| `timeout` | no | `30m` | Await-mode poll ceiling. |
-| `check-name` | no | `cf-recipes/<recipe>` | Overrides the check-run name. |
-| `wait-for` | no | — | Await-mode only: comma-separated list of recipes to await. Useful when one Action dispatches several. |
+| `timeout` | no | `30m` | Await sub-mode poll ceiling. |
+| `check-name` | no | `flaredispatch/<run>` | Overrides the check-run name. |
 
 ### Outputs
 
 | Output | Notes |
 |---|---|
-| `run-id` | ULID of the run on CF. |
+| `execution-id` | ULID of the execution on CF. |
 | `check-run-id` | GitHub check-run id. |
-| `conclusion` | Set in await mode only: `success` / `failure` / `neutral` / `timed_out` / `cancelled`. |
+| `conclusion` | Await sub-mode only: `success` / `failure` / `neutral` / `timed_out` / `cancelled`. |
 | `summary-url` | Link to the check-run page on github.com. |
 
-### Dispatch request body
+### Dispatch body
 
 ```json
 {
-  "recipe": "playwright-e2e",
+  "run": "playwright-e2e",
   "github": {
     "repo": "owner/name",
     "ref": "refs/pull/42/head",
@@ -65,57 +79,91 @@ The Action and the App are independent: the Action sends work to CF; the App is 
     "actor": "octocat",
     "installation_id": 12345
   },
-  "inputs": { "baseURL": "...", "shards": 4, "project": "chromium" },
+  "inputs": { "baseURL": "...", "shards": 4 },
   "trigger": { "workflow_run_id": 678901, "job_id": 234567 }
 }
 ```
 
-The body is HMAC-SHA256 signed; the signature goes in `X-CF-Recipes-Signature: sha256=<hex>`. The Dispatcher rejects any request that doesn't verify, with a constant-time comparison.
+HMAC-SHA256 signed; the signature goes in `X-FlareDispatch-Signature: sha256=<hex>`, verified with a constant-time comparison. Direct (non-GHA) callers must also supply an `Idempotency-Key` header so receiver-level dedup applies; the GHA Action generates one per dispatch.
 
-## Fire-and-forget mode (default)
+### Fire-and-forget sub-mode (default)
 
 ```mermaid
 sequenceDiagram
   GHA->>Action: step starts
   Action->>Dispatcher: POST /v1/dispatch/playwright-e2e (HMAC)
-  Dispatcher->>Action: 202 Accepted {runId, checkRunId}
+  Dispatcher-->>Action: 202 Accepted {executionId, checkRunId}
   Action-->>GHA: step exits success
-  Note over GHA: workflow may continue to other jobs
-  Note over Dispatcher: Workflow runs asynchronously
-  Dispatcher->>GitHub: PATCH check-runs/{id} (status=in_progress)
-  Dispatcher->>GitHub: PATCH check-runs/{id} (status=completed, conclusion=success)
+  Note over Dispatcher: Workflow executes asynchronously;<br/>result reported via check-run
 ```
 
-The GHA step "succeeds" once dispatch is accepted — it has done its job. The recipe's outcome is reported as a **check run**, which becomes the actual PR signal.
+The GHA step succeeds the moment dispatch is accepted — it has done its job. The **check run** is the actual PR signal. In branch protection, require the check-run name (e.g. `flaredispatch/playwright-e2e`), not the GHA job. Zero GHA minutes are spent for the execution duration. This is the recommended sub-mode.
 
-**Required-checks configuration:** in branch protection, require the check-run name (e.g. `cf-recipes/playwright-e2e`), not the GHA job. PRs cannot merge until the check completes.
-
-This is the recommended mode. It uses zero GHA minutes for the recipe duration.
-
-## Await mode
+### Await sub-mode
 
 ```yaml
-- uses: openhackersclub/cf-recipes-action@v1
+- uses: openhackersclub/flaredispatch-action@v1
   with:
-    recipe: cdp-acceptance
+    run: cdp-acceptance
     mode: await
     timeout: 20m
 ```
 
-The Action polls `GET /v1/runs/:id` every 10s (configurable) until the run reaches a terminal state, then sets its own GHA step status to mirror the conclusion.
+The Action polls `GET /v1/executions/:id` every 10 s until the execution reaches a terminal state, then mirrors the conclusion as its own GHA step status.
 
-When to use:
-- Subsequent GHA steps depend on the recipe's output (e.g. deploy gate that needs the acceptance run's exact result).
-- Recipe output is consumed by a follow-up Action that doesn't read check-runs.
-- Recipe wall-time is short and you want simpler debugging in the GHA logs view.
+Use **only** when a follow-up GHA step needs the result inline — e.g. a deploy gate that consumes the acceptance execution's exact output. Avoid for runs longer than ~5 minutes: polling burns GHA minutes that fire-and-forget would not.
 
-When not to use:
-- Long recipes (>5 minutes) — wastes GHA minutes.
-- Standard PR gate flows where check-runs are sufficient.
+---
 
-## Check-runs flow
+## Webhook mode
 
-The Dispatcher Worker uses GitHub App authentication (installation tokens) to write check-runs:
+The `FlareDispatch` GitHub App webhook fires the Dispatcher's `/v1/webhooks/github` directly. No GHA workflow file is involved.
+
+### When to use
+
+- The run should execute on **every** push without burning GHA minutes (PR review, smoke).
+- The trigger isn't a code push — `deployment_status.success` for E2E gating, `check_run.rerequested` for re-runs, Cron Triggers for scheduled runs (release notes, dependency scans).
+- You want one less shared secret to rotate.
+- Users shouldn't have to touch `.github/workflows/` to onboard the run.
+
+### Trigger config lives in the run
+
+The receiver-side gates that GHA `on:` filters would normally provide instead live in the run's `triggers`:
+
+```ts
+// runs/pr-review.ts
+export const prReview = defineRun({
+  name: "pr-review",
+  triggers: [
+    {
+      event: "pull_request",
+      actions: ["opened", "synchronize", "ready_for_review"],
+      idempotencyKey: ({ payload }) =>
+        `pr-review:${payload.repository.full_name}:${payload.pull_request.number}:${payload.pull_request.head.sha}`,
+      gate: ({ payload }) =>
+        // skip drafts unless explicitly labelled, skip dependabot
+        (!payload.pull_request.draft || hasLabel(payload, "request-ai-review"))
+        && !hasLabel(payload, "skip-ai-review")
+        && payload.pull_request.user.login !== "dependabot[bot]",
+      inputs: ({ payload }) => ({
+        repo: payload.repository.full_name,
+        pr: payload.pull_request.number,
+        headSha: payload.pull_request.head.sha,
+        installationId: payload.installation.id,
+      }),
+    },
+  ],
+  // ...inputs, outputs, run as usual
+});
+```
+
+On each delivery the receiver verifies the App webhook signature (`X-Hub-Signature-256`), evaluates every matching `triggers` entry across all registered runs, dedupes (see § Receiver dedup), and fires whichever runs' gates pass. Multiple runs may subscribe to the same event. The Dispatcher meets GitHub's 10-second webhook ack window with margin — all LLM calls, Octokit fetches, and container starts happen inside the Workflow, never on the receiver path.
+
+---
+
+## Check-runs callback (shared by both modes)
+
+Whatever triggered the execution, the Dispatcher reports the result through the `FlareDispatch` App's check-runs API. App credentials are exchanged for short-lived installation tokens (1-hour TTL), cached in `INSTALL_TOKEN_KV` with a 55-minute TTL so the token survives Worker recycles mid-execution.
 
 ```mermaid
 sequenceDiagram
@@ -132,17 +180,17 @@ sequenceDiagram
   GH-->>D: {check_run_id}
   D-->>W: {check_run_id}
 
-  Note over W: ... recipe runs ...
+  Note over W: ... execution proceeds ...
 
   W->>D: updateCheckRun(check_run_id, completed, conclusion, summary)
   D->>GH: PATCH /repos/{owner}/{repo}/check-runs/{id}
 ```
 
-The installation token cache lives in the Dispatcher (Worker memory + KV fallback), refreshed before expiry. A token is per-installation, not per-repo; one installation covers all repos the App is installed on for that org.
+A token is per-installation, not per-repo; one installation covers every repo the App is installed on for that org.
 
-### Check-run summary content
+### Summary content
 
-For a successful run:
+A successful execution renders as:
 
 ```
 ✓ playwright-e2e — 24 passed, 0 failed, 1 flaky (3m 42s)
@@ -154,102 +202,55 @@ For a successful run:
 | 3/4   | 6      | 0      | 53s      |
 | 4/4   | 6      | 0      | 48s      |
 
-📂 [Full report](https://recipes.example.com/v1/artifacts/01J.../playwright-report)
-📜 [Logs](https://recipes.example.com/v1/runs/01J.../logs)
+📂 [Full report](https://runs.example.com/v1/artifacts/01J.../playwright-report)
+📜 [Logs](https://runs.example.com/v1/executions/01J.../logs)
 ```
 
-For a failure, the summary includes the first N failing test names with stack traces and direct links to per-shard reports.
+For a failure, the summary inlines the first N failing test names with stack traces and direct links to per-shard reports. The summary is markdown; GitHub renders it in the check-run detail page.
 
-The summary is markdown; GitHub renders it in the check-run detail page.
+### Re-running
 
-### Re-running from the UI
+The App listens for `check_run.rerequested` and `check_run.created`. Clicking "Re-run failed checks" on a PR fires `POST /v1/webhooks/github`, which the Dispatcher routes to a new Workflow execution with the same inputs. The run re-executes in place — no GHA workflow re-runs, regardless of which mode originally triggered it.
 
-The GitHub App listens for `check_run.rerequested` and `check_run.created` events. When a user clicks "Re-run failed checks" on the PR, the App fires `POST /v1/github/webhook`, which the Dispatcher routes to a new Workflow run with the same inputs. No GHA workflow re-runs — the recipe re-runs in place.
+---
 
-## Triggering recipes — three patterns
+## Receiver dedup (shared by both modes)
 
-### 1. From a workflow trigger
+Both modes share the same two-layer dedup discipline so a redelivery storm, a double-click on "Re-run failed checks," or a GHA retry doesn't produce parallel work or duplicate check-runs.
 
-Standard. A `pull_request` event in GHA fires a workflow that calls the Action.
+1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, or the caller-supplied `Idempotency-Key` for direct dispatch. A repeat returns `202` immediately — Workflows is never touched.
+2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo}:{pr}:{head_sha}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same head SHA collapse onto one execution.
 
-```yaml
-on:
-  pull_request:
-    paths: ["apps/**", "packages/**"]
-
-jobs:
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: openhackersclub/cf-recipes-action@v1
-        with: { recipe: playwright-e2e, ... }
-```
-
-### 2. Reusable workflow with multiple recipes
-
-```yaml
-# .github/workflows/cf-recipes.yml
-on:
-  workflow_call:
-    inputs:
-      recipes:
-        type: string                         # comma-separated
-        required: true
-
-jobs:
-  dispatch:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        recipe: ${{ fromJson(format('[{0}]', inputs.recipes)) }}
-    steps:
-      - uses: openhackersclub/cf-recipes-action@v1
-        with:
-          recipe: ${{ matrix.recipe }}
-          endpoint: ${{ secrets.CF_RECIPES_ENDPOINT }}
-          hmac-secret: ${{ secrets.CF_RECIPES_HMAC }}
-```
-
-Callers do:
-
-```yaml
-jobs:
-  cf:
-    uses: ./.github/workflows/cf-recipes.yml
-    with:
-      recipes: '"playwright-e2e","cdp-acceptance","security-scan"'
-    secrets: inherit
-```
-
-### 3. Direct webhook (no GHA)
-
-For users who want to skip GHA entirely on heavy jobs, the Dispatcher accepts authenticated webhooks from anywhere (a cron service, a different CI, a local script). The HMAC and the dispatch body shape are identical; only the GHA-specific `trigger` fields are optional.
+---
 
 ## Secrets the user needs to configure
 
-In their repo or org settings:
+| Secret | Where | Action mode | Webhook mode |
+|---|---|---|---|
+| `FLAREDISPATCH_ENDPOINT` (a URL, not a secret) | Repo/org variable | required | required |
+| `FLAREDISPATCH_HMAC` | Repo/org secret + Worker secret `HMAC_SECRET` | required | not used |
+| GitHub App ID + private key | Worker secrets (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) | required (for the check-run callback) | required |
+| App webhook secret | Worker secret (`GITHUB_WEBHOOK_SECRET`) | not used | required |
 
-| Secret | Where | Value |
-|---|---|---|
-| `CF_RECIPES_ENDPOINT` | Repo/org variable (not secret — it's a URL) | `https://recipes.your-domain.com` |
-| `CF_RECIPES_HMAC` | Repo/org secret | 32-byte random base64; same value goes into the Worker as a secret |
+Users running **only** Webhook mode never provision or rotate `FLAREDISPATCH_HMAC` — one less long-lived shared secret. Users running both rotate it on the cadence in [05-self-host § Security posture](05-self-host.md#security-posture); the App webhook secret rotates independently from the App settings page.
 
-That's it. The GitHub App handles authentication for the callback path; users don't manage tokens.
+---
 
 ## What the Action does not do
 
-- It does not run any of the recipe logic. The Action is ~50 lines of JS — sign request, POST, optionally poll.
+- It does not execute any run logic. The Action is ~50 lines of JS — sign request, POST, optionally poll.
 - It does not require the user to manage a GitHub PAT for check-runs. The App handles it.
-- It does not require `runs-on: self-hosted`. It's a normal hosted-runner step, finishes in seconds.
+- It does not require `runs-on: self-hosted`. It's a normal hosted-runner step that finishes in seconds.
 
 ## Failure handling
 
 | Failure | Behavior |
 |---|---|
-| Dispatcher unreachable | Action retries 3× with exponential backoff. If all fail, GHA step fails with a clear message. |
-| HMAC rejected | Dispatcher returns 401; Action fails the step (no retry — this is a config bug, not a transient failure). |
-| Recipe input doesn't match Schema | Dispatcher returns 400 with the Schema parse error; Action fails the step with the error inlined. |
-| Recipe not found on the deploy | Dispatcher returns 404; Action fails the step. |
-| Worker quota exhausted | Dispatcher returns 429 with `Retry-After`; Action waits and retries up to 3×. |
-| Recipe fails mid-run (await mode) | Action mirrors the conclusion; GHA step fails. |
-| Recipe times out (await mode) | Action sets conclusion `timed_out`; GHA step fails. The Workflow itself continues running on CF; the check-run will update independently when it eventually finishes. |
+| Dispatcher unreachable | Action retries 3× with exponential backoff; then fails the GHA step with a clear message. |
+| HMAC rejected | Dispatcher returns 401; Action fails the step (config bug — no retry). |
+| Webhook signature rejected | Dispatcher returns 401; GitHub retries per its standard delivery policy, then marks the delivery failed. |
+| Run input doesn't match Schema | Dispatcher returns 400 with the Schema parse error; Action fails the step with the error inlined. |
+| Run not found on the deploy | Dispatcher returns 404; Action fails the step. |
+| Worker quota exhausted | Dispatcher returns 429 + `Retry-After`; Action waits and retries up to 3×. |
+| Run fails mid-execution (await sub-mode) | Action mirrors the conclusion; GHA step fails. |
+| Run times out (await sub-mode) | Action sets conclusion `timed_out`; GHA step fails. The Workflow itself continues on CF; the check-run updates independently when it finishes. |
