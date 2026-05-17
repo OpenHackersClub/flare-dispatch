@@ -33,6 +33,13 @@ A single `offload-test`-shaped execution (clone → install → test → upload 
 
 Rule of thumb: **container compute ≈ (vCPU-s + GiB-s) × wall-time**, and that's ~95% of the marginal cost of a run. Browser-heavy runs (`playwright-e2e`, `cdp-acceptance`) add Browser Rendering hours on top — see the trade-off table in [02-runs § playwright-e2e](02-runs.md#3-playwright-e2e).
 
+```mermaid
+pie showData
+  title Marginal cost of one execution
+  "Container compute (vCPU-s + memory)" : 95
+  "R2 + D1 + Worker CPU" : 5
+```
+
 ## Worked estimate — small team
 
 Assumptions: 200 PRs/month, ~8 min average run wall time, 4-shard matrices, `standard-2` containers.
@@ -62,6 +69,16 @@ Same shape, 2,000 PRs/month. Container compute scales roughly linearly; Browser 
 | D1 / Queues | within free tier |
 | **Total** | **~$50–100 / month** |
 
+Cost scales sub-linearly with volume — the $5 base and the included quotas are fixed, so only the variable components grow:
+
+```mermaid
+xychart-beta
+  title "FlareDispatch monthly cost by volume (USD, mid-range)"
+  x-axis ["200 PRs / mo", "2000 PRs / mo"]
+  y-axis "USD per month" 0 --> 100
+  bar [12, 75]
+```
+
 ## Head-to-head with GitHub Actions
 
 GHA bills standard Linux runners at **$0.008/minute** beyond the plan's included minutes; larger runners (4–64 vCPU) cost 2–16× that. The jobs FlareDispatch targets — Playwright e2e, acceptance suites, big matrices — are precisely the long, wide ones.
@@ -76,6 +93,14 @@ Illustrative: a 4-shard Playwright suite, ~8 min wall time per shard, 200 PRs/mo
 | Idle cost between runs | none, but no scale-to-zero benefit either | none — scale-to-zero |
 | Larger-runner premium | 2–16× for 4–64 vCPU runners | pay only for the vCPU-seconds actually used |
 
+```mermaid
+xychart-beta
+  title "Monthly cost — 200 PRs, 4-shard Playwright suite (USD, list price)"
+  x-axis ["GitHub Actions", "FlareDispatch"]
+  y-axis "USD per month" 0 --> 60
+  bar [52, 12]
+```
+
 The gap widens as suites get longer and wider, because GHA bills wall-clock-minutes-per-shard while CF bills vCPU-seconds with scale-to-zero. For cheap fast jobs (lint, unit) the comparison inverts — GHA's included minutes make them effectively free — which is exactly why those jobs stay on GHA (see [PRD § Non-goals](PRD.md#non-goals)).
 
 This is a list-price comparison, not a benchmark. Actual savings depend on suite shape, runner size, and how much of the GHA included-minutes allowance a team already consumes.
@@ -84,16 +109,16 @@ This is a list-price comparison, not a benchmark. Actual savings depend on suite
 
 Ways a run author or operator reduces the bill:
 
-- **Right-size the container.** `standard-2` is the default; a lint-only run can drop to `basic` (1/4 vCPU, 1 GiB). Instance types are listed in [05-self-host § Wrangler config](05-self-host.md#wrangler-config).
+- **Right-size the container.** `standard-2` is the default; a lint-only run can drop to `basic` (1/4 vCPU, 1 GiB). Instance types are listed in [05-byoc § Wrangler config](05-byoc.md#wrangler-config).
 - **Cache aggressively.** The `cache-*` building blocks ([02-runs § cache](02-runs.md#building-block-cache-pnpm--npm--cargo--uv)) skip re-install on R2 cache hits — install time is often a third of a run's wall time.
 - **Prefer `cf-browser-rendering` for short browser tests.** It uses the included browser-hours; `in-container` Playwright trades that for container vCPU-seconds. See [02-runs § playwright-e2e](02-runs.md#3-playwright-e2e).
-- **Set R2 lifecycle retention.** Logs at 14 days, artifacts at 90, cache at 30 keeps R2 storage flat. Policy in [05-self-host § Retention and cleanup](05-self-host.md#retention-and-cleanup).
+- **Set R2 lifecycle retention.** Logs at 14 days, artifacts at 90, cache at 30 keeps R2 storage flat. Policy in [05-byoc § Retention and cleanup](05-byoc.md#retention-and-cleanup).
 - **Gate Webhook-mode runs.** A run's `gate` ([04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode)) skips drafts, bots, and `skip-*`-labelled PRs so expensive runs don't fire on every push.
 - **Declare `maxConcurrency`.** Caps simultaneous shards so a large matrix can't spike Container vCPU usage past the account aggregate (1,500 vCPU); see [01-architecture § Platform limits](01-architecture.md#platform-limits--design-constraints).
 
 ## What to watch
 
-Cost-relevant signals from [05-self-host § What to monitor](05-self-host.md#what-to-monitor):
+Cost-relevant signals from [05-byoc § What to monitor](05-byoc.md#what-to-monitor):
 
 - Container vCPU-minutes trending toward / past the included 375/month — the first overage line to appear.
 - Browser Rendering quota past 80% of the included 10 browser-hr — switch short tests away from `in-container` mode, or accept the $0.09/hr overage.

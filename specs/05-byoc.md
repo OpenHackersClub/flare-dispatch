@@ -1,17 +1,17 @@
-# 05 — Self-Host
+# 05 — BYOC Deployment (Cloudflare)
 
-End-to-end guide to deploying runs into your own Cloudflare account. The whole thing should take under an hour for someone familiar with Wrangler and GitHub Apps.
+End-to-end guide to deploying runs into your own Cloudflare account — **bring-your-own-Cloud (BYOC)**, with Cloudflare as the cloud. The whole thing should take under an hour for someone familiar with Wrangler and GitHub Apps.
 
 ## Prerequisites
 
-| | Required | Notes |
-|---|---|---|
-| Cloudflare account | Workers Paid ($5/mo) | Containers, Workflows, Browser Rendering, and useful R2 quotas are on the Paid plan |
-| `wrangler` CLI | ≥ 4.x | `npm i -g wrangler` |
-| `pnpm` | ≥ 9 | For the run repo itself |
-| Node | ≥ 20 | For Wrangler |
-| GitHub org admin access | yes | To install the GitHub App |
-| A custom domain on CF (optional) | no | For a nicer endpoint URL — `*.workers.dev` works fine for v0 |
+|                                  | Required             | Notes                                                                               |
+| -------------------------------- | -------------------- | ----------------------------------------------------------------------------------- |
+| Cloudflare account               | Workers Paid ($5/mo) | Containers, Workflows, Browser Rendering, and useful R2 quotas are on the Paid plan |
+| `wrangler` CLI                   | ≥ 4.x                | `npm i -g wrangler`                                                                 |
+| `pnpm`                           | ≥ 9                  | For the run repo itself                                                             |
+| Node                             | ≥ 20                 | For Wrangler                                                                        |
+| GitHub org admin access          | yes                  | To install the GitHub App                                                           |
+| A custom domain on CF (optional) | no                   | For a nicer endpoint URL — `*.workers.dev` works fine for v0                        |
 
 The Paid plan is the only hard money requirement. Browser Rendering on Workers Paid includes 10 browser-hours per month and 10 concurrent browsers (averaged monthly) at no extra charge; light-to-medium use stays within that. Beyond it: $0.09 per additional browser-hour, $2.00 per additional concurrent browser.
 
@@ -126,6 +126,44 @@ The template ships with all built-in runs wired. Users add their own under `runs
 }
 ```
 
+## D1 schema
+
+The D1 database holds execution and step metadata (the conceptual data model is in [01-architecture § Data model](01-architecture.md#data-model)). The literal schema ships as `infra/d1-schema.sql` and is applied with `wrangler d1 execute` during the deploy walkthrough below.
+
+```sql
+CREATE TABLE executions (
+  id TEXT PRIMARY KEY,                    -- ULID
+  run TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  sha TEXT NOT NULL,
+  status TEXT NOT NULL,                   -- queued | running | success | failure | cancelled
+  started_at INTEGER,                     -- ms epoch
+  completed_at INTEGER,
+  parent_execution_id TEXT,               -- for matrix children
+  input_json TEXT NOT NULL,
+  summary_json TEXT,
+  check_run_id INTEGER                    -- GitHub check-run id
+);
+
+CREATE TABLE steps (
+  id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL REFERENCES executions(id),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at INTEGER,
+  completed_at INTEGER,
+  exit_code INTEGER,
+  log_uri TEXT,                           -- R2 path
+  attempt INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX executions_repo_sha ON executions(repo, sha);
+CREATE INDEX steps_execution ON steps(execution_id);
+```
+
+D1's 10 GB per-database limit is plenty for metadata — logs and artifacts live in R2, and D1 holds only pointers.
+
 ## Secrets
 
 Set via `wrangler secret put` — never committed.
@@ -155,7 +193,7 @@ A manifest ships in `infra/github-app-manifest.json`:
 ```json
 {
   "name": "FlareDispatch",
-  "description": "Self-hosted CI offload to Cloudflare",
+  "description": "BYOC CI offload running on Cloudflare",
   "url": "https://runs.example.com",
   "hook_attributes": {
     "url": "https://runs.example.com/v1/github/webhook"

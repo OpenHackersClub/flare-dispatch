@@ -1,0 +1,36 @@
+# Recipe: browser tests (Playwright e2e) on Cloudflare
+#
+# Use case: a Playwright suite that is slow and burns GHA minutes. Offload it
+# to the shipped `playwright-e2e` run, which shards the suite across the
+# Cloudflare Browser Rendering pool. GHA only fires the dispatch (~10 s) and
+# the result comes back as a check-run.
+#
+# Mode: Action mode, fire-and-forget. See specs/04-gha-integration.md.
+# Run:  playwright-e2e — see specs/02-runs.md#3-playwright-e2e.
+
+name: e2e
+on:
+  pull_request:
+    paths: ["apps/**", "packages/**"]
+
+jobs:
+  browser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flaredispatch-action@v1
+        with:
+          run: playwright-e2e
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.sha }}",
+              "baseURL": "https://staging.example.com",
+              "shards": 4,
+              "browserMode": "cf-browser-rendering",
+              "uploadReport": true
+            }
+
+# Branch protection: require the check-run `flaredispatch/playwright-e2e`,
+# not this GHA job — the job succeeds the moment dispatch is accepted.

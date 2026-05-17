@@ -1,6 +1,6 @@
 # PRD — FlareDispatch
 
-Self-hostable CI/CD that offloads the expensive half of CI from GitHub Actions onto a Cloudflare stack — packaged as reusable, typed **runs** any team can `wrangler deploy` into their own account in under an hour.
+**BYOC (Cloudflare)** CI/CD that offloads the expensive half of CI from GitHub Actions onto a Cloudflare stack — bring your own Cloudflare account, `wrangler deploy` the reusable typed **runs** into it, done in under an hour.
 
 ## Problem
 
@@ -17,7 +17,7 @@ Teams work around this with self-hosted runners (which they must operate and sec
 | Persona | Pain today | What FlareDispatch gives them |
 |---|---|---|
 | **Small / mid eng team with a heavy test suite** | A Playwright or integration suite that dominates their GHA bill and wall-clock time | Heavy compute moves to CF Containers + Workflows fan-out; GHA keeps the trigger and the cheap jobs. See [07-cost](07-cost.md). |
-| **Team already on Cloudflare (Workers Paid)** | Wants to consolidate infra; doesn't want a second vendor or a runner fleet to operate | One `wrangler deploy` into the account they already pay for. See [05-self-host](05-self-host.md). |
+| **Team already on Cloudflare (Workers Paid)** | Wants to consolidate infra; doesn't want a second vendor or a runner fleet to operate | One `wrangler deploy` into the account they already pay for. See [05-byoc](05-byoc.md). |
 | **Platform / DevEx engineer** | Owns CI tooling for an org; needs something auditable, typed, and forkable — not opaque YAML | Runs are typed Effect-TS programs the team owns and vendor-edits. See [03-dsl](03-dsl.md). |
 | **OSS maintainer / autonomous-CI user** | Wants PR review, smoke, or scheduled jobs on *every* push without burning GHA minutes or adding workflow files | Webhook mode: the GitHub App fires runs directly, zero GHA minutes, no `.github/workflows/` edits. See [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode). |
 
@@ -29,7 +29,7 @@ Not for: teams whose CI is already cheap and fast (lint + unit only) — there i
 2. **No platform ceilings.** Multi-step Workflows have no 6-hour limit; R2 cache and artifacts have no 10 GB cap and user-controlled retention. See [01-architecture § Platform limits](01-architecture.md#platform-limits--design-constraints).
 3. **Cheap, wide fan-out.** Workflows `createBatch` spawns up to 100 children per call, 50,000 concurrent instances per account, scale-to-zero between runs. See [01-architecture § Fan-out model](01-architecture.md#fan-out-model).
 4. **You own the runs.** Runs are typed Effect programs — composable steps, tagged errors, exhaustive matching, retry/Schedule combinators — not stringly-typed YAML. Fork them, vendor-edit them, unit-test them without booting a container. See [02-runs](02-runs.md) and [03-dsl](03-dsl.md).
-5. **Self-host first, no new dashboard.** Every code path assumes "deployed into the user's own CF account." Status reports back as a GitHub Check Run — the existing PR UI is the UI. See [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-both-modes).
+5. **BYOC, no new dashboard.** Every code path assumes "deployed into the user's own Cloudflare account" — bring-your-own-Cloud, no operator runs it for you. Status reports back as a GitHub Check Run — the existing PR UI is the UI. See [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-both-modes).
 6. **Two trigger modes, one Dispatcher.** Action mode interleaves with existing GHA jobs; Webhook mode runs autonomously with zero GHA minutes. See [04-gha-integration](04-gha-integration.md).
 
 ## What a run is
@@ -43,7 +43,7 @@ A **run** is a typed, named Effect-TS program with:
 
 Runs are not opaque — they are TypeScript files in the user's repo. The shipped runs are the starter library; the DSL is the contract. Full catalog in [02-runs](02-runs.md); DSL surface in [03-dsl](03-dsl.md).
 
-## Operating model — self-host first
+## Operating model — BYOC (Cloudflare)
 
 ```mermaid
 flowchart LR
@@ -65,7 +65,7 @@ A team installs runs by:
 4. Installing the companion GitHub App on their org/repos.
 5. Adding `uses: openhackersclub/flaredispatch-action@v1` to their workflow (Action mode), or just letting the App webhook fire runs (Webhook mode).
 
-After that, each PR fires runs against the team's own Cloudflare bill. The project supplies the runs, the GHA Action, and the Effect-TS DSL packages. The team supplies the account. Full deploy guide in [05-self-host](05-self-host.md).
+After that, each PR fires runs against the team's own Cloudflare bill. The project supplies the runs, the GHA Action, and the Effect-TS DSL packages. The team supplies the account. Full deploy guide in [05-byoc](05-byoc.md).
 
 ## Non-goals
 
@@ -75,17 +75,11 @@ After that, each PR fires runs against the team's own Cloudflare bill. The proje
 - **Secrets management product.** Workers Secrets is sufficient; runs don't reinvent it.
 - **Generalized workflow engine.** Runs are for CI-shaped work. For durable business workflows, use Trigger.dev or Temporal.
 
-## Success criteria — roadmap
+## Success criteria
 
-| Phase | Scope | Runs shipped | Exit criteria |
-|---|---|---|---|
-| **V0 — Walking skeleton** | Dispatcher Worker + one Workflow + one Sandbox + check-run callback | `offload-test` | A `pnpm test` executing in CF Sandbox reports green/red to a PR check |
-| **V1 — Fan-out + cache + artifacts** | Queues for matrix; R2 cache helper; R2 artifact upload with signed URLs | `+ matrix-fanout`, `+ cache-pnpm`, `+ r2-artifacts` (building blocks) | 8-shard test matrix on CF beats GHA wall time on a real repo |
-| **V2 — Browser e2e + acceptance** | Browser Rendering integration; CDP observation helper | `+ playwright-e2e`, `+ cdp-acceptance` | Sharded Playwright suite reports per-shard status; gctrl-board acceptance suite executes |
-| **V3 — Long-running + security** | Step chaining for >Workflow-step-limit suites; security scan runs | `+ security-scan`, `+ custom-sandbox` | 30-min suite completes; npm audit / cargo audit / trivy run in Sandbox |
-| **V4 — Polish** | OpenTelemetry export, Logpush integration, retention policies, `flaredispatch init` CLI | — | Time-to-first-green-check < 30 min on a fresh CF account |
+V0 is the slice that proves the model — a `pnpm test` executing in CF Sandbox reports green/red to a PR check. Everything after is incremental and independently shippable: V1 adds fan-out + cache + artifacts, V2 browser e2e + acceptance, V3 long-running + security scans, V4 polish (OpenTelemetry, retention, an `init` CLI).
 
-V0 is the slice that proves the model. Everything after is incremental and independently shippable. The full V0 build sequence is in [06-v0-plan](06-v0-plan.md).
+Project-management detail lives under [`pm/`](pm/): the phased roadmap — scope, runs shipped, and the exit criterion that closes each phase — is in [pm/timeline.md](pm/timeline.md), and the 7-PR V0 build sequence is in [pm/06-v0-plan.md](pm/06-v0-plan.md).
 
 ## Relationship to Cloudflare Workers CI/CD
 
@@ -93,7 +87,7 @@ Cloudflare ships its own CI/CD — [Workers Builds](https://developers.cloudflar
 
 FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it executes Playwright e2e, acceptance suites, sharded matrices, and security scans inside CF Containers / Browser Rendering / Workflows and reports the outcome as a GitHub Check Run. The two are complementary, not competing:
 
-- **Workers Builds deploys FlareDispatch.** The FlareDispatch Dispatcher is itself a Worker, so Workers Builds is a perfectly good way to deploy and keep it updated — see [05-self-host](05-self-host.md).
+- **Workers Builds deploys FlareDispatch.** The FlareDispatch Dispatcher is itself a Worker, so Workers Builds is a perfectly good way to deploy and keep it updated — see [05-byoc](05-byoc.md).
 - **FlareDispatch runs the tests Workers Builds doesn't.** Workers Builds has no opinion about your repo's heavy test suite; FlareDispatch is exactly that opinion.
 - **Same platform, different layer.** FlareDispatch is built *on* the same Cloudflare primitives Workers Builds deploys to — Workers, Workflows, Containers, Browser Rendering, R2, D1 — but it is an orchestration plane for CI work, not a code-deployment pipeline.
 
@@ -103,7 +97,7 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 |---|---|
 | **Cloudflare Workers CI/CD** ([Workers Builds](https://developers.cloudflare.com/workers/ci-cd/)) | Cloudflare's own CI/CD — builds and *deploys Worker code* on git push. Different layer entirely (see above): it ships Workers, it doesn't run test suites. Complementary — Workers Builds can deploy the FlareDispatch Dispatcher itself. |
 | **Depot** | GHA runner accelerator. Complementary — keep using it for fast jobs that stay on GHA. Not a backend for these runs; reselling its runners has no margin. |
-| **Trigger.dev** | Durable workflow platform. Could be the backend for a non-CF self-host edition later. Out of scope for v1 — adds Postgres + Redis ops that conflict with "easy self-host." |
+| **Trigger.dev** | Durable workflow platform. Could be the backend for a non-Cloudflare BYOC edition later. Out of scope for v1 — adds Postgres + Redis ops that conflict with the easy-BYOC goal. |
 | **Buildkite Agent** | Hybrid CI: their orchestrator, your compute. Same shape as this project, but you operate VMs. Runs replace the "your compute" half with serverless CF. |
 | **Earthly / Dagger** | Local-and-CI build engines. Could be invoked *inside* a run step; not a substitute for the orchestration plane. |
 
@@ -115,6 +109,7 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 | [02-runs](02-runs.md) | Run catalog with inputs/outputs/primitives |
 | [03-dsl](03-dsl.md) | Effect-TS DSL surface — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
 | [04-gha-integration](04-gha-integration.md) | Two trigger modes (Action / Webhook), HMAC auth, check-runs callback |
-| [05-self-host](05-self-host.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
-| [06-v0-plan](06-v0-plan.md) | Walking-skeleton implementation plan — 7-PR sequence for `offload-test` |
+| [05-byoc](05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
 | [07-cost](07-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
+| [pm/timeline](pm/timeline.md) | Phased delivery roadmap — V0 through V4 |
+| [pm/06-v0-plan](pm/06-v0-plan.md) | Walking-skeleton implementation plan — 7-PR sequence for `offload-test` |

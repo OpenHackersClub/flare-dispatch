@@ -1,0 +1,38 @@
+# Recipe: CDP acceptance tests on Cloudflare
+#
+# Use case: acceptance tests that boot the app under test and drive it via
+# the Chrome DevTools Protocol — asserting on network calls, console errors,
+# document counts, heap deltas. Offload to the shipped `cdp-acceptance` run,
+# which boots the app in a container and attaches Browser Rendering over CDP.
+#
+# Mode: Action mode, await — a follow-up deploy gate needs the result inline.
+#       See specs/04-gha-integration.md#await-sub-mode.
+# Run:  cdp-acceptance — see specs/02-runs.md#4-cdp-acceptance.
+
+name: acceptance
+on:
+  pull_request:
+    paths: ["apps/**"]
+
+jobs:
+  cdp-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flaredispatch-action@v1
+        with:
+          run: cdp-acceptance
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          mode: await
+          timeout: 20m
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.sha }}",
+              "appBootCommand": "pnpm dev",
+              "appPort": 4173,
+              "testCommand": "pnpm test:acceptance"
+            }
+
+# In await mode the action mirrors the run's conclusion onto this GHA step,
+# so a subsequent deploy job can `needs:` it.

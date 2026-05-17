@@ -90,11 +90,14 @@ HMAC-SHA256 signed; the signature goes in `X-FlareDispatch-Signature: sha256=<he
 
 ```mermaid
 sequenceDiagram
-  GHA->>Action: step starts
-  Action->>Dispatcher: POST /v1/dispatch/playwright-e2e (HMAC)
-  Dispatcher-->>Action: 202 Accepted {executionId, checkRunId}
-  Action-->>GHA: step exits success
-  Note over Dispatcher: Workflow executes asynchronously;<br/>result reported via check-run
+  participant GHA as GHA workflow
+  participant ACT as flaredispatch-action
+  participant DSP as Dispatcher
+  GHA->>ACT: step starts
+  ACT->>DSP: POST /v1/dispatch (HMAC-signed)
+  DSP-->>ACT: 202 Accepted, returns executionId and checkRunId
+  ACT-->>GHA: step exits success
+  Note over DSP: Workflow runs asynchronously, result reported via check-run
 ```
 
 The GHA step succeeds the moment dispatch is accepted — it has done its job. The **check run** is the actual PR signal. In branch protection, require the check-run name (e.g. `flaredispatch/playwright-e2e`), not the GHA job. Zero GHA minutes are spent for the execution duration. This is the recommended sub-mode.
@@ -169,21 +172,18 @@ Whatever triggered the execution, the Dispatcher reports the result through the 
 sequenceDiagram
   participant W as Workflow
   participant D as Dispatcher
-  participant KV as KV (config)
+  participant KV as KV config
   participant GH as GitHub API
-
-  W->>D: createCheckRun(repo, sha, name)
-  D->>KV: lookup installation_id for repo
-  D->>GH: POST /app/installations/{id}/access_tokens (JWT-signed)
-  GH-->>D: installation token (1 hour TTL)
-  D->>GH: POST /repos/{owner}/{repo}/check-runs<br/>{name, head_sha, status: in_progress}
-  GH-->>D: {check_run_id}
-  D-->>W: {check_run_id}
-
-  Note over W: ... execution proceeds ...
-
-  W->>D: updateCheckRun(check_run_id, completed, conclusion, summary)
-  D->>GH: PATCH /repos/{owner}/{repo}/check-runs/{id}
+  W->>D: createCheckRun for repo, sha, name
+  D->>KV: look up installation_id for repo
+  D->>GH: POST access_tokens, JWT-signed
+  GH-->>D: installation token, 1 hour TTL
+  D->>GH: POST check-runs, status in_progress
+  GH-->>D: returns check_run_id
+  D-->>W: returns check_run_id
+  Note over W: execution proceeds
+  W->>D: updateCheckRun with conclusion and summary
+  D->>GH: PATCH check-runs by id
 ```
 
 A token is per-installation, not per-repo; one installation covers every repo the App is installed on for that org.
@@ -232,7 +232,7 @@ Both modes share the same two-layer dedup discipline so a redelivery storm, a do
 | GitHub App ID + private key | Worker secrets (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) | required (for the check-run callback) | required |
 | App webhook secret | Worker secret (`GITHUB_WEBHOOK_SECRET`) | not used | required |
 
-Users running **only** Webhook mode never provision or rotate `FLAREDISPATCH_HMAC` — one less long-lived shared secret. Users running both rotate it on the cadence in [05-self-host § Security posture](05-self-host.md#security-posture); the App webhook secret rotates independently from the App settings page.
+Users running **only** Webhook mode never provision or rotate `FLAREDISPATCH_HMAC` — one less long-lived shared secret. Users running both rotate it on the cadence in [05-byoc § Security posture](05-byoc.md#security-posture); the App webhook secret rotates independently from the App settings page.
 
 ---
 
