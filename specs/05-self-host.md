@@ -222,6 +222,10 @@ pnpm cli dispatch offload-test --repo <your-repo> --sha <commit-sha> --command "
 
 After step 9, the Dispatcher creates a check-run on the commit and reports `success` once `echo hello` completes in a container.
 
+### Deploying via Cloudflare Workers Builds
+
+The Dispatcher is itself a Worker, so ongoing deploys don't have to be manual `wrangler deploy` calls. [Cloudflare Workers CI/CD (Workers Builds)](https://developers.cloudflare.com/workers/ci-cd/) can watch the FlareDispatch repo and redeploy on every push to `main` — connect the repo in the Cloudflare dashboard, point the build at `wrangler deploy`, and it manages deploy credentials for you. This is a deploy pipeline only; it does not run the FlareDispatch *runs* themselves (those execute inside Workflows + Containers on dispatch). The two operate at different layers — see [PRD § Relationship to Cloudflare Workers CI/CD](PRD.md#relationship-to-cloudflare-workers-cicd).
+
 ## CLI
 
 `@flaredispatch/cli` ships as a thin wrapper around the HTTP API. Used for setup, local dispatch, and ops.

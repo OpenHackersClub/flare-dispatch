@@ -87,10 +87,21 @@ After that, each PR fires runs against the team's own Cloudflare bill. The proje
 
 V0 is the slice that proves the model. Everything after is incremental and independently shippable. The full V0 build sequence is in [06-v0-plan](06-v0-plan.md).
 
+## Relationship to Cloudflare Workers CI/CD
+
+Cloudflare ships its own CI/CD — [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/) — but it solves a **different problem at a different layer**. Workers Builds (and the GitHub Actions integration the same docs describe) automates *building and deploying Worker code* on a git push: it pushes your Worker to production, manages deploy credentials, and keeps deployments consistent across a team. It does **not** run your repository's test suites — there is no integrated test runner and no arbitrary-suite execution.
+
+FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it executes Playwright e2e, acceptance suites, sharded matrices, and security scans inside CF Containers / Browser Rendering / Workflows and reports the outcome as a GitHub Check Run. The two are complementary, not competing:
+
+- **Workers Builds deploys FlareDispatch.** The FlareDispatch Dispatcher is itself a Worker, so Workers Builds is a perfectly good way to deploy and keep it updated — see [05-self-host](05-self-host.md).
+- **FlareDispatch runs the tests Workers Builds doesn't.** Workers Builds has no opinion about your repo's heavy test suite; FlareDispatch is exactly that opinion.
+- **Same platform, different layer.** FlareDispatch is built *on* the same Cloudflare primitives Workers Builds deploys to — Workers, Workflows, Containers, Browser Rendering, R2, D1 — but it is an orchestration plane for CI work, not a code-deployment pipeline.
+
 ## Comparison with adjacent options
 
 | | Role |
 |---|---|
+| **Cloudflare Workers CI/CD** ([Workers Builds](https://developers.cloudflare.com/workers/ci-cd/)) | Cloudflare's own CI/CD — builds and *deploys Worker code* on git push. Different layer entirely (see above): it ships Workers, it doesn't run test suites. Complementary — Workers Builds can deploy the FlareDispatch Dispatcher itself. |
 | **Depot** | GHA runner accelerator. Complementary — keep using it for fast jobs that stay on GHA. Not a backend for these runs; reselling its runners has no margin. |
 | **Trigger.dev** | Durable workflow platform. Could be the backend for a non-CF self-host edition later. Out of scope for v1 — adds Postgres + Redis ops that conflict with "easy self-host." |
 | **Buildkite Agent** | Hybrid CI: their orchestrator, your compute. Same shape as this project, but you operate VMs. Runs replace the "your compute" half with serverless CF. |
