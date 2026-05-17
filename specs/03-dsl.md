@@ -6,7 +6,7 @@ Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`,
 
 - **Typed inputs and outputs end-to-end.** `Schema` defines the contract; TypeScript checks the run body against it. Misspell a field and the build fails — not on shard 5 at 2am.
 - **Tagged errors per failure mode.** `CheckoutFailed`, `InstallTimeout`, `BrowserCrashed`, `CacheMiss` are distinct types. `Effect.catchTag` recovers selectively; everything else propagates with full cause information.
-- **Retry policies as data.** `Effect.retry(schedule)` with `Schedule.exponential` + `Schedule.recurs` + `Schedule.whileInput` composes retry behavior without hand-rolled loops. See `## Effect-TS Programming` in the project CLAUDE.md.
+- **Retry policies as data.** `Effect.retry(schedule)` with `Schedule.exponential` + `Schedule.recurs` + `Schedule.whileInput` composes retry behavior without hand-rolled loops.
 - **Layers swap implementations.** The same run executes against real Sandbox in prod and against an in-process container fake in unit tests — runs become directly testable without spinning up CF.
 - **No YAML escaping hell.** Multi-line scripts, JSON inputs, and template strings live in TypeScript, not stringly-typed config.
 
@@ -77,15 +77,30 @@ declare const defineRun: <I, O, IEnc, OEnc>(
   spec: {
     name: string;
     version: string;
+    image?: string;                          // default container image
     inputs: Schema.Schema<I, IEnc>;
     outputs: Schema.Schema<O, OEnc>;
     limits: RunLimits;
+    triggers?: readonly TriggerSpec<I>[];     // Webhook-mode trigger config
     run: (input: I) => Effect.Effect<O, RunError, RunContext>;
   },
 ) => Run<I, O>;
 ```
 
 `defineRun` is a passive constructor — it validates the spec at module load and registers it for discovery. It doesn't bind to any runtime; the same `Run` value is portable.
+
+`triggers` is optional and only consumed in Webhook mode: the receiver evaluates every run's `triggers` on each GitHub App webhook delivery (see [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode)). A run with no `triggers` is dispatch-only (Action mode).
+
+```ts
+// A single Webhook-mode trigger binding.
+type TriggerSpec<I> = {
+  event: string;                             // GitHub webhook event, e.g. "pull_request"
+  actions?: readonly string[];               // event-action filter, e.g. ["opened", "synchronize"]
+  idempotencyKey: (ctx: { payload: WebhookPayload }) => string;  // semantic dedup key
+  gate?: (ctx: { payload: WebhookPayload }) => boolean;          // receiver-side cost gate
+  inputs: (ctx: { payload: WebhookPayload }) => I;               // map the payload to run inputs
+};
+```
 
 ## `step`
 
@@ -113,9 +128,9 @@ Steps are the only durable boundary. Inside a step, Effects compose freely witho
 
 ### The `runEffect` boundary shim — Workflows vs. Effect error handling
 
-CF Workflows is imperative: its `run(event, step)` method awaits `step.do(...)` as Promises and expects **thrown** errors to fail a step (so the platform can record the failure and retry). Effect is functional: errors live in the typed `E` channel via `Effect.fail`, and `throw` inside `Effect.gen` is an anti-pattern (see CLAUDE.md `Effect-TS Programming § Anti-patterns`).
+CF Workflows is imperative: its `run(event, step)` method awaits `step.do(...)` as Promises and expects **thrown** errors to fail a step (so the platform can record the failure and retry). Effect is functional: errors live in the typed `E` channel via `Effect.fail`, and `throw` inside `Effect.gen` is an anti-pattern.
 
-`step` reconciles these two worlds with a `runEffect` shim. **Inside a step body**, the Effect rules from the project CLAUDE.md still apply — `yield* Effect.fail(new TaggedError({...}))`, never `throw`. **At the step boundary**, the shim executes the Effect, catches a typed failure, and rethrows it as a serializable value so Workflows can record the failure in its retry telemetry.
+`step` reconciles these two worlds with a `runEffect` shim. **Inside a step body**, the Effect rules still apply — `yield* Effect.fail(new TaggedError({...}))`, never `throw`. **At the step boundary**, the shim executes the Effect, catches a typed failure, and rethrows it as a serializable value so Workflows can record the failure in its retry telemetry.
 
 ```ts
 // packages/core/src/step.ts (sketch)
@@ -247,6 +262,8 @@ namespace sandbox {
 ```
 
 `ExecResult` carries `exitCode`, `durationMs`, `logPath` (R2 key for the captured stdout/stderr), and a `stdout`/`stderr` *tail* (last N KB inlined for convenience; full log streamed to R2).
+
+A command that **runs to completion** always yields an `ExecResult`, whatever its exit code — a non-zero `exitCode` is a normal result (a failing test, a non-zero `curl`), surfaced to the run, not an Effect failure. `sandbox.exec` fails its Effect only when the command **could not run as a process**: `ExecFailed` when it could not be launched or was killed by a signal / a dying container, `ExecTimeout` when it exceeded `timeoutSec`. A run that wants a non-zero exit to abort must check `result.exitCode` itself.
 
 ### `browser`
 
@@ -389,7 +406,7 @@ Runs recover with `Effect.catchTag` / `Effect.catchTags`. Anything not caught fa
 
 ## Retry patterns
 
-Transient infra errors (BrowserUnavailable with `reason: "transient"`, ExecFailed with networky exit codes, container launch flakes) should retry; deterministic failures (test failures, ExecFailed with `exit !=0` from the user's command) should not.
+Transient infra errors (`BrowserUnavailable` with `reason: "transient"`, `ExecFailed` from a container that died mid-command, launch flakes) should retry. Deterministic outcomes should not: a non-zero `ExecResult.exitCode` is the user's command result (a failing test — surfaced to the check-run, never retried), and a `ContainerLaunchFailed` from a bad image is a config error.
 
 ```ts
 import { Effect, Schedule } from "effect";
@@ -404,7 +421,7 @@ const launchPlaywright = browser.newCDPSession({ targetUrl }).pipe(
 );
 ```
 
-`Schedule.whileInput` accesses `_tag` indirectly through the predicate — this is the documented Schedule API, not a branching escape hatch (see CLAUDE.md `Effect-TS Programming § Anti-patterns`).
+`Schedule.whileInput` accesses `_tag` indirectly through the predicate — this is the documented Schedule API, not a branching escape hatch.
 
 ## Pattern matching
 

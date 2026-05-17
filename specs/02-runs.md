@@ -18,7 +18,8 @@ Every shipped run exports:
     maxConcurrency?: number;                 // shards or parallel executions
     requiresBrowser?: boolean;               // declares Browser Rendering binding
   };
-  steps: (input: I) => Effect.Effect<O, RunError, RunContext>;
+  triggers?: TriggerSpec<I>[];                // Webhook-mode trigger config
+  run: (input: I) => Effect.Effect<O, RunError, RunContext>;
 }
 ```
 

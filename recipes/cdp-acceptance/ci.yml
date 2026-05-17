@@ -24,7 +24,7 @@ jobs:
           endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
           hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
           mode: await
-          timeout: 20m
+          timeout: 30m   # must be >= the cdp-acceptance run's maxDurationSec (1800s)
           inputs: |
             {
               "repo": "${{ github.repository }}",

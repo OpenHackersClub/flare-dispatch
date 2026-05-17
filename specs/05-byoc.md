@@ -114,8 +114,10 @@ The template ships with all built-in runs wired. Users add their own under `runs
     "consumers": [{ "queue": "flaredispatch-fanout", "max_batch_size": 10 }]
   },
 
+  // migrations are the Durable Object lifecycle mechanism — only DO classes
+  // belong here. RunWorkflow is a Workflow, registered via "workflows" above.
   "migrations": [
-    { "tag": "v1", "new_classes": ["Coordinator", "RunWorkflow"] }
+    { "tag": "v1", "new_classes": ["Coordinator"] }
   ],
 
   "observability": { "enabled": true },
@@ -196,16 +198,17 @@ A manifest ships in `infra/github-app-manifest.json`:
   "description": "BYOC CI offload running on Cloudflare",
   "url": "https://runs.example.com",
   "hook_attributes": {
-    "url": "https://runs.example.com/v1/github/webhook"
+    "url": "https://runs.example.com/v1/webhooks/github"
   },
   "redirect_url": "https://runs.example.com/v1/github/installed",
   "default_permissions": {
     "checks": "write",
     "contents": "read",
+    "deployments": "read",
     "metadata": "read",
     "pull_requests": "read"
   },
-  "default_events": ["check_run", "check_suite", "pull_request"]
+  "default_events": ["check_run", "check_suite", "deployment_status", "pull_request"]
 }
 ```
 
@@ -302,7 +305,7 @@ What doesn't work locally:
 - Inbound GitHub webhooks — use `cloudflared tunnel` or `tailscale serve` to expose `localhost:8787` for App setup testing.
 - Multi-region behavior — `wrangler dev` is single-process.
 
-The `pnpm dev` script also exposes the local Dispatcher via Tailscale Serve if available (`tailscale serve --bg 8787`), so PRs in development can dispatch to your laptop while iterating on a run. See `## Dev Servers — Expose via Tailscale Serve` in the project CLAUDE.md.
+The `pnpm dev` script also exposes the local Dispatcher via Tailscale Serve if available (`tailscale serve --bg 8787`), so PRs in development can dispatch to your laptop while iterating on a run.
 
 ## Operating one Dispatcher across many repos
 

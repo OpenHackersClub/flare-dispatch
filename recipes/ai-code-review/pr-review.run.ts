@@ -11,6 +11,13 @@
 import { Effect, Schema } from "effect";
 import { defineRun, step, sandbox } from "@flaredispatch/core";
 
+// Local helper — true if the PR carries the given label. The webhook
+// payload's pull_request.labels is an array of { name }.
+const hasLabel = (
+  payload: { pull_request: { labels: ReadonlyArray<{ name: string }> } },
+  name: string,
+): boolean => payload.pull_request.labels.some((l) => l.name === name);
+
 // The domain-scoped reviewers, one per concern (blog: "up to seven
 // domain-specific agents"). Each is a tightly-scoped prompt that knows what
 // to look for AND what to ignore. The container image bundles the agent CLI.
@@ -74,15 +81,21 @@ export const prReview = defineRun({
         sandbox.git.clone({ repo: input.repo, sha: input.sha }),
       );
 
-      // 2. Build the reviewable diff — drop lockfiles, minified assets, and
-      //    generated code so agents never burn tokens on noise.
-      const diff = yield* step("prepare-diff", () =>
+      // 2. Build the reviewable diff into a known container path — drop
+      //    lockfiles, minified assets, and generated code so agents never
+      //    burn tokens on noise. `--out` materializes the diff (plus shared
+      //    context) at DIFF; ExecResult.logPath would be an R2 key, not a
+      //    container path, so the agents below cannot read that — they read
+      //    the file written here.
+      const DIFF = "/tmp/diff";
+      yield* step("prepare-diff", () =>
         sandbox.exec({
           cwd: repoDir,
           command: [
             "review-agent", "diff",
             "--base", input.baseSha,
             "--exclude", "lockfiles,minified,generated",
+            "--out", DIFF,
           ],
         }),
       );
@@ -93,13 +106,13 @@ export const prReview = defineRun({
       const tier = yield* step("classify-risk", () =>
         sandbox.exec({
           cwd: repoDir,
-          command: ["review-agent", "risk-tier", "--diff", diff.logPath],
+          command: ["review-agent", "risk-tier", "--diff", DIFF],
         }),
       );
 
-      // 4. Fan out one tightly-scoped agent per domain, in parallel. A shared
-      //    context file (written by prepare-diff) keeps token use down across
-      //    the concurrent reviewers. Each agent writes findings to /tmp/findings.
+      // 4. Fan out one tightly-scoped agent per domain, in parallel. The
+      //    shared diff/context at DIFF keeps token use down across the
+      //    concurrent reviewers. Each agent writes findings to /tmp/findings.
       yield* step("review", () =>
         Effect.forEach(
           AGENTS,
@@ -108,7 +121,7 @@ export const prReview = defineRun({
               cwd: repoDir,
               command: [
                 "review-agent", "run", agent,
-                "--diff", diff.logPath,
+                "--diff", DIFF,
                 "--tier", tier.stdout.trim(),
                 "--out", "/tmp/findings",
               ],

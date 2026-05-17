@@ -61,8 +61,8 @@ A GHA workflow — or any HMAC-signing HTTP caller — POSTs `/v1/dispatch/:run`
 
 | Output | Notes |
 |---|---|
-| `execution-id` | ULID of the execution on CF. |
-| `check-run-id` | GitHub check-run id. |
+| `execution-id` | ULID of the execution on CF. Always set — the Dispatcher returns it in the 202. |
+| `check-run-id` | GitHub check-run id. **Await sub-mode only** — the check-run is opened by the Workflow *after* dispatch, so it is not known at 202 time; the polling action reads it once the Workflow has created it. |
 | `conclusion` | Await sub-mode only: `success` / `failure` / `neutral` / `timed_out` / `cancelled`. |
 | `summary-url` | Link to the check-run page on github.com. |
 
@@ -95,7 +95,7 @@ sequenceDiagram
   participant DSP as Dispatcher
   GHA->>ACT: step starts
   ACT->>DSP: POST /v1/dispatch (HMAC-signed)
-  DSP-->>ACT: 202 Accepted, returns executionId and checkRunId
+  DSP-->>ACT: 202 Accepted, returns executionId
   ACT-->>GHA: step exits success
   Note over DSP: Workflow runs asynchronously, result reported via check-run
 ```
@@ -238,7 +238,7 @@ Users running **only** Webhook mode never provision or rotate `FLAREDISPATCH_HMA
 
 ## What the Action does not do
 
-- It does not execute any run logic. The Action is ~50 lines of JS — sign request, POST, optionally poll.
+- It does not execute any run logic. The Action is a thin composite wrapper around a ~30-line bash script — sign request, POST, optionally poll.
 - It does not require the user to manage a GitHub PAT for check-runs. The App handles it.
 - It does not require `runs-on: self-hosted`. It's a normal hosted-runner step that finishes in seconds.
 

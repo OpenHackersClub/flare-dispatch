@@ -16,7 +16,7 @@ Everything else from V1–V4 is deferred. This plan covers what we build, in wha
 - **D1** — `executions` + `steps` tables per [05-byoc § D1 schema](../05-byoc.md#d1-schema).
 - **GitHub App** — JWT → installation token → `POST /repos/.../check-runs` (in_progress) and `PATCH .../check-runs/{id}` (completed).
 - **Effect-TS DSL surface** — `defineRun`, `step`, `sandbox.git.clone`, `sandbox.exec`, `artifact.upload` (logs only), `io.now`, `io.uuid`, `io.log`. Tagged errors from [03-dsl § Errors](../03-dsl.md#errors). All other DSL surface stubbed to `Effect.die("not implemented in V0")`.
-- **GHA composite Action** — `action.yml` + a ~50 LOC bash/node entry that HMAC-signs the body and POSTs. Fire-and-forget only.
+- **GHA composite Action** — `action.yml` + a ~30 LOC bash entry (`dispatch.sh`) that HMAC-signs the body and POSTs. Fire-and-forget only.
 
 ## 2. Out of scope (deferred to V1+)
 
@@ -104,7 +104,8 @@ flaredispatch/
 ├── runs/
 │   └── offload-test.ts                         # the V0 run (see 03-dsl § Top-level shape)
 ├── infra/
-│   └── d1-schema.sql                           # executions + steps tables verbatim from 05-byoc § D1 schema
+│   ├── d1-schema.sql                           # executions + steps tables verbatim from 05-byoc § D1 schema
+│   └── github-app-manifest.json                # GitHub App manifest (see 05-byoc § GitHub App setup)
 ├── actions/
 │   └── flaredispatch-action/
 │       ├── action.yml                          # composite Action: 'using: composite', steps run dispatch.sh
@@ -141,11 +142,11 @@ Each PR targets `main`, is independently mergeable, and ships a single concern. 
 ### PR 5 — Dispatcher routes + HMAC verify + artifact signed-URL endpoint
 
 - **What:** `apps/dispatcher/src/routes/dispatch.ts` does Schema-validate the body against `offload-test.inputs`, HMAC-verify with constant-time compare against `env.HMAC_SECRET`, then call `env.RUNS_WORKFLOW.create({...})`. Add `GET /v1/artifacts/:execution/:name` that signs an R2 URL and 302-redirects. `GET /health` lists registered runs.
-- **Verifiable acceptance:** `vitest run apps/dispatcher` covers: invalid HMAC → 401; valid HMAC + invalid body → 400 with Schema error inlined; valid HMAC + valid body → 202 + `{executionId}`. A separate test fetches `/v1/artifacts/<executionId>/exec.log` after a fake execution and asserts 302 with a signed URL pointing at R2.
+- **Verifiable acceptance:** `vitest run apps/dispatcher` covers: invalid HMAC → 401; valid HMAC + invalid body → 400 with Schema error inlined; valid HMAC + valid body → 202 + `{executionId}`. A separate test fetches `/v1/artifacts/<executionId>/exec.ndjson` after a fake execution and asserts 302 with a signed URL pointing at R2.
 
 ### PR 6 — GitHub App auth (`@flaredispatch/github-app`) + ChecksService live binding
 
-- **What:** RS256 JWT signer using the PEM secret, installation-token exchange + in-memory cache (Worker memory + KV fallback per [04-gha-integration § Check-runs callback](../04-gha-integration.md#check-runs-callback-shared-by-both-modes)), `POST` / `PATCH` to `/repos/{owner}/{repo}/check-runs`. Wire `ChecksGithubLive` into the runtime Layer so `offload-test` posts `in_progress` on start and `completed` with conclusion at end.
+- **What:** RS256 JWT signer using the PEM secret, installation-token exchange + cache (Worker memory only in V0 — the `INSTALL_TOKEN_KV` fallback is deferred to V1 per § 2; see [04-gha-integration § Check-runs callback](../04-gha-integration.md#check-runs-callback-shared-by-both-modes)), `POST` / `PATCH` to `/repos/{owner}/{repo}/check-runs`. Wire `ChecksGithubLive` into the runtime Layer so `offload-test` posts `in_progress` on start and `completed` with conclusion at end.
 - **Verifiable acceptance:** Integration test against an MSW-mocked `api.github.com` asserts: (a) one POST to `/repos/.../check-runs` with `status: in_progress`; (b) one PATCH with `status: completed` and `conclusion: success` for green, `failure` for red. End-to-end manual: dispatch against a real test repo, observe check-run appears on the commit's Checks tab.
 
 ### PR 7 — GHA composite Action + acceptance smoke
@@ -198,7 +199,7 @@ curl -fsS -X POST https://flaredispatch-v0.<account>.workers.dev/v1/dispatch/off
   -H "Content-Type: application/json" \
   -H "X-FlareDispatch-Signature: sha256=$SIG" \
   -d "$BODY"
-# Expected: 202 {"executionId":"01J...","checkRunId":1234567}
+# Expected: 202 {"executionId":"01J..."}
 ```
 
 ```sh

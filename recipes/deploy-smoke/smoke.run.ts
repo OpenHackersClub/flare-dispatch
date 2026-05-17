@@ -20,12 +20,18 @@ export const deploySmoke = defineRun({
   triggers: [
     {
       event: "deployment_status",
-      // only the success transition, and only for production deploys
+      // only the success transition, only production, and only when GitHub
+      // actually gave us a URL to probe — `environment_url` is optional in
+      // the payload, and without it `baseURL` would be empty.
       gate: ({ payload }) =>
         payload.deployment_status.state === "success" &&
-        payload.deployment.environment === "production",
+        payload.deployment.environment === "production" &&
+        !!payload.deployment_status.environment_url,
+      // key on the deployment id, not the commit: the same SHA can be
+      // deployed many times (rollback-forward, redeploy) and each deploy
+      // must get its own smoke test rather than collapsing onto the first.
       idempotencyKey: ({ payload }) =>
-        `deploy-smoke:${payload.repository.full_name}:${payload.deployment.sha}`,
+        `deploy-smoke:${payload.repository.full_name}:${payload.deployment.id}`,
       inputs: ({ payload }) => ({
         repo: payload.repository.full_name,
         sha: payload.deployment.sha,
@@ -55,10 +61,16 @@ export const deploySmoke = defineRun({
         Effect.forEach(
           input.paths,
           (path) =>
+            // No `-f`: with `-f`, curl exits non-zero on HTTP >= 400 and the
+            // command's failure would be a *result* to inspect, not an Effect
+            // failure (see specs/03-dsl.md § sandbox) — but relying on that is
+            // fragile. Without `-f`, curl exits 0 for any HTTP response and
+            // writes the status code to stdout; a non-zero exit then means the
+            // request itself failed (DNS, connection refused). Both are
+            // classified below.
             sandbox.exec({
-              // curl -f exits non-zero on any HTTP >= 400
               command: [
-                "curl", "-fsS", "-o", "/dev/null",
+                "curl", "-sS", "-o", "/dev/null",
                 "-w", "%{http_code}",
                 `${input.baseURL}${path}`,
               ],
@@ -67,7 +79,12 @@ export const deploySmoke = defineRun({
         ),
       );
 
-      const failed = results.filter((r) => r.exitCode !== 0).length;
+      // A probe failed if the request didn't complete (exitCode !== 0) or the
+      // endpoint answered with a non-2xx/3xx status.
+      const failed = results.filter((r) => {
+        const code = Number(r.stdout.trim());
+        return r.exitCode !== 0 || !(code >= 200 && code < 400);
+      }).length;
       yield* io.log(
         failed === 0 ? "info" : "error",
         `deploy-smoke: ${results.length - failed}/${results.length} endpoints healthy`,
