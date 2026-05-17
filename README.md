@@ -18,10 +18,9 @@ BYOC (Cloudflare) CI/CD runs that execute on the Cloudflare platform — Workflo
 | [03-dsl](specs/03-dsl.md) | Effect-TS DSL surface — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
 | [04-gha-integration](specs/04-gha-integration.md) | Two trigger modes (Action / Webhook), HMAC auth, check-runs callback |
 | [05-byoc](specs/05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
-| [07-cost](specs/07-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
-| [pm/timeline](specs/pm/timeline.md) | Phased delivery roadmap — V0 through V4 |
-| [pm/06-v0-plan](specs/pm/06-v0-plan.md) | Walking-skeleton implementation plan — 7-PR sequence for `offload-test` |
+| [06-cost](specs/06-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
+| [pm/plan](specs/pm/plan.md) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |
 
 ## Status
 
-Pre-implementation. Specs only. See [pm/timeline](specs/pm/timeline.md) for phasing and [pm/06-v0-plan](specs/pm/06-v0-plan.md) for the V0 build sequence.
+Pre-implementation. Specs only. See [pm/plan](specs/pm/plan.md) for the delivery roadmap and the V0 build sequence.

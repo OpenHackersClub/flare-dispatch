@@ -1,4 +1,4 @@
-# 07 — Cost Estimation
+# 06 — Cost Estimation
 
 The economic case for FlareDispatch: heavy CI compute billed at Cloudflare serverless rates (per vCPU-second, scale-to-zero) instead of GitHub Actions per-minute rates. This spec lays out the pricing model, worked estimates at two volumes, and a head-to-head with GHA list pricing.
 

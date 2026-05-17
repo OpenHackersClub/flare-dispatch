@@ -16,7 +16,7 @@ Teams work around this with self-hosted runners (which they must operate and sec
 
 | Persona | Pain today | What FlareDispatch gives them |
 |---|---|---|
-| **Small / mid eng team with a heavy test suite** | A Playwright or integration suite that dominates their GHA bill and wall-clock time | Heavy compute moves to CF Containers + Workflows fan-out; GHA keeps the trigger and the cheap jobs. See [07-cost](07-cost.md). |
+| **Small / mid eng team with a heavy test suite** | A Playwright or integration suite that dominates their GHA bill and wall-clock time | Heavy compute moves to CF Containers + Workflows fan-out; GHA keeps the trigger and the cheap jobs. See [06-cost](06-cost.md). |
 | **Team already on Cloudflare (Workers Paid)** | Wants to consolidate infra; doesn't want a second vendor or a runner fleet to operate | One `wrangler deploy` into the account they already pay for. See [05-byoc](05-byoc.md). |
 | **Platform / DevEx engineer** | Owns CI tooling for an org; needs something auditable, typed, and forkable — not opaque YAML | Runs are typed Effect-TS programs the team owns and vendor-edits. See [03-dsl](03-dsl.md). |
 | **OSS maintainer / autonomous-CI user** | Wants PR review, smoke, or scheduled jobs on *every* push without burning GHA minutes or adding workflow files | Webhook mode: the GitHub App fires runs directly, zero GHA minutes, no `.github/workflows/` edits. See [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode). |
@@ -25,7 +25,7 @@ Not for: teams whose CI is already cheap and fast (lint + unit only) — there i
 
 ## Value proposition
 
-1. **Lower cost on heavy CI.** Per-execution compute is billed at CF Container rates (per vCPU-second, scale-to-zero) instead of GHA per-minute. Worked estimates and the head-to-head with GHA list pricing are in [07-cost](07-cost.md).
+1. **Lower cost on heavy CI.** Per-execution compute is billed at CF Container rates (per vCPU-second, scale-to-zero) instead of GHA per-minute. Worked estimates and the head-to-head with GHA list pricing are in [06-cost](06-cost.md).
 2. **No platform ceilings.** Multi-step Workflows have no 6-hour limit; R2 cache and artifacts have no 10 GB cap and user-controlled retention. See [01-architecture § Platform limits](01-architecture.md#platform-limits--design-constraints).
 3. **Cheap, wide fan-out.** Workflows `createBatch` spawns up to 100 children per call, 50,000 concurrent instances per account, scale-to-zero between runs. See [01-architecture § Fan-out model](01-architecture.md#fan-out-model).
 4. **You own the runs.** Runs are typed Effect programs — composable steps, tagged errors, exhaustive matching, retry/Schedule combinators — not stringly-typed YAML. Fork them, vendor-edit them, unit-test them without booting a container. See [02-runs](02-runs.md) and [03-dsl](03-dsl.md).
@@ -79,7 +79,7 @@ After that, each PR fires runs against the team's own Cloudflare bill. The proje
 
 V0 is the slice that proves the model — a `pnpm test` executing in CF Sandbox reports green/red to a PR check. Everything after is incremental and independently shippable: V1 adds fan-out + cache + artifacts, V2 browser e2e + acceptance, V3 long-running + security scans, V4 polish (OpenTelemetry, retention, an `init` CLI).
 
-Project-management detail lives under [`pm/`](pm/): the phased roadmap — scope, runs shipped, and the exit criterion that closes each phase — is in [pm/timeline.md](pm/timeline.md), and the 7-PR V0 build sequence is in [pm/06-v0-plan.md](pm/06-v0-plan.md).
+Project-management detail lives under [`pm/`](pm/): the phased roadmap — scope, runs shipped, and the exit criterion that closes each phase — and the 7-PR V0 build sequence are both in [pm/plan.md](pm/plan.md).
 
 ## Relationship to Cloudflare Workers CI/CD
 
@@ -110,6 +110,5 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 | [03-dsl](03-dsl.md) | Effect-TS DSL surface — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
 | [04-gha-integration](04-gha-integration.md) | Two trigger modes (Action / Webhook), HMAC auth, check-runs callback |
 | [05-byoc](05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
-| [07-cost](07-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
-| [pm/timeline](pm/timeline.md) | Phased delivery roadmap — V0 through V4 |
-| [pm/06-v0-plan](pm/06-v0-plan.md) | Walking-skeleton implementation plan — 7-PR sequence for `offload-test` |
+| [06-cost](06-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
+| [pm/plan](pm/plan.md) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |

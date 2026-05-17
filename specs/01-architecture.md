@@ -2,7 +2,7 @@
 
 FlareDispatch deploys as a **single Worker** — the Dispatcher — into the user's own Cloudflare account. Around it sit three tiers: a *control plane* that routes triggers and orchestrates durable execution, a *data plane* where test code actually runs, and a *storage* tier for cache, artifacts, logs, and metadata.
 
-This spec describes those pieces and the design model that ties them together — components, responsibilities, data flow, and the platform constraints that shape the design. It stays at the conceptual level: concrete binding names, wrangler config, and the D1 DDL are deployment artifacts and live in [05-byoc](05-byoc.md); the V0 build order is in [06-v0-plan](pm/06-v0-plan.md).
+This spec describes those pieces and the design model that ties them together — components, responsibilities, data flow, and the platform constraints that shape the design. It stays at the conceptual level: concrete binding names, wrangler config, and the D1 DDL are deployment artifacts and live in [05-byoc](05-byoc.md); the roadmap and V0 build order are in [pm/plan](pm/plan.md).
 
 ## Components
 

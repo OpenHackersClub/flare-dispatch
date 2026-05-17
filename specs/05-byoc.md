@@ -375,7 +375,7 @@ D1 has no built-in lifecycle. A nightly Cron Trigger Worker (`infra/cron-cleanup
 
 For a small team (200 PRs/month, ~8 min average run wall time, 4-shard matrices), expect **~$8–15/month**; at 10× volume, **~$50–100/month**. Container compute is the dominant variable cost; everything else tends to stay within the included Workers Paid quotas.
 
-The full pricing model, per-execution cost anatomy, both worked estimates, the head-to-head with GHA list pricing, and the cost levers are in [07-cost](07-cost.md).
+The full pricing model, per-execution cost anatomy, both worked estimates, the head-to-head with GHA list pricing, and the cost levers are in [06-cost](06-cost.md).
 
 ## Security posture
 
