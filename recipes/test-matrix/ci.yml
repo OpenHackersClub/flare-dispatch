@@ -16,7 +16,7 @@ jobs:
   test-matrix:
     runs-on: ubuntu-latest
     steps:
-      - uses: openhackersclub/flaredispatch-action@v1
+      - uses: openhackersclub/flare-dispatch-action@v1
         with:
           run: matrix-fanout
           endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}

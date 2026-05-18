@@ -18,7 +18,7 @@ jobs:
   cdp-acceptance:
     runs-on: ubuntu-latest
     steps:
-      - uses: openhackersclub/flaredispatch-action@v1
+      - uses: openhackersclub/flare-dispatch-action@v1
         with:
           run: cdp-acceptance
           endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}

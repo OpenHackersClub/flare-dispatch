@@ -5,7 +5,9 @@
 //
 // Mode: Webhook mode — fires on `deployment_status.success`, no GHA workflow
 //       file. Drop this file into your repo's `runs/` directory; the
-//       FlareDispatch GitHub App webhook does the rest.
+//       FlareDispatch GitHub App webhook does the rest. An Action-mode
+//       alternative (./ci.yml) dispatches the same run from a GitHub Actions
+//       workflow, for repos that cannot install the App.
 // DSL:  see specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";

@@ -3,10 +3,8 @@ import { Code } from "astro:components";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import HeroDiagram from "../components/HeroDiagram.astro";
 import { site } from "../lib/site";
-import githubActionsSrc from "../snippets/github-actions.txt?raw";
-import offloadTestSrc from "../snippets/offload-test.txt?raw";
-import deploySmokeSrc from "../snippets/deploy-smoke.txt?raw";
-import prReviewSrc from "../snippets/pr-review.txt?raw";
+import { recipes } from "../lib/recipes";
+import { readRecipeFile } from "../lib/recipe-files";
 
 const value = [
   {
@@ -26,79 +24,15 @@ const value = [
   },
 ];
 
-const runs = [
-  {
-    id: "RUN 01",
-    title: "offload-test",
-    body: "Run any test command — pnpm test, pytest, cargo test — in a CF Sandbox. The V0 walking skeleton: green/red back to a PR check.",
-  },
-  {
-    id: "RUN 02",
-    title: "matrix-fanout",
-    body: "Fan one command across N shards. Workflows createBatch spawns up to 100 children per call, scale-to-zero between runs.",
-  },
-  {
-    id: "RUN 03",
-    title: "playwright-e2e",
-    body: "Playwright end-to-end suites on Browser Rendering, sharded across the managed browser pool.",
-  },
-  {
-    id: "RUN 04",
-    title: "cdp-acceptance",
-    body: "Boot an app, drive it over the Chrome DevTools Protocol, assert on network / console / heap observations.",
-  },
-  {
-    id: "RUN 05",
-    title: "security-scan",
-    body: "Dependency and vulnerability scans — gated on PRs and on a weekly schedule.",
-  },
-  {
-    id: "RUN 06",
-    title: "custom-sandbox",
-    body: "The escape hatch: an arbitrary container command with cache and R2 artifacts already wired in.",
-  },
-];
-
-const snippets: {
-  id: string;
-  label: string;
-  lang: "yaml" | "ts";
-  blurb: string;
-  code: string;
-}[] = [
-  {
-    id: "github-actions",
-    label: "GitHub Actions step",
-    lang: "yaml",
-    blurb:
-      "Action mode — a GitHub Actions step dispatches a shipped run. About 10 s of GHA time; the heavy work runs on Cloudflare and reports back as a check.",
-    code: githubActionsSrc,
-  },
-  {
-    id: "offload-test",
-    label: "Run a test suite",
-    lang: "ts",
-    blurb:
-      "The walking skeleton — clone a repo, run any test command in a Cloudflare Sandbox, report the exit code straight to a PR check.",
-    code: offloadTestSrc,
-  },
-  {
-    id: "deploy-smoke",
-    label: "Post-deploy smoke test",
-    lang: "ts",
-    blurb:
-      "Webhook mode — fires on deployment_status.success and probes your critical URLs in parallel. Zero GHA minutes, no workflow file.",
-    code: deploySmokeSrc,
-  },
-  {
-    id: "pr-review",
-    label: "AI code review",
-    lang: "ts",
-    blurb:
-      "Webhook mode — a multi-agent AI reviewer fanned out across domains, then deduplicated by a coordinator into one verdict.",
-    code: prReviewSrc,
-  },
-];
+// §03 mirrors the /recipes catalog exactly — each recipe, with its source
+// files read from the monorepo-root recipes/ directory at build time.
+const recipeSnippets = recipes.map((recipe) => ({
+  ...recipe,
+  sources: recipe.files.map((file) => ({
+    file,
+    code: readRecipeFile(recipe.slug, file.name),
+  })),
+}));
 
 const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
 ---
@@ -202,57 +136,71 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
     </div>
   </section>
 
-  <section class="tenets">
-    <div class="container">
-      <div class="tenets__header">
-        <span class="section-marker">§03 / What ships</span>
-        <h2>Six runs in the box. The DSL is the contract.</h2>
-      </div>
-      <div class="tenets__grid">
-        {runs.map((r) => (
-          <article class="tenet">
-            <span class="tenet__id">{r.id}</span>
-            <h3 class="tenet__title">{r.title}</h3>
-            <p class="tenet__rationale">{r.body}</p>
-          </article>
-        ))}
-      </div>
-    </div>
-  </section>
-
   <section class="snippets">
     <div class="container">
       <div class="tenets__header">
-        <span class="section-marker">§04 / The code</span>
-        <h2>Two ways in — a GitHub Actions step, or a typed run.</h2>
+        <span class="section-marker">§03 / The code</span>
+        <h2>Every recipe — toggle the workflow against its typed run.</h2>
       </div>
       <div class="snippets__widget">
-        <div class="snippets__tabs" role="tablist" aria-label="Run examples">
-          {snippets.map((s, i) => (
+        <div class="snippets__tabs" role="tablist" aria-label="Recipes">
+          {recipeSnippets.map((r, i) => (
             <button
               type="button"
               class="snippets__tab"
               role="tab"
-              id={`snippet-tab-${s.id}`}
-              aria-controls={`snippet-panel-${s.id}`}
+              id={`recipe-tab-${r.slug}`}
+              aria-controls={`recipe-panel-${r.slug}`}
               aria-selected={i === 0 ? "true" : "false"}
-              data-snippet-tab={s.id}
+              data-tab="recipe"
+              data-target={`recipe-panel-${r.slug}`}
             >
-              {s.label}
+              {r.label}
             </button>
           ))}
         </div>
-        {snippets.map((s, i) => (
+        {recipeSnippets.map((r, i) => (
           <div
             class="snippets__panel"
             role="tabpanel"
-            id={`snippet-panel-${s.id}`}
-            aria-labelledby={`snippet-tab-${s.id}`}
-            data-snippet-panel={s.id}
+            id={`recipe-panel-${r.slug}`}
+            aria-labelledby={`recipe-tab-${r.slug}`}
+            data-panel="recipe"
             hidden={i !== 0}
           >
-            <p class="snippets__blurb">{s.blurb}</p>
-            <Code code={s.code} lang={s.lang} themes={shikiThemes} defaultColor="light" wrap />
+            <div class="snippets__blurb">
+              <span>{r.useCase}. <em>Recommended: {r.mode} mode.</em></span>
+              <a href={`/recipes/${r.slug}`}>Full recipe →</a>
+            </div>
+            <div class="snippets__subtabs" role="tablist" aria-label={`${r.label} source files`}>
+              {r.sources.map((s, j) => (
+                <button
+                  type="button"
+                  class="snippets__subtab"
+                  role="tab"
+                  id={`file-tab-${r.slug}-${j}`}
+                  aria-controls={`file-panel-${r.slug}-${j}`}
+                  aria-selected={j === 0 ? "true" : "false"}
+                  data-tab={`files-${r.slug}`}
+                  data-target={`file-panel-${r.slug}-${j}`}
+                >
+                  <span class="snippets__subtab-lang">{s.file.lang}</span>
+                  {s.file.name}
+                </button>
+              ))}
+            </div>
+            {r.sources.map((s, j) => (
+              <div
+                class="snippets__subpanel"
+                role="tabpanel"
+                id={`file-panel-${r.slug}-${j}`}
+                aria-labelledby={`file-tab-${r.slug}-${j}`}
+                data-panel={`files-${r.slug}`}
+                hidden={j !== 0}
+              >
+                <Code code={s.code} lang={s.file.lang} themes={shikiThemes} defaultColor="light" wrap />
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -262,26 +210,26 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="manifesto">
     <div class="container">
       <div class="manifesto__header">
-        <span class="section-marker">§05 / Design philosophy</span>
+        <span class="section-marker">§04 / Design philosophy</span>
         <h2>Three bets the design is built on.</h2>
       </div>
       <ol class="manifesto__list">
         <li class="manifesto__item">
-          <span class="manifesto__num">§05.01</span>
+          <span class="manifesto__num">§04.01</span>
           <div>
             <p class="manifesto__statement"><strong>Progressive</strong> offloading.</p>
             <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions stays the trigger and keeps the cheap jobs; nothing is all-or-nothing.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§05.02</span>
+          <span class="manifesto__num">§04.02</span>
           <div>
             <p class="manifesto__statement">Runs are <strong>typed programs</strong>, not YAML.</p>
             <p class="manifesto__body">A run is an Effect-TS program — Schema-typed inputs and outputs, composable steps, tagged errors, exhaustive matching. Fork it, vendor-edit it, unit-test it without booting a container.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§05.03</span>
+          <span class="manifesto__num">§04.03</span>
           <div>
             <p class="manifesto__statement">BYOC <strong>by construction</strong>.</p>
             <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs are yours.</p>
@@ -294,7 +242,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="container">
     <div class="cta-band">
       <div>
-        <span class="section-marker">§06 / Read on</span>
+        <span class="section-marker">§05 / Read on</span>
         <h2>Pre-implementation. The specs are the contract.</h2>
       </div>
       <div class="cta-band__actions">
@@ -305,14 +253,18 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   </section>
 
   <script>
-    for (const tab of document.querySelectorAll("[data-snippet-tab]")) {
+    // Generic tab controller — drives both the recipe tabs and the nested
+    // per-recipe file (yaml / ts) sub-tabs. A tab carries `data-tab="<group>"`
+    // and `data-target="<panelId>"`; panels carry `data-panel="<group>"`.
+    for (const tab of document.querySelectorAll<HTMLElement>("[data-tab]")) {
       tab.addEventListener("click", () => {
-        const id = tab.getAttribute("data-snippet-tab");
-        for (const t of document.querySelectorAll("[data-snippet-tab]")) {
+        const group = tab.getAttribute("data-tab");
+        const target = tab.getAttribute("data-target");
+        for (const t of document.querySelectorAll(`[data-tab="${group}"]`)) {
           t.setAttribute("aria-selected", String(t === tab));
         }
-        for (const p of document.querySelectorAll("[data-snippet-panel]")) {
-          p.toggleAttribute("hidden", p.getAttribute("data-snippet-panel") !== id);
+        for (const p of document.querySelectorAll<HTMLElement>(`[data-panel="${group}"]`)) {
+          p.toggleAttribute("hidden", p.id !== target);
         }
       });
     }
