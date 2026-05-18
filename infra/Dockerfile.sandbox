@@ -1,0 +1,18 @@
+# FlareDispatch V0 Sandbox container image.
+#
+# The `@cloudflare/sandbox` SDK's `Sandbox` Durable Object speaks an HTTP/RPC
+# protocol to a server process baked into the container — so the container
+# image MUST be built from the matching `docker.io/cloudflare/sandbox` base,
+# not a bare `node:lts-slim` (which has no sandbox server and would fail every
+# `exec`). The base already ships Node + git + curl, so `offload-test`'s
+# `git clone` / `pnpm test` run unmodified.
+#
+# The image tag is pinned to the SDK version in package.json
+# (`@cloudflare/sandbox@0.10.1`) — bump both together.
+#
+# Cloudflare Containers pulls only from registry.cloudflare.com, docker.io, or
+# Amazon ECR; docker.io is in scope (specs/05-byoc.md § Wrangler config).
+#
+# Spec: specs/pm/plan.md § 6 "Sandbox / Containers binding API".
+
+FROM docker.io/cloudflare/sandbox:0.10.1

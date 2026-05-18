@@ -5,6 +5,10 @@
   "description": "FlareDispatch starter runs — defineRun programs riding on @flare-dispatch/core.",
   "type": "module",
   "license": "MIT",
+  "exports": {
+    ".": "./index.ts",
+    "./offload-test": "./offload-test.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
