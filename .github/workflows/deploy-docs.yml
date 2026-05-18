@@ -49,7 +49,11 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/docs
-        run: pnpm install --frozen-lockfile
+        # --ignore-workspace: apps/docs is a standalone project with its own
+        # lockfile and is NOT a member of the root pnpm-workspace.yaml. Without
+        # this flag, pnpm walks up, finds the root workspace, and installs that
+        # instead — leaving apps/docs/node_modules empty (astro: not found).
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Type-check
         working-directory: apps/docs
