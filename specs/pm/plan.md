@@ -21,7 +21,7 @@ timeline
 | Phase | Scope | Runs shipped | Exit criterion |
 |---|---|---|---|
 | **V0 — Walking skeleton** | Dispatcher Worker + one Workflow + one Sandbox + check-run callback | `offload-test` | A `pnpm test` executing in CF Sandbox reports green/red to a PR check |
-| **V1 — Fan-out + cache + artifacts** | Queues for matrix; R2 cache helper; R2 artifact upload with signed URLs | `+ matrix-fanout`, `+ cache-pnpm`, `+ r2-artifacts` (building blocks) | 8-shard test matrix on CF beats GHA wall time on a real repo |
+| **V1 — Fan-out + cache + artifacts** | Queues for matrix; R2 cache helper; R2 artifact upload with signed URLs | `+ matrix-fanout`, `+ cache-pnpm`, `+ r2-artifacts` (primitives) | 8-shard test matrix on CF beats GHA wall time on a real repo |
 | **V2 — Browser e2e + acceptance** | Browser Rendering integration; CDP observation helper | `+ playwright-e2e`, `+ cdp-acceptance` | Sharded Playwright suite reports per-shard status; gctrl-board acceptance suite executes |
 | **V3 — Long-running + security** | Step chaining for suites past the Workflow step limit; security scan runs | `+ security-scan`, `+ custom-sandbox` | 30-min suite completes; npm audit / cargo audit / trivy run in Sandbox |
 | **V4 — Polish** | OpenTelemetry export, Logpush integration, retention policies, `flare-dispatch init` CLI | — | Time-to-first-green-check < 30 min on a fresh CF account |
@@ -98,12 +98,19 @@ flare-dispatch/
 │   │   │   ├── step.ts                         # step() — wraps an Effect in a Workflow checkpoint
 │   │   │   ├── errors.ts                       # Schema.TaggedError classes from 03-dsl § Errors
 │   │   │   ├── context.ts                      # RunContext = Context.Tag union of services
-│   │   │   ├── services/
+│   │   │   ├── services/                       # capabilities — one Context.Tag per namespace
 │   │   │   │   ├── sandbox.ts                  # Context.Tag for SandboxService + interface
 │   │   │   │   ├── artifact.ts                 # Context.Tag for ArtifactService + interface
 │   │   │   │   ├── io.ts                       # Context.Tag for IOService + interface
 │   │   │   │   ├── checks.ts                   # Context.Tag for ChecksService (GitHub check-runs)
 │   │   │   │   └── executions.ts               # Context.Tag for ExecutionsService (D1 metadata writes)
+│   │   │   ├── primitives/                      # reusable compositions — 03-dsl § Primitives
+│   │   │   │   ├── index.ts                    # @flare-dispatch/core/primitives public exports
+│   │   │   │   ├── workspace.ts                # acquire + clone (+ optional cached install)
+│   │   │   │   ├── install-cached.ts           # cache.restoreOr keyed on lockfile hash
+│   │   │   │   ├── sharded.ts                  # count-and-index parallel fan-out
+│   │   │   │   ├── boot-app.ts                 # runDetached + waitForPort
+│   │   │   │   └── probe-http.ts               # curl-and-classify endpoint probe
 │   │   │   └── fakes/                          # in-memory Layers for unit tests
 │   │   │       ├── sandbox-fake.ts             # records exec calls; returns canned ExecResult
 │   │   │       ├── artifact-fake.ts            # in-memory map of name → fake signed URL
@@ -270,5 +277,5 @@ If steps 4, 6, 7, and 10 all pass, V0 is complete and the [roadmap](#roadmap) V0
 - **Artifact endpoint scope ambiguity.** [03-dsl § artifact](../03-dsl.md#artifact) describes `artifact.upload` as a building block that returns a signed URL embedded in the check-run summary. For V0 we use it for logs only — but the dispatcher endpoint `GET /v1/artifacts/:execution/:name` still needs to exist so the check-run summary's "view logs" link works. PR5 covers this; just noting the scope creep risk.
 - **GitHub App per-installation token cache eviction.** [04-gha-integration § Check-runs callback](../04-gha-integration.md#check-runs-callback-shared-by-both-modes) caches installation tokens in Worker memory with KV fallback. V0's PR6 ships memory-only — if the Worker is recycled mid-execution, the next check-run write does a fresh JWT exchange. Acceptable for V0 throughput; flag for V1.
 - **Run replay determinism.** [03-dsl § step Rules](../03-dsl.md#step) requires non-determinism to flow through `io.now` / `io.uuid` so Workflow checkpoint replay is consistent. The `offload-test` run is simple enough that this is easy to enforce; PR3's unit test should explicitly assert no direct `Date.now()` / `crypto.randomUUID()` calls in the run body (lint or grep guard).
-- **HMAC verification surface.** [04-gha-integration § Dispatch request body](../04-gha-integration.md#dispatch-request-body) and [05-byoc § Secrets](../05-byoc.md#secrets) both reference `HMAC_SECRET`, but neither pins the canonicalization of the signed body (raw bytes vs. JSON-normalized). PR5 must lock this down — recommend signing **raw request bytes** as received, no normalization — and document in `apps/dispatcher/src/hmac.ts`.
+- **HMAC verification surface.** [04-gha-integration § Dispatch body](../04-gha-integration.md#dispatch-body) and [05-byoc § Secrets](../05-byoc.md#secrets) both reference `HMAC_SECRET`, but neither pins the canonicalization of the signed body (raw bytes vs. JSON-normalized). PR5 must lock this down — recommend signing **raw request bytes** as received, no normalization — and document in `apps/dispatcher/src/hmac.ts`.
 - **Workflow step duration vs. run wall-time.** `offload-test` declares `maxDurationSec` at the run level (per [02-runs § 1](../02-runs.md#1-offload-test)), but a single `sandbox.exec` step is also bounded by the Workflow step duration ceiling. For V0 the run wall-time is shorter than the step ceiling so this is moot, but [01-architecture § Long-running test handling](../01-architecture.md#long-running-test-handling) introduces chunked/detached execution that V0 explicitly does **not** implement. *Open question:* should the run error tag for "command exceeded the Workflow step ceiling" be a distinct `StepDurationExceeded` or fold into `ExecTimeout`? Plan currently folds — flag for V1 revisit.

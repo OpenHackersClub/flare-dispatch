@@ -1,28 +1,13 @@
-# FlareDispatch
+<h1 align="center">FlareDispatch</h1>
 
-BYOC CI/CD that offloads the expensive half of CI onto Cloudflare — Workflows for orchestration, Sandbox/Containers for execution, Browser Rendering for e2e tests, R2 for cache and artifacts.
+<p align="center">Offload the expensive half of GitHub Actions onto Cloudflare.</p>
 
-GitHub Actions stays the trigger and PR gate; runs take the heavy compute — Playwright e2e, acceptance suites, large matrix fan-outs, long-running scans. Runs are typed Effect-TS programs (composable steps, tagged errors, exhaustive matching), not YAML, and `wrangler deploy` into your own Cloudflare account — no multi-tenant SaaS.
+<p align="center"><a href="https://flare-dispatch.openhackers.club"><b>Documentation</b></a></p>
 
-**Docs site → [flare-dispatch.openhackers.club](https://flare-dispatch.openhackers.club)** — specs and recipes, deployed from `apps/docs/` to Cloudflare Pages on every push to `main`.
+---
 
-## Specs
+BYOC CI/CD that moves the heavy compute off GitHub Actions and onto a Cloudflare stack you own — Workflows for orchestration, Containers for execution, Browser Rendering for e2e, R2 for cache and artifacts. GitHub Actions stays the trigger and PR gate; runs take the expensive jobs — agentic code review, Playwright e2e, acceptance suites, matrix fan-outs, security scans.
 
-| | |
-|---|---|
-| [Product Requirements](https://flare-dispatch.openhackers.club/docs/prd) | Problem, value proposition, non-goals, roadmap |
-| [Architecture](https://flare-dispatch.openhackers.club/docs/01-architecture) | Components, lifecycle, storage, fan-out, platform limits |
-| [Runs](https://flare-dispatch.openhackers.club/docs/02-runs) | Run catalog — inputs, outputs, CF primitives |
-| [DSL](https://flare-dispatch.openhackers.club/docs/03-dsl) | Effect-TS DSL — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
-| [GHA Integration](https://flare-dispatch.openhackers.club/docs/04-gha-integration) | Trigger modes (Action / Webhook), HMAC auth, check-runs callback |
-| [BYOC Deployment](https://flare-dispatch.openhackers.club/docs/05-byoc) | Bindings, secrets, wrangler config, GitHub App, local dev |
-| [Cost](https://flare-dispatch.openhackers.club/docs/06-cost) | Cost model, worked estimates, head-to-head with GHA pricing |
-| [Roadmap & V0 Plan](https://flare-dispatch.openhackers.club/docs/pm/plan) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |
+Runs are typed Effect-TS programs — composable steps, tagged errors, exhaustive matching — not YAML, written against a layered DSL: capabilities → primitives → recipes. `wrangler deploy` into your own Cloudflare account; no multi-tenant SaaS.
 
-## Recipes
-
-Copy-paste [recipes](https://flare-dispatch.openhackers.club/recipes) for real CI use cases — browser tests, test matrices, CDP acceptance, security scans, deploy smoke, AI code review. Each ships both a GitHub Actions workflow and a typed run.
-
-## Status
-
-Pre-implementation — specs only. See the [roadmap](https://flare-dispatch.openhackers.club/docs/pm/plan) for the V0 build sequence.
+**Status** — pre-implementation; the specs are the contract.

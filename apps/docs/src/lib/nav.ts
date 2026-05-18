@@ -39,12 +39,12 @@ export const nav: NavSection[] = [
       {
         slug: "02-runs",
         label: "Runs",
-        blurb: "Run catalog — inputs, outputs, and CF primitives for each shipped run.",
+        blurb: "Run catalog — inputs, outputs, and platform primitives for each shipped run.",
       },
       {
         slug: "03-dsl",
         label: "DSL",
-        blurb: "Effect-TS DSL surface — defineRun, step, sandbox, browser, cache, artifact.",
+        blurb: "Effect-TS DSL — defineRun, step, capabilities, and the primitives recipes ride on.",
       },
       {
         slug: "04-gha-integration",

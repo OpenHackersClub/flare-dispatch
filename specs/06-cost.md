@@ -110,7 +110,7 @@ This is a list-price comparison, not a benchmark. Actual savings depend on suite
 Ways a run author or operator reduces the bill:
 
 - **Right-size the container.** `standard-2` is the default; a lint-only run can drop to `basic` (1/4 vCPU, 1 GiB). Instance types are listed in [05-byoc § Wrangler config](05-byoc.md#wrangler-config).
-- **Cache aggressively.** The `cache-*` building blocks ([02-runs § cache](02-runs.md#building-block-cache-pnpm--npm--cargo--uv)) skip re-install on R2 cache hits — install time is often a third of a run's wall time.
+- **Cache aggressively.** The `installCached` primitive ([02-runs § cache](02-runs.md#primitive-cache-pnpm--npm--cargo--uv), [03-dsl § installCached](03-dsl.md#installcached)) skips re-install on R2 cache hits — install time is often a third of a run's wall time.
 - **Prefer `cf-browser-rendering` for short browser tests.** It uses the included browser-hours; `in-container` Playwright trades that for container vCPU-seconds. See [02-runs § playwright-e2e](02-runs.md#3-playwright-e2e).
 - **Set R2 lifecycle retention.** Logs at 14 days, artifacts at 90, cache at 30 keeps R2 storage flat. Policy in [05-byoc § Retention and cleanup](05-byoc.md#retention-and-cleanup).
 - **Gate Webhook-mode runs.** A run's `gate` ([04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode)) skips drafts, bots, and `skip-*`-labelled PRs so expensive runs don't fire on every push.

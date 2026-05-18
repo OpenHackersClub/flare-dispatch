@@ -3,6 +3,10 @@
 // Use case: after a deploy succeeds, hit the live URL and a few critical
 // endpoints; fail a check-run on the deployed SHA if anything is down.
 //
+// The probe-and-classify loop is the `probeHttp` primitive, so this recipe
+// is just trigger config + a one-line health check. See specs/03-dsl.md
+// § Primitives.
+//
 // Mode: Webhook mode — fires on `deployment_status.success`, no GHA workflow
 //       file. Drop this file into your repo's `runs/` directory; the
 //       FlareDispatch GitHub App webhook does the rest. An Action-mode
@@ -11,7 +15,8 @@
 // DSL:  see specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
-import { defineRun, step, sandbox, io } from "@flare-dispatch/core";
+import { defineRun, step, io } from "@flare-dispatch/core";
+import { probeHttp } from "@flare-dispatch/core/primitives";
 
 export const deploySmoke = defineRun({
   name: "deploy-smoke",
@@ -59,40 +64,19 @@ export const deploySmoke = defineRun({
 
   run: (input) =>
     Effect.gen(function* () {
-      const results = yield* step("probe", () =>
-        Effect.forEach(
-          input.paths,
-          (path) =>
-            // No `-f`: with `-f`, curl exits non-zero on HTTP >= 400 and the
-            // command's failure would be a *result* to inspect, not an Effect
-            // failure (see specs/03-dsl.md § sandbox) — but relying on that is
-            // fragile. Without `-f`, curl exits 0 for any HTTP response and
-            // writes the status code to stdout; a non-zero exit then means the
-            // request itself failed (DNS, connection refused). Both are
-            // classified below.
-            sandbox.exec({
-              command: [
-                "curl", "-sS", "-o", "/dev/null",
-                "-w", "%{http_code}",
-                `${input.baseURL}${path}`,
-              ],
-            }),
-          { concurrency: input.paths.length },
-        ),
+      // `probeHttp` hits every path in parallel and classifies each as
+      // healthy or failed (non-2xx/3xx, or a request that never completed —
+      // see the primitive's note on curl exit codes).
+      const probe = yield* step("probe", () =>
+        probeHttp({ baseURL: input.baseURL, paths: input.paths }),
       );
 
-      // A probe failed if the request didn't complete (exitCode !== 0) or the
-      // endpoint answered with a non-2xx/3xx status.
-      const failed = results.filter((r) => {
-        const code = Number(r.stdout.trim());
-        return r.exitCode !== 0 || !(code >= 200 && code < 400);
-      }).length;
       yield* io.log(
-        failed === 0 ? "info" : "error",
-        `deploy-smoke: ${results.length - failed}/${results.length} endpoints healthy`,
+        probe.failed === 0 ? "info" : "error",
+        `deploy-smoke: ${probe.checked - probe.failed}/${probe.checked} endpoints healthy`,
       );
 
       // A non-zero `failed` count fails the check-run on the deployed SHA.
-      return { checked: results.length, failed };
+      return { checked: probe.checked, failed: probe.failed };
     }),
 });

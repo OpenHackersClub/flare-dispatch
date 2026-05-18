@@ -5,11 +5,16 @@
 // Protocol, runs the acceptance suite, and uploads screenshots + a trace as
 // artifacts (see ./README.md — those can be attached to the PR).
 //
+// This recipe rides on two primitives — `workspace` (acquire + clone +
+// cached install) and `bootApp` (detached run + wait-for-port) — so the file
+// carries only the CDP-specific logic. See specs/03-dsl.md § Primitives.
+//
 // This is the shipped `cdp-acceptance` run, reproduced here so the recipe is
 // self-contained. Spec: specs/02-runs.md § 4. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
 import { defineRun, step, sandbox, browser, artifact, io } from "@flare-dispatch/core";
+import { workspace, bootApp } from "@flare-dispatch/core/primitives";
 
 const Input = Schema.Struct({
   repo: Schema.String,
@@ -34,22 +39,21 @@ export const cdpAcceptance = defineRun({
 
   run: (input) =>
     Effect.gen(function* () {
-      const container = yield* sandbox.acquire({});
-
-      const dir = yield* step("checkout", () =>
-        sandbox.git.clone({ repo: input.repo, sha: input.sha, container }),
+      // Acquire a container, clone the target SHA, and install dependencies
+      // from the R2-backed cache — the whole checkout dance is one primitive.
+      const { container, dir } = yield* step("checkout", () =>
+        workspace({ repo: input.repo, sha: input.sha, install: true }),
       );
 
-      yield* step("install", () =>
-        sandbox.exec({ cwd: dir, container, command: "pnpm install --frozen-lockfile" }),
-      );
-
-      // Boot the app in detached mode and wait for its port to open.
-      const app = yield* step("boot-app", () =>
-        sandbox.runDetached({ cwd: dir, container, command: input.appBootCommand }),
-      );
-      yield* step("wait-ready", () =>
-        sandbox.waitForPort({ handle: app, port: input.appPort, timeoutSec: 120 }),
+      // Boot the app in a detached container and block until its port opens.
+      yield* step("boot-app", () =>
+        bootApp({
+          container,
+          dir,
+          command: input.appBootCommand,
+          port: input.appPort,
+          timeoutSec: 120,
+        }),
       );
 
       // Attach Browser Rendering over CDP and run the acceptance suite. The

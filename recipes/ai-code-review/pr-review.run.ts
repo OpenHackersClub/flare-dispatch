@@ -10,9 +10,11 @@
 //       GitHub Actions workflow, for repos that cannot install the App.
 // DSL:  see specs/03-dsl.md (uses `config` + `io.priorExecution`); inline
 //       findings are posted as check-run annotations — specs/04-gha-integration.md.
+//       The checkout rides on the `workspace` primitive — 03-dsl § Primitives.
 
 import { Effect, Schema, Match, Option } from "effect";
 import { defineRun, step, sandbox, config, io } from "@flare-dispatch/core";
+import { workspace } from "@flare-dispatch/core/primitives";
 
 // Local helper — true if the PR carries the given label. The webhook
 // payload's pull_request.labels is an array of { name }.
@@ -106,9 +108,11 @@ export const prReview = defineRun({
 
   run: (input) =>
     Effect.gen(function* () {
-      // 1. Check out the PR head.
-      const repoDir = yield* step("checkout", () =>
-        sandbox.git.clone({ repo: input.repo, sha: input.sha }),
+      // 1. Check out the PR head. The `review-agent` CLI is baked into the
+      //    run's image, so the checkout needs no dependency install — just a
+      //    container + clone, which is `workspace` with `install` off.
+      const { container, dir: repoDir } = yield* step("checkout", () =>
+        workspace({ repo: input.repo, sha: input.sha }),
       );
 
       // 2. Build the reviewable diff into DIFF — a *directory* of per-file
@@ -119,6 +123,7 @@ export const prReview = defineRun({
       yield* step("prepare-diff", () =>
         sandbox.exec({
           cwd: repoDir,
+          container,
           command: [
             "review-agent", "diff",
             "--base", input.baseSha,
@@ -132,6 +137,7 @@ export const prReview = defineRun({
       const tierResult = yield* step("classify-risk", () =>
         sandbox.exec({
           cwd: repoDir,
+          container,
           command: ["review-agent", "risk-tier", "--diff", DIFF],
         }),
       );
@@ -189,6 +195,7 @@ export const prReview = defineRun({
           (agent) =>
             sandbox.exec({
               cwd: repoDir,
+              container,
               command: [
                 "review-agent", "run", agent,
                 "--diff", DIFF,
@@ -210,6 +217,7 @@ export const prReview = defineRun({
           step("seed-prior", () =>
             sandbox.exec({
               cwd: repoDir,
+              container,
               command: [
                 "review-agent", "seed-previous",
                 "--out", "/tmp/previous.json",
@@ -225,6 +233,7 @@ export const prReview = defineRun({
       const review = yield* step("coordinate", () =>
         sandbox.exec({
           cwd: repoDir,
+          container,
           command: [
             "review-agent", "coordinate",
             "--in", "/tmp/findings",

@@ -2,6 +2,38 @@
 
 Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and six capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes.
 
+## The layering: capabilities, primitives, recipes
+
+The DSL is not one flat surface. It is three tiers, each built from the one below, and the distinction is what keeps run code small:
+
+```mermaid
+flowchart TB
+  subgraph L0[Effect-TS]
+    EFF[Schema · Layer · tagged errors · Schedule]
+  end
+  subgraph L1[Capabilities — @flare-dispatch/core]
+    CAP["sandbox · browser · cache<br/>artifact · io · config"]
+  end
+  subgraph L2[Primitives — @flare-dispatch/core/primitives]
+    PRIM["workspace · installCached · sharded<br/>bootApp · probeHttp"]
+  end
+  subgraph L3[Recipes — your repo]
+    REC["pr-review · playwright-e2e · cdp-acceptance<br/>matrix-fanout · security-scan · deploy-smoke"]
+  end
+  EFF --> CAP
+  CAP --> PRIM
+  PRIM --> REC
+  CAP -.->|escape hatch| REC
+```
+
+- **Capabilities** are the atomic, side-effectful surface — one `Context.Tag` service per namespace, each backed by a swappable Layer (real / dev / test). A capability does *one* thing: launch a container, exec a command, upload a blob. It has no opinion about how CI work is shaped.
+- **Primitives** are reusable Effect-TS compositions the DSL ships *on top of* capabilities — `workspace`, `installCached`, `sharded`, `bootApp`, `probeHttp`. Every recipe was re-deriving the same checkout → install → fan-out → upload shapes by hand; a primitive is that shape, named once, typed once, tested once. **This is the DX layer**: the DSL "creates primitives" so a recipe author rides them instead of rebuilding them. Primitives are still just Effects — composable, layer-swappable, unit-testable — see [§ Primitives](#primitives).
+- **Recipes** are `defineRun` programs that ride on primitives and carry only the logic unique to *that* CI use case. A recipe drops to raw capabilities only for the part no primitive covers — the escape hatch is always open, but the common path is a primitive call.
+
+The rest of this spec walks the tiers bottom-up: `defineRun` / `step` (the run frame), the six capability namespaces, then the primitives built from them. The worked recipes that ride on this stack are in [recipes/](../recipes/). How each tier is shipped — `@flare-dispatch/core` as a pinned library, recipes as copy-paste — and what that split means for the supply chain is [§ Distribution and supply chain](#distribution-and-supply-chain).
+
+> **Terminology.** "Primitive" in this spec always means a DSL primitive (this layering). The Cloudflare building blocks a run consumes — Workers, Workflows, Containers, R2, D1 — are called **platform primitives** to keep the two apart; [02-runs](02-runs.md) tags each run with the platform primitives it touches.
+
 ## Why Effect-TS and not YAML / a custom config schema
 
 - **Typed inputs and outputs end-to-end.** `Schema` defines the contract; TypeScript checks the run body against it. Misspell a field and the build fails — not on shard 5 at 2am.
@@ -254,7 +286,7 @@ namespace sandbox {
   // Convenience: clone a repo into a fresh container, return its path.
   declare const git: {
     clone: (opts: { repo: string; sha: string; container?: Container }) =>
-      Effect.Effect<string /* repoDir */, GitFailed>;
+      Effect.Effect<string /* repoDir */, CheckoutFailed>;
   };
 
   // Execute a command in a container.
@@ -395,6 +427,148 @@ namespace config {
 
 `config` is read-only from a run — runs never write it; operators edit `CONFIG_KV` directly (or through a small admin surface). Because every failure mode degrades gracefully — an unset key is `undefined`, a malformed JSON value is `Option.none()` — a run that reads `config` **must always carry a sensible default**. Config *tunes* behavior; it does not *gate* it. This is the seam for the kind of live model-routing / circuit-breaker control plane a multi-agent run wants (see [recipes/ai-code-review](../recipes/ai-code-review/)) without coupling routing decisions to a redeploy.
 
+## Primitives
+
+Capabilities are atomic. Recipes are not — every recipe needs to *check out a repo*, most need to *fan out across shards*, several need to *boot the app under test* or *install dependencies with a cache*. Left to raw capabilities, every recipe re-derives the same five-line `acquire → clone → install` dance, the same `Effect.forEach(Array.from({ length: n }, …), …, { concurrency })` fan-out, the same curl-and-classify probe loop.
+
+**Primitives** are those recurring shapes, lifted out of the recipes and shipped by the DSL. A primitive is a plain Effect-TS function: it composes capabilities (and other primitives), threads the same `RunContext`, fails with the same tagged errors, and swaps Layers for tests exactly like a capability call. It adds no new runtime — only a smaller, higher-level surface to write recipes against.
+
+Primitives live in `@flare-dispatch/core/primitives` — their source is [`packages/core/src/primitives/`](../packages/core/src/primitives/), the `./primitives` sub-path of the core package ([`packages/core/`](../packages/core/)). A recipe imports the frame and capabilities from `@flare-dispatch/core` and the compositions from `@flare-dispatch/core/primitives` — the two import paths make the layer boundary visible at the top of every recipe file.
+
+```ts
+import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
+import { workspace, sharded } from "@flare-dispatch/core/primitives";
+```
+
+### `workspace`
+
+Acquire a container and clone a repo into it — the opening move of nearly every recipe — optionally followed by a cached dependency install. Returns the container handle and the checkout directory together so the rest of the run threads one value, not two.
+
+```ts
+type Workspace = { container: Container; dir: string };
+
+declare const workspace: (opts: {
+  repo: string;
+  sha: string;
+  image?: string;                            // container image override
+  install?: boolean;                         // run installCached after clone
+}) => Effect.Effect<
+  Workspace,
+  ContainerLaunchFailed | CheckoutFailed | CacheError | ExecFailed,
+  RunContext
+>;
+```
+
+```ts
+// packages/core/src/primitives/workspace.ts (sketch)
+export const workspace = (opts) =>
+  Effect.gen(function* () {
+    const container = yield* sandbox.acquire({ image: opts.image });
+    const dir = yield* sandbox.git.clone({
+      repo: opts.repo, sha: opts.sha, container,
+    });
+    if (opts.install) yield* installCached({ container, dir });
+    return { container, dir };
+  });
+```
+
+### `installCached`
+
+The `cache-pnpm` / `npm` / `cargo` / `uv` building block from [02-runs](02-runs.md#primitive-cache-pnpm--npm--cargo--uv): detect the lockfile, derive a content-addressed cache key, restore the dependency tree from R2 or run the install on a miss, then save. Idempotent across step replay. `workspace({ install: true })` is the common caller; a recipe that needs to install at a non-standard point calls it directly.
+
+```ts
+declare const installCached: (opts: {
+  container: Container;
+  dir: string;
+  tool?: "pnpm" | "npm" | "cargo" | "uv";    // default: auto-detect from lockfile
+}) => Effect.Effect<void, CacheError | ExecFailed, RunContext>;
+```
+
+### `sharded`
+
+The fan-out shape: run `count` parallel copies of a body, each handed its `{ index, total }` (1-based), bounded by `concurrency`. Collapses the hand-rolled `Effect.forEach(Array.from({ length: n }, (_, i) => i + 1), …, { concurrency })` that every matrix-style recipe otherwise repeats, and gives the index plumbing one canonical shape.
+
+```ts
+declare const sharded: <A, E>(opts: {
+  count: number;
+  concurrency?: number;                      // default: count
+  body: (shard: { index: number; total: number }) =>
+    Effect.Effect<A, E, RunContext>;
+}) => Effect.Effect<readonly A[], E, RunContext>;
+```
+
+Fan-out across a *list* of heterogeneous items (scanners, review agents) stays plain `Effect.forEach` — `sharded` is specifically the count-and-index case. The DSL does not wrap what Effect already expresses cleanly.
+
+### `bootApp`
+
+Start a long-running process in a detached container and block until it is accepting connections — `sandbox.runDetached` followed by `sandbox.waitForPort`. The "boot the app under test" preamble of every acceptance-style recipe, as one call.
+
+```ts
+declare const bootApp: (opts: {
+  container: Container;
+  dir: string;
+  command: string | readonly string[];
+  port: number;
+  timeoutSec?: number;                       // wait-for-port ceiling, default 120
+}) => Effect.Effect<DetachedHandle, ContainerLaunchFailed | PortNeverOpened, RunContext>;
+```
+
+### `probeHttp`
+
+Hit a set of paths under a base URL and classify each as healthy or not — a non-2xx/3xx status or a request that never completed counts as failed. Codifies the curl-and-classify loop a smoke test would otherwise spell out, including the `-f`-vs-no-`-f` curl exit-code subtlety (see [§ sandbox](#sandbox)).
+
+```ts
+type ProbeResult = { path: string; status: number; ok: boolean };
+
+declare const probeHttp: (opts: {
+  baseURL: string;
+  paths: readonly string[];
+  container?: Container;
+  okStatus?: (code: number) => boolean;      // default: 200 ≤ code < 400
+}) => Effect.Effect<
+  { checked: number; failed: number; results: readonly ProbeResult[] },
+  ExecFailed,
+  RunContext
+>;
+```
+
+### Adding a primitive
+
+A new primitive earns its place when a shape recurs across **two or more** recipes and is awkward enough that copy-paste drifts. It must: compose only capabilities and existing primitives (no new Layer, no new `Context.Tag`); fail with existing tagged errors from [§ Errors](#errors); and stay a pure Effect so it inherits Layer-swapping and the unit-test story unchanged. A one-off shape used by a single recipe stays inline in that recipe — premature primitives are just indirection.
+
+## Distribution and supply chain
+
+The three tiers ship two different ways, and the split is deliberate.
+
+**`@flare-dispatch/core` is a library — pinned, not copied.** Capabilities, `defineRun`, `step`, the `runEffect` shim, the Layer wiring, and the [primitives](#primitives) are one npm package. It is framework code with a real runtime: a bug in `step`'s checkpoint logic or in `installCached`'s cache key is a correctness *and* a security failure, and you want it fixed in one `pnpm update`, not forked across a hundred repos. You trust `@flare-dispatch/core` the way you trust `effect` or `wrangler` — it is the irreducible trusted base.
+
+**Recipes are copy-paste — owned, not depended on.** A recipe is your CI *policy*: which risk tier runs which agents, which scanners fire, where an approval gate sits. Divergence between repos is the point. The [recipes/](../recipes/) directory is a starter library you copy in, edit, and review in your own PRs; recipes are never an npm dependency.
+
+### Why primitives stay in the library
+
+Primitives are the one layer where shipping a library versus letting each project generate its own — the [shadcn](https://ui.shadcn.com/) model — is a real question. For FlareDispatch the answer is the library, for three reasons.
+
+**A primitive is a sub-path of a package you already fully trust.** `@flare-dispatch/core/primitives` is `packages/core/src/primitives/`, not a separate package. No recipe can be written without `@flare-dispatch/core` — `defineRun` and `step` live there, and `step` runs in the high-privilege Workflow alongside the D1 / R2 / KV bindings. Whether `workspace` ships *inside* that package or is copied into your repo, the trusted set is identical. Copying primitives out removes nothing from the attack surface — it only makes `workspace` un-patchable while `step`, which is strictly more dangerous, stays live.
+
+**Pinning already delivers what copy-paste promises.** The control that matters is depending on an *exact* version of `@flare-dispatch/core` (no caret range), committing the lockfile, and installing with `--frozen-lockfile`. A pinned `@flare-dispatch/core@1.4.2` freezes `workspace` exactly as hard as a file checked into your repo would — and freezes `step` too, which copy-paste cannot. Copy-paste primitives is a weaker form of that control applied to a smaller slice of the code.
+
+**A primitive has a *correct* implementation, not a *preferred* one.** The shadcn model suits code where divergence is taste — a `<Button>` should look the way you want. A primitive is logic with one right answer: `installCached`'s content-addressed cache key is a *security property*, and fifty hand-tweaked copies are fifty subtly-broken cache-integrity guarantees. The DSL ships one tested implementation on purpose.
+
+The library path has one genuine cost: an upgrade lands as a `1.4.2 → 1.4.3` lockfile diff, not as reviewable source — where copy-paste would surface the change as a code diff in your PR. If your threat model requires reviewing the source of every dependency change, read the release diff when you bump (the primitives are a handful of small files — [`packages/core/src/primitives/`](../packages/core/src/primitives/)), or eject.
+
+### Ejecting
+
+A high-assurance deployment that must own the primitive source outright can **eject**: the V4 `init` CLI ([pm/plan](pm/plan.md)) exposes an `eject primitives` command that copies the primitive sources into the repo and rewrites recipe imports from `@flare-dispatch/core/primitives` to the local path. Ejecting is opt-in and one-way — it trades patchability for an in-repo audit trail. It is deliberately not the default: a default of ejected would make the primitives un-patchable for every deployment in order to serve the few that need it.
+
+### The surface that actually matters
+
+None of the hardening below is the library-versus-copy-paste question, and all of it outranks it.
+
+- **Provenance.** `@flare-dispatch/core` is published with [npm provenance attestations](https://docs.npmjs.com/generating-provenance-statements) from CI, so a consumer can verify the package was built from the tagged source. Consumers pin exact versions and install `--frozen-lockfile`.
+- **Transitive dependencies.** A recipe author audits five small primitives in minutes; nobody audits four hundred transitive packages. `@flare-dispatch/core`'s own dependency tree is the real surface — keep it minimal, and treat each new transitive dependency as a reviewable change.
+- **Cache poisoning — the FlareDispatch-specific vector.** `installCached` writes a dependency tree to R2 that is restored into *every subsequent container* for that repo. Content-addressed keys (lockfile hash + image digest) make cross-environment poisoning impossible only if writes to the cache prefix are themselves trusted: treat a restored tree as verified by its *content*, not by its key path — record the archive's own digest at save and check it on restore. See [01-architecture § R2 layout](01-architecture.md#r2-layout).
+- **The Dispatcher holds the crown jewels.** The GitHub App private key and the HMAC secret are Worker Secrets on the Dispatcher; a compromise there reaches every repository the App is installed on. Its dependency hygiene and secret handling outrank every concern above. See [05-byoc](05-byoc.md).
+
 ## Errors
 
 All run errors are `Schema.TaggedError`s, defined in `@flare-dispatch/core/errors`:
@@ -418,6 +592,11 @@ export class ExecTimeout extends Schema.TaggedError<ExecTimeout>()(
 export class ContainerLaunchFailed extends Schema.TaggedError<ContainerLaunchFailed>()(
   "ContainerLaunchFailed",
   { image: Schema.String, cause: Schema.Unknown },
+) {}
+
+export class PortNeverOpened extends Schema.TaggedError<PortNeverOpened>()(
+  "PortNeverOpened",
+  { port: Schema.Number, timeoutSec: Schema.Number },
 ) {}
 
 export class BrowserUnavailable extends Schema.TaggedError<BrowserUnavailable>()(
@@ -452,7 +631,7 @@ export class EventPayloadInvalid extends Schema.TaggedError<EventPayloadInvalid>
 
 export type RunError =
   | CheckoutFailed | ExecFailed | ExecTimeout
-  | ContainerLaunchFailed | BrowserUnavailable
+  | ContainerLaunchFailed | PortNeverOpened | BrowserUnavailable
   | CacheError | ArtifactUploadFailed | StepFailed
   | ApprovalTimedOut | EventPayloadInvalid;
 ```

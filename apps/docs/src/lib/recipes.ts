@@ -2,6 +2,9 @@
  * Catalog of recipes — worked examples of wiring real CI use cases onto
  * FlareDispatch. Source files live in the monorepo-root `recipes/` directory;
  * the recipe pages read them from disk at build time.
+ *
+ * Order is intentional: agentic code review leads — it is the highest-value
+ * job to move off GitHub Actions — ahead of Playwright e2e and the rest.
  */
 
 export type RecipeFile = {
@@ -24,6 +27,19 @@ export type Recipe = {
 };
 
 export const recipes: Recipe[] = [
+  {
+    slug: "ai-code-review",
+    label: "AI code review",
+    useCase: "Multi-agent agentic code review on every PR",
+    mode: "Webhook",
+    blurb:
+      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR, findings deduplicated into one consolidated review. Runs on every push for zero GHA minutes.",
+    files: [
+      { name: "pr-review.run.ts", lang: "ts" },
+      { name: "ci.yml", lang: "yaml" },
+    ],
+    hasReadme: true,
+  },
   {
     slug: "browser-tests",
     label: "Browser tests",
@@ -88,18 +104,5 @@ export const recipes: Recipe[] = [
       { name: "ci.yml", lang: "yaml" },
     ],
     hasReadme: false,
-  },
-  {
-    slug: "ai-code-review",
-    label: "AI code review",
-    useCase: "Multi-agent AI review on every PR",
-    mode: "Webhook",
-    blurb:
-      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR, findings deduplicated into one consolidated review.",
-    files: [
-      { name: "pr-review.run.ts", lang: "ts" },
-      { name: "ci.yml", lang: "yaml" },
-    ],
-    hasReadme: true,
   },
 ];
