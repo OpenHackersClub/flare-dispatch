@@ -1179,14 +1179,12 @@ pre code {
 }
 .mermaid-modal__stage {
   position: absolute;
-  top: 0;
-  left: 0;
-  transform-origin: 0 0;
-  transform: translate(0, 0) scale(1);
-  will-change: transform;
+  inset: 0;
 }
 .mermaid-modal__stage > svg {
   display: block;
+  width: 100%;
+  height: 100%;
 }
 .mermaid-modal__hint {
   position: absolute;

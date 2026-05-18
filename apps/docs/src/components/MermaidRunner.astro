@@ -8,6 +8,7 @@
 
 <script>
   import mermaid from "mermaid";
+  import svgPanZoom from "svg-pan-zoom";
 
   type Theme = "light" | "dark";
 
@@ -125,12 +126,25 @@
     }
   }
 
-  // ---------- Fullscreen modal with pan + zoom ----------
+  // ---------- Fullscreen modal (pan + zoom via svg-pan-zoom) ----------
+
+  // Zoom is delegated to svg-pan-zoom: it transforms a <g> *inside* the SVG,
+  // so the browser re-renders the vector content sharp at every zoom level —
+  // unlike a CSS transform on the container, which upscales a fixed raster.
 
   let modal: HTMLDialogElement | null = null;
   let stage: HTMLDivElement | null = null;
-  let viewport: HTMLDivElement | null = null;
-  const transform = { scale: 1, tx: 0, ty: 0 };
+  let panZoom: ReturnType<typeof svgPanZoom> | null = null;
+
+  function destroyPanZoom() {
+    if (!panZoom) return;
+    try {
+      panZoom.destroy();
+    } catch {
+      /* instance already torn down */
+    }
+    panZoom = null;
+  }
 
   function ensureModal(): HTMLDialogElement {
     if (modal) return modal;
@@ -140,7 +154,7 @@
       <div class="mermaid-modal__chrome">
         <div class="mermaid-modal__controls">
           <button type="button" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button>
-          <button type="button" data-zoom="reset" aria-label="Reset zoom" title="Reset (0)">100%</button>
+          <button type="button" data-zoom="reset" aria-label="Reset zoom" title="Reset (0)">Reset</button>
           <button type="button" data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button>
         </div>
         <button type="button" class="mermaid-modal__close" data-close aria-label="Close (Esc)" title="Close (Esc)">✕</button>
@@ -152,107 +166,42 @@
     `;
     document.body.appendChild(modal);
 
-    stage    = modal.querySelector<HTMLDivElement>(".mermaid-modal__stage");
-    viewport = modal.querySelector<HTMLDivElement>(".mermaid-modal__viewport");
+    stage = modal.querySelector<HTMLDivElement>(".mermaid-modal__stage");
+    const viewport = modal.querySelector<HTMLDivElement>(".mermaid-modal__viewport");
 
     modal.addEventListener("click", (e) => {
       const t = e.target as HTMLElement;
-      if (t.dataset.close !== undefined || t === modal) modal!.close();
-      if (t.dataset.zoom === "in")    zoomBy(1.25);
-      if (t.dataset.zoom === "out")   zoomBy(1 / 1.25);
-      if (t.dataset.zoom === "reset") resetTransform();
+      if (t.dataset.close !== undefined || t === modal) {
+        modal!.close();
+        return;
+      }
+      if (!panZoom) return;
+      if (t.dataset.zoom === "in") panZoom.zoomIn();
+      if (t.dataset.zoom === "out") panZoom.zoomOut();
+      if (t.dataset.zoom === "reset") panZoom.reset();
     });
 
-    // Wheel zoom (with cursor-anchored zoom).
-    viewport!.addEventListener("wheel", (e) => {
-      e.preventDefault();
-      const rect = viewport!.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      zoomAtPoint(factor, cx, cy);
-    }, { passive: false });
+    viewport?.addEventListener("dblclick", () => panZoom?.reset());
 
-    // Drag pan.
-    let dragging = false;
-    let lastX = 0, lastY = 0;
-    viewport!.addEventListener("pointerdown", (e) => {
-      dragging = true;
-      lastX = e.clientX; lastY = e.clientY;
-      viewport!.setPointerCapture(e.pointerId);
-      viewport!.classList.add("is-panning");
-    });
-    viewport!.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      transform.tx += e.clientX - lastX;
-      transform.ty += e.clientY - lastY;
-      lastX = e.clientX; lastY = e.clientY;
-      applyTransform();
-    });
-    const endDrag = (e: PointerEvent) => {
-      if (!dragging) return;
-      dragging = false;
-      try { viewport!.releasePointerCapture(e.pointerId); } catch {}
-      viewport!.classList.remove("is-panning");
-    };
-    viewport!.addEventListener("pointerup", endDrag);
-    viewport!.addEventListener("pointercancel", endDrag);
-    viewport!.addEventListener("dblclick", () => resetTransform());
-
-    // Keyboard shortcuts while modal is open.
+    // Keyboard shortcuts while the modal is open.
     modal.addEventListener("keydown", (e) => {
-      if (e.key === "+" || e.key === "=") { zoomBy(1.25); e.preventDefault(); }
-      else if (e.key === "-")              { zoomBy(1 / 1.25); e.preventDefault(); }
-      else if (e.key === "0")              { resetTransform(); e.preventDefault(); }
+      if (!panZoom) return;
+      if (e.key === "+" || e.key === "=") {
+        panZoom.zoomIn();
+        e.preventDefault();
+      } else if (e.key === "-") {
+        panZoom.zoomOut();
+        e.preventDefault();
+      } else if (e.key === "0") {
+        panZoom.reset();
+        e.preventDefault();
+      }
     });
+
+    // Drop the svg-pan-zoom instance whenever the dialog closes.
+    modal.addEventListener("close", destroyPanZoom);
 
     return modal;
-  }
-
-  function applyTransform() {
-    if (!stage) return;
-    stage.style.transform =
-      `translate(${transform.tx}px, ${transform.ty}px) scale(${transform.scale})`;
-  }
-
-  function centerStage() {
-    if (!stage || !viewport) return;
-    // Reset transform first so getBoundingClientRect reports the untransformed size.
-    transform.scale = 1; transform.tx = 0; transform.ty = 0;
-    applyTransform();
-    const vp = viewport.getBoundingClientRect();
-    const r  = stage.getBoundingClientRect();
-    // Fit-to-viewport if the diagram exceeds the viewport.
-    const margin = 32;
-    const fit = Math.min(
-      (vp.width  - margin * 2) / r.width,
-      (vp.height - margin * 2) / r.height,
-      1,
-    );
-    transform.scale = fit;
-    transform.tx = (vp.width  - r.width  * fit) / 2;
-    transform.ty = (vp.height - r.height * fit) / 2;
-    applyTransform();
-  }
-
-  function resetTransform() {
-    centerStage();
-  }
-
-  function zoomBy(factor: number) {
-    if (!viewport) return;
-    const rect = viewport.getBoundingClientRect();
-    zoomAtPoint(factor, rect.width / 2, rect.height / 2);
-  }
-
-  function zoomAtPoint(factor: number, cx: number, cy: number) {
-    const next = Math.min(8, Math.max(0.1, transform.scale * factor));
-    const actual = next / transform.scale;
-    // Keep the content point under (cx, cy) fixed: tx' = cx - actual*(cx - tx).
-    transform.tx = cx - (cx - transform.tx) * actual;
-    transform.ty = cy - (cy - transform.ty) * actual;
-    transform.scale = next;
-    applyTransform();
   }
 
   function openModal(figure: HTMLElement) {
@@ -260,25 +209,34 @@
     if (!svg) return;
     const m = ensureModal();
     if (!stage) return;
+    destroyPanZoom();
     stage.innerHTML = "";
-    // The stage is absolutely positioned, so a clone left at
-    // width/height:auto collapses to zero size and the modal shows
-    // empty. Pin the clone to the SVG's on-page rendered size (falling
-    // back to its viewBox) so the stage has real dimensions to center.
-    const rect = svg.getBoundingClientRect();
-    const vb = svg.viewBox?.baseVal;
-    const w = Math.round(rect.width || vb?.width || 800);
-    const h = Math.round(rect.height || vb?.height || 600);
+
+    // Fill the modal with the SVG; svg-pan-zoom owns fit / zoom / pan.
     const clone = svg.cloneNode(true) as SVGSVGElement;
     clone.removeAttribute("style");
-    clone.setAttribute("width", String(w));
-    clone.setAttribute("height", String(h));
-    clone.style.maxWidth = "none";
-    clone.style.maxHeight = "none";
+    clone.setAttribute("width", "100%");
+    clone.setAttribute("height", "100%");
     stage.appendChild(clone);
+
     if (!m.open) m.showModal();
-    // Center after the modal has laid out so getBoundingClientRect is meaningful.
-    requestAnimationFrame(() => centerStage());
+
+    // Initialise after the dialog has laid out, so the SVG has a real size.
+    requestAnimationFrame(() => {
+      panZoom = svgPanZoom(clone, {
+        zoomEnabled: true,
+        panEnabled: true,
+        controlIconsEnabled: false,
+        dblClickZoomEnabled: false,
+        mouseWheelZoomEnabled: true,
+        preventMouseEventsDefault: true,
+        fit: true,
+        center: true,
+        minZoom: 0.2,
+        maxZoom: 40,
+        zoomScaleSensitivity: 0.3,
+      });
+    });
   }
 
   // ---------- Render ----------
