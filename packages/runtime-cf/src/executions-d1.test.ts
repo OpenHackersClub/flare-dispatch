@@ -117,6 +117,53 @@ describe("D1ExecutionsLive", () => {
     expect(rows.results.every((r) => r.status === "success")).toBe(true);
   });
 
+  it("is replay-idempotent — repeated startExecution / startStep are no-ops", async () => {
+    // A CF Workflow's `run` re-executes on every Worker resume, so the INSERTs
+    // here run more than once. Calling `startExecution` twice and `startStep`
+    // for the same `(executionId, name)` twice must NOT raise (no PK violation)
+    // and must NOT duplicate rows. This is the resume-from-checkpoint guard.
+    const layer = makeD1ExecutionsLive(bindings.db, CTX);
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const executions = yield* Executions;
+        // First pass.
+        yield* executions.startExecution({
+          id: EXECUTION_ID,
+          run: "offload-test",
+          startedAt: 0,
+        });
+        yield* executions.startStep({
+          executionId: EXECUTION_ID,
+          name: "exec",
+          startedAt: 10,
+        });
+        // Second pass — simulates a Workflow resume re-running `run`.
+        yield* executions.startExecution({
+          id: EXECUTION_ID,
+          run: "offload-test",
+          startedAt: 999,
+        });
+        yield* executions.startStep({
+          executionId: EXECUTION_ID,
+          name: "exec",
+          startedAt: 999,
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // Still exactly one row each — `INSERT OR IGNORE` collapsed the replays.
+    expect(await countRows(bindings.db, "executions")).toBe(1);
+    expect(await countRows(bindings.db, "steps")).toBe(1);
+
+    // The IGNOREd second insert did not overwrite the first row's values.
+    const exec = await bindings.db
+      .prepare(`SELECT started_at FROM executions WHERE id = ?`)
+      .bind(EXECUTION_ID)
+      .first<{ started_at: number }>();
+    expect(exec?.started_at).toBe(0);
+  });
+
   it("records a step failure with its error tag", async () => {
     const layer = makeD1ExecutionsLive(bindings.db, CTX);
 

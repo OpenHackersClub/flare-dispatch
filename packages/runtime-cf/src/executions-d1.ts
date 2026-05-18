@@ -21,6 +21,28 @@
 // `offload-test` (3 run-body steps) is therefore 8 writes — the PR4 integration
 // test pins this with a row-count assertion.
 //
+// --- Replay idempotency ------------------------------------------------------
+//
+// A CF Workflow's `run(event, step)` re-executes top-to-bottom on every Worker
+// eviction/resume — only `WorkflowStep.do` *results* are memoized. Every
+// `ExecutionsService` call here runs OUTSIDE a `step.do` (`startExecution` from
+// `RunWorkflow`, `startStep`/`finishStep` from `StepRunnerCloudflare` around
+// the checkpoint), so each one re-runs on resume. The INSERTs must therefore be
+// idempotent or a resume would PK-violate (`executions`) or duplicate rows
+// (`steps`):
+//
+//   * both INSERTs are `INSERT OR IGNORE` — a replayed insert is a silent
+//     no-op once the row already exists;
+//   * the `steps` PK is DETERMINISTIC — `${executionId}:${name}:${attempt}` —
+//     so a replay computes the same PK and `OR IGNORE` collapses it (a fresh
+//     random PK would defeat `OR IGNORE` and accumulate duplicates);
+//   * `finishExecution` / `finishStep` are plain `UPDATE`s, idempotent by
+//     construction — re-running them just rewrites the same row.
+//
+// This preserves the "an evicted Worker resumes from the last completed step"
+// property the architecture spec sells (specs/01-architecture.md § Workflow
+// Engine). There is no non-deterministic call left in this layer.
+//
 // Spec: specs/05-byoc.md § D1 schema, specs/pm/plan.md § PR4.
 
 import { Effect, Layer } from "effect";
@@ -71,8 +93,10 @@ export const makeD1ExecutionsLive = (
     startExecution: ({ id, run: runName, startedAt }) =>
       run("startExecution", () =>
         db
+          // `OR IGNORE`: the PK `id` is deterministic (the executionId), so a
+          // replayed insert on Workflow resume is a no-op, not a PK violation.
           .prepare(
-            `INSERT INTO executions
+            `INSERT OR IGNORE INTO executions
                (id, run, repo, ref, sha, status, started_at, input_json)
              VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
           )
@@ -103,14 +127,18 @@ export const makeD1ExecutionsLive = (
     startStep: ({ executionId, name, startedAt }) =>
       run("startStep", () =>
         db
+          // `OR IGNORE` + a DETERMINISTIC PK: a replayed insert on Workflow
+          // resume recomputes the same `${executionId}:${name}:${attempt}` id
+          // and is collapsed to a no-op — no duplicate `steps` rows. A random
+          // PK would defeat this and accumulate a row per replay.
           .prepare(
-            `INSERT INTO steps
+            `INSERT OR IGNORE INTO steps
                (id, execution_id, name, status, started_at, attempt)
              VALUES (?, ?, ?, 'running', ?, 1)`,
           )
-          // The `steps` PK is a fresh id; (execution_id, name) is the logical
-          // key the UPDATE in `finishStep` targets.
-          .bind(crypto.randomUUID(), executionId, name, startedAt)
+          // The PK is `${executionId}:${name}:${attempt}` (attempt = 1 in V0).
+          // `(execution_id, name)` remains the logical key `finishStep` UPDATEs.
+          .bind(`${executionId}:${name}:1`, executionId, name, startedAt)
           .run(),
       ),
 
