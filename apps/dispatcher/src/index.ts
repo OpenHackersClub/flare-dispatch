@@ -1,36 +1,31 @@
 // FlareDispatch Dispatcher Worker — V0 walking-skeleton entry point.
 //
-// The Worker `fetch` handler serves `GET /health`; every other path 404s. The
-// `/v1/dispatch/:run` route, HMAC verify, and the artifact endpoint land in
-// PR5. The Workflow body (`RunWorkflow`) and the live runtime Layers landed in
-// PR4 — see workflow.ts and `@flare-dispatch/runtime-cf`.
+// This file is the Cloudflare-runtime seam: the `fetch` handler and the two
+// binding-class re-exports wrangler resolves from `main`. All routing logic
+// lives in `router.ts` (and the `routes/` modules) — kept free of
+// `cloudflare:workers` / `@cloudflare/sandbox` imports so it stays testable
+// under plain Node + Vitest 2.
 //
-// wrangler resolves two Durable Object / Workflow classes from this entry, so
-// both are re-exported here:
+//   GET  /health                          → routes/health.ts
+//   POST /v1/dispatch/:run                 → routes/dispatch.ts
+//   GET  /v1/artifacts/:execution/:name    → routes/artifacts.ts
+//
+// wrangler resolves two Durable Object / Workflow classes from this entry:
 //   * `RunWorkflow`  — the Workflow class (workflow.ts).
-//   * `RunSandbox`   — the Container-backed Durable Object class (below).
+//   * `RunSandbox`   — the Container-backed Durable Object class (sandbox.ts).
+//
+// Spec: specs/pm/plan.md § PR5.
 
 import type { Env } from "./env";
+import { handleRequest } from "./router";
 import { RunSandbox } from "./sandbox";
 
 // Re-export the binding classes so wrangler's `main` entry resolves them.
 export { RunWorkflow } from "./workflow";
 export { RunSandbox };
 
-const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-
 export default {
-  async fetch(request: Request, _env: Env): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (request.method === "GET" && url.pathname === "/health") {
-      return json({ status: "ok" });
-    }
-
-    return json({ error: "not_found" }, 404);
+  fetch(request: Request, env: Env): Promise<Response> {
+    return handleRequest(request, env);
   },
 } satisfies ExportedHandler<Env>;

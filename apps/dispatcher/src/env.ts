@@ -1,12 +1,19 @@
 // FlareDispatch Dispatcher — typed binding environment.
 //
-// One field per binding declared in wrangler.jsonc. V0 surface only:
-// Workflow + R2 + D1 + Container. Queue / DO / Browser bindings are deferred
-// to V1+ and intentionally absent here.
+// One field per binding declared in wrangler.jsonc, plus the Worker secrets.
+// V0 surface only: Workflow + R2 + D1 + Container. Queue / DO / Browser
+// bindings are deferred to V1+ and intentionally absent here.
 
 import type { Sandbox } from "@cloudflare/sandbox";
 
 export interface Env {
+  /**
+   * Shared HMAC-SHA256 secret — verifies inbound `POST /v1/dispatch/:run`
+   * request bodies (specs/05-byoc.md § Secrets). A Worker secret, set via
+   * `wrangler secret put HMAC_SECRET`.
+   */
+  readonly HMAC_SECRET: string;
+
   /** Workflow binding — instantiates RunWorkflow executions. */
   readonly RUNS_WORKFLOW: Workflow;
 

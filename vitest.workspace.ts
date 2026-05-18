@@ -4,8 +4,8 @@
 // PR1 left `pnpm test` as `vitest run --passWithNoTests`; PR2 adds the first
 // real suite (@flare-dispatch/core); PR3 adds the run-level suite under
 // `runs/`; PR4 adds the Miniflare-backed integration suite in
-// `packages/runtime-cf` (picked up by the `packages/*` glob). This workspace
-// file is the seam each new package's tests slot into without touching the
-// root script.
+// `packages/runtime-cf` (picked up by the `packages/*` glob); PR5 adds the
+// Dispatcher route suite under `apps/dispatcher`. This workspace file is the
+// seam each new package's tests slot into without touching the root script.
 
-export default ["packages/*", "runs"];
+export default ["packages/*", "runs", "apps/dispatcher"];
