@@ -3,6 +3,7 @@ import { Code } from "astro:components";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import HeroDiagram from "../components/HeroDiagram.astro";
 import { site } from "../lib/site";
+import githubActionsSrc from "../snippets/github-actions.txt?raw";
 import offloadTestSrc from "../snippets/offload-test.txt?raw";
 import deploySmokeSrc from "../snippets/deploy-smoke.txt?raw";
 import prReviewSrc from "../snippets/pr-review.txt?raw";
@@ -58,24 +59,41 @@ const runs = [
   },
 ];
 
-const snippets = [
+const snippets: {
+  id: string;
+  label: string;
+  lang: "yaml" | "ts";
+  blurb: string;
+  code: string;
+}[] = [
+  {
+    id: "github-actions",
+    label: "GitHub Actions step",
+    lang: "yaml",
+    blurb:
+      "Action mode — a GitHub Actions step dispatches a shipped run. About 10 s of GHA time; the heavy work runs on Cloudflare and reports back as a check.",
+    code: githubActionsSrc,
+  },
   {
     id: "offload-test",
-    label: "offload-test",
+    label: "Run a test suite",
+    lang: "ts",
     blurb:
       "The walking skeleton — clone a repo, run any test command in a Cloudflare Sandbox, report the exit code straight to a PR check.",
     code: offloadTestSrc,
   },
   {
     id: "deploy-smoke",
-    label: "deploy-smoke",
+    label: "Post-deploy smoke test",
+    lang: "ts",
     blurb:
       "Webhook mode — fires on deployment_status.success and probes your critical URLs in parallel. Zero GHA minutes, no workflow file.",
     code: deploySmokeSrc,
   },
   {
     id: "pr-review",
-    label: "pr-review",
+    label: "AI code review",
+    lang: "ts",
     blurb:
       "Webhook mode — a multi-agent AI reviewer fanned out across domains, then deduplicated by a coordinator into one verdict.",
     code: prReviewSrc,
@@ -205,8 +223,8 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="snippets">
     <div class="container">
       <div class="tenets__header">
-        <span class="section-marker">§04 / The DSL</span>
-        <h2>A run is a typed program — read it, fork it, test it.</h2>
+        <span class="section-marker">§04 / The code</span>
+        <h2>Two ways in — a GitHub Actions step, or a typed run.</h2>
       </div>
       <div class="snippets__widget">
         <div class="snippets__tabs" role="tablist" aria-label="Run examples">
@@ -234,7 +252,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
             hidden={i !== 0}
           >
             <p class="snippets__blurb">{s.blurb}</p>
-            <Code code={s.code} lang="ts" themes={shikiThemes} defaultColor={false} wrap />
+            <Code code={s.code} lang={s.lang} themes={shikiThemes} defaultColor="light" wrap />
           </div>
         ))}
       </div>
@@ -251,8 +269,8 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
         <li class="manifesto__item">
           <span class="manifesto__num">§05.01</span>
           <div>
-            <p class="manifesto__statement">Offload, <strong>don't replace</strong>.</p>
-            <p class="manifesto__body">GitHub Actions is a fine trigger and PR gate. FlareDispatch doesn't compete with it — it takes the heavy compute GHA bills badly and leaves the cheap jobs alone.</p>
+            <p class="manifesto__statement"><strong>Progressive</strong> offloading.</p>
+            <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions stays the trigger and keeps the cheap jobs; nothing is all-or-nothing.</p>
           </div>
         </li>
         <li class="manifesto__item">

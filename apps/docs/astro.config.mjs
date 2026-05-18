@@ -30,7 +30,7 @@ export default defineConfig({
         light: "vitesse-light",
         dark: "vesper",
       },
-      defaultColor: false,
+      defaultColor: "light",
       wrap: true,
     },
   },
