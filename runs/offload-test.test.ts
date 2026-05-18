@@ -12,8 +12,10 @@
 //   (c) timeout     — fake `exec` raises ExecTimeout → the run Effect *fails*
 //                      with the `ExecTimeout` tag, re-failed unchanged
 //
-// Plus a determinism guard: the run body must take its timestamps from
-// `io.now`, never `Date.now()` directly (specs/pm/plan.md § 6 "Run replay
+// Plus a determinism guard: the run body must not call `Date.now()` /
+// `crypto.randomUUID()` directly — non-determinism flows only through `io`,
+// and `durationMs` is sourced from the checkpointed `exec` step result so it
+// is stable across Workflow replays (specs/pm/plan.md § 6 "Run replay
 // determinism").
 //
 // Spec: specs/pm/plan.md § PR3, specs/03-dsl.md § Unit-testing runs.
@@ -42,7 +44,6 @@ describe("offload-test", () => {
       const result = yield* offloadTest.run(baseInput);
 
       expect(result.exitCode).toBe(0);
-      expect(result.durationMs).toBeGreaterThanOrEqual(0);
       expect(typeof result.logUri).toBe("string");
       expect(result.logUri.length).toBeGreaterThan(0);
 
@@ -116,29 +117,32 @@ describe("offload-test", () => {
     },
   );
 
-  it.effect("durationMs is sourced from io.now, not Date.now()", () => {
-    // The IO fake's clock advances by `tickMs` per `io.now` call. The run
-    // brackets `exec` with two `io.now` reads, so `durationMs` is a multiple
-    // of `tickMs` — a value `Date.now()` could never produce. This proves the
-    // run threads non-determinism through `io`, the replay-determinism rule.
-    const { layer } = makeCFRuntimeTest({
-      sandboxProgram: { "pnpm test": { exitCode: 0 } },
-      io: { startMs: 1_000, tickMs: 250 },
-    });
+  it.effect(
+    "durationMs is the checkpointed exec ExecResult's durationMs",
+    () => {
+      // The run reports `result.durationMs` straight from the `exec` step's
+      // `ExecResult` — the replay-safe source, since only step results are
+      // memoized across Workflow replays. The run must not recompute it from
+      // wall-clock reads. Pin a distinctive `durationMs` on the canned exec
+      // result and assert the run output carries exactly that value.
+      const { layer } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0, durationMs: 4242 } },
+      });
 
-    return Effect.gen(function* () {
-      const result = yield* offloadTest.run(baseInput);
-      expect(result.durationMs % 250).toBe(0);
-      expect(result.durationMs).toBeGreaterThan(0);
-    }).pipe(Effect.provide(layer));
-  });
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(baseInput);
+        expect(result.durationMs).toBe(4242);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
 
 // --- Source guard: no direct Date.now() / crypto.randomUUID() in the run -----
-// A grep guard per specs/pm/plan.md § 6 — non-determinism must flow through
-// `io`, so Workflow checkpoint replay is consistent.
+// A grep guard per specs/pm/plan.md § 6 — the run body must not introduce
+// non-determinism; replay-sensitive values come from checkpointed step results
+// (or `io`), so Workflow checkpoint replay is consistent.
 describe("offload-test source determinism", () => {
-  it.effect("the run body uses io.now, never Date.now()/crypto.randomUUID()", () =>
+  it.effect("the run body never calls Date.now()/crypto.randomUUID()", () =>
     Effect.sync(() => {
       const src = readFileSync(
         fileURLToPath(new URL("./offload-test.ts", import.meta.url)),

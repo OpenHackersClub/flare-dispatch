@@ -37,9 +37,18 @@ export type SandboxFakeState = {
 const normalizeCommand = (command: string | readonly string[]): string =>
   typeof command === "string" ? command : command.join(" ");
 
+/**
+ * Default `durationMs` for a canned `ExecResult` when a program entry does not
+ * pin one. Non-zero so a run test can meaningfully assert that the run threads
+ * the `exec` step's checkpointed `durationMs` through to its output (the
+ * replay-safe source — see runs/offload-test.ts). A `CannedExec` entry can
+ * still override it with an explicit `durationMs`.
+ */
+const DEFAULT_FAKE_DURATION_MS = 1234;
+
 const fullResult = (partial: Partial<ExecResult> & { exitCode: number }): ExecResult => ({
   exitCode: partial.exitCode,
-  durationMs: partial.durationMs ?? 0,
+  durationMs: partial.durationMs ?? DEFAULT_FAKE_DURATION_MS,
   logPath: partial.logPath ?? "logs/fake/exec.ndjson",
   stdout: partial.stdout ?? "",
   stderr: partial.stderr ?? "",

@@ -22,20 +22,21 @@
 //    assertions. The run-body steps are therefore exactly the three from
 //    specs/03-dsl.md § Top-level shape.
 //
-// 2. `durationMs` is computed from `io.now`, not taken from `ExecResult`.
-//    The run brackets the `exec` step with two `io.now` reads and reports the
-//    delta. Non-determinism must flow through `io` so Workflow checkpoint
-//    replay is consistent (specs/03-dsl.md § step Rules; specs/pm/plan.md
-//    § 6). `ExecResult.durationMs` is the container's own measurement and is
-//    kept for the sandbox runtime's own telemetry, but the run-level
-//    `durationMs` output is the `io.now`-bracketed wall time — the value a
-//    replay can reproduce. No `Date.now()` / `crypto.randomUUID()` is called.
+// 2. `durationMs` comes from the `exec` step's `ExecResult` — `result.durationMs`.
+//    This is what specs/03-dsl.md § Top-level shape sketches, and it is the
+//    replay-safe source: only `step(...)` results are checkpointed/memoized by
+//    the CF Workflow, so on replay `result` is restored from the checkpoint
+//    identically. Anything read *outside* a step (e.g. an `io.now` in the run
+//    body) re-executes on every replay and would yield a fresh value — not
+//    replay-deterministic. Sourcing `durationMs` from the checkpointed exec
+//    result keeps the run's output stable across replays. No `Date.now()` /
+//    `crypto.randomUUID()` is called in the run body.
 //
 // Spec: specs/02-runs.md § 1, specs/03-dsl.md § Top-level shape + § sandbox,
 //       specs/pm/plan.md § PR3.
 
 import { Effect, Schema } from "effect";
-import { artifact, defineRun, io, sandbox, step } from "@flare-dispatch/core";
+import { artifact, defineRun, sandbox, step } from "@flare-dispatch/core";
 
 /** Input contract — specs/02-runs.md § 1. */
 const OffloadTestInput = Schema.Struct({
@@ -82,11 +83,9 @@ export const offloadTest = defineRun({
       // exec — run the command. A non-zero exit code is a NORMAL ExecResult
       // (a failing test), surfaced to the output below — never an Effect
       // failure. `sandbox.exec` fails its Effect only with ExecFailed /
-      // ExecTimeout, which propagate out of the run unchanged.
-      //
-      // The exec step is bracketed with `io.now` so the run-level `durationMs`
-      // is a replay-deterministic measurement (see the header note).
-      const startedAt = yield* io.now;
+      // ExecTimeout, which propagate out of the run unchanged. `result` is the
+      // checkpointed step output — replay restores it identically, which is
+      // why the run's `durationMs` is read from it (see header note 2).
       const result = yield* step("exec", () =>
         sandbox.exec({
           cwd: repoDir,
@@ -95,7 +94,6 @@ export const offloadTest = defineRun({
           timeoutSec: input.timeoutSec ?? DEFAULT_TIMEOUT_SEC,
         }),
       );
-      const finishedAt = yield* io.now;
 
       // upload-log — push the captured stdout/stderr to R2, get a signed URL.
       const logUri = yield* step("upload-log", () =>
@@ -108,7 +106,7 @@ export const offloadTest = defineRun({
 
       return {
         exitCode: result.exitCode,
-        durationMs: finishedAt - startedAt,
+        durationMs: result.durationMs,
         logUri,
       };
     }),
