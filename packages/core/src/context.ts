@@ -4,14 +4,31 @@
 // of every capability service. A runtime Layer (CFRuntimeLive / Dev / Test)
 // provides all of them at once; a run never constructs it directly.
 //
-// Spec: specs/03-dsl.md § Layers.
+// `Executions` and `StepRunner` are part of `RunContext` even though a run
+// never calls them directly: `step` (the run frame) depends on both — it runs
+// the body via the `StepRunner` strategy and records the lifecycle into
+// `Executions` — so any Effect that contains a `step(...)` carries them in R.
+//
+// Spec: specs/03-dsl.md § Layers, specs/pm/plan.md § 3.
 
 import type { Artifact } from "./services/artifact";
 import type { Browser } from "./services/browser";
 import type { Cache } from "./services/cache";
+import type { Checks } from "./services/checks";
 import type { Config } from "./services/config";
+import type { Executions } from "./services/executions";
 import type { IO } from "./services/io";
 import type { Sandbox } from "./services/sandbox";
+import type { StepRunner } from "./services/step-runner";
 
 /** The union of capability services every run Effect depends on. */
-export type RunContext = Sandbox | Browser | Cache | Artifact | IO | Config;
+export type RunContext =
+  | Sandbox
+  | Browser
+  | Cache
+  | Artifact
+  | IO
+  | Config
+  | Checks
+  | Executions
+  | StepRunner;

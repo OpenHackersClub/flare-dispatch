@@ -54,6 +54,24 @@ export {
   type PriorExecution,
 } from "./services/io";
 export { config, Config, type ConfigService } from "./services/config";
+export {
+  checks,
+  Checks,
+  type ChecksService,
+  type CheckConclusion,
+  type CheckOutput,
+} from "./services/checks";
+export {
+  Executions,
+  type ExecutionsService,
+  type ExecutionRecord,
+  type StepRecord,
+  type StepStatus,
+} from "./services/executions";
+export {
+  StepRunner,
+  type StepRunnerService,
+} from "./services/step-runner";
 
 // --- Errors ------------------------------------------------------------------
 export * from "./errors";

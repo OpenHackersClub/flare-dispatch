@@ -1,16 +1,26 @@
 // @flare-dispatch/core — step: the durable checkpoint boundary.
 //
-// `step(name, body)` wraps an Effect in a CF Workflow step — durable across
-// Worker restarts, retried by the platform, individually logged. The binding
-// to `WorkflowStep.do(...)` is supplied by the runtime (the Dispatcher's
-// workflow.ts); `step` here is the DSL surface that binding satisfies.
+// `step(name, body)` wraps an Effect in a durable, individually-recorded
+// checkpoint. It does NOT itself decide *how* the checkpoint is realised —
+// that is the `StepRunner` service's job (services/step-runner.ts), which is a
+// swappable Layer:
+//
+//   * the test/dev runtime binds `StepRunnerInline` — runs the body inline and
+//     records start/end into `ExecutionsService`;
+//   * PR4's CF runtime binds `StepRunnerCloudflare` — backs each call with
+//     `WorkflowStep.do(name, ...)` so the step is durable and retryable.
+//
+// `step` itself is just the DSL surface: read `StepRunner` from context, hand
+// it the body. Keeping the *mechanism* behind a Tag is the seam PR4 needs.
 //
 // The `runEffect` shim reconciles Workflows (imperative — throws to fail a
-// step) with Effect (typed E channel — never throws). Inside a step body the
-// Effect rules apply; at the boundary the shim throws a typed failure so
-// Workflows records it in its retry telemetry.
+// step) with Effect (typed E channel — never throws): inside a step body the
+// Effect rules apply; at the Workflow boundary the shim throws a typed failure
+// so Workflows records it in its retry telemetry. PR4's `StepRunnerCloudflare`
+// is the only caller of `runEffect` — it runs the body inside `step.do`'s
+// Promise callback. The test runner never needs it (no Promise boundary).
 //
-// Spec: specs/03-dsl.md § step.
+// Spec: specs/03-dsl.md § step + § The runEffect boundary shim.
 
 import { Cause, type Duration, Effect, Exit, Option, type Schema } from "effect";
 import type { RunContext } from "./context";
@@ -19,13 +29,18 @@ import type {
   EventPayloadInvalid,
   StepFailed,
 } from "./errors";
+import { StepRunner } from "./services/step-runner";
+import type { StepOpts } from "./step-opts";
+
+export type { StepOpts };
 
 /**
  * Execute an Effect at the Workflow step boundary, rethrowing typed failures.
  *
  * The Effect must already have its `RunContext` provided by the runtime Layer
  * (`R = never`) before it reaches the boundary — `runEffect` is the imperative
- * shim, not the place capabilities are supplied.
+ * shim, not the place capabilities are supplied. PR4's `StepRunnerCloudflare`
+ * calls this inside the `WorkflowStep.do(...)` Promise callback.
  */
 export const runEffect = <A, E>(eff: Effect.Effect<A, E, never>) =>
   Effect.runPromiseExit(eff).then((exit) =>
@@ -44,24 +59,25 @@ export const runEffect = <A, E>(eff: Effect.Effect<A, E, never>) =>
     }),
   );
 
-export type StepOpts = {
-  readonly retries?: number; // platform-level retry on infra failure
-  readonly timeoutSec?: number;
-  readonly metadata?: Record<string, unknown>; // attached to the D1 step record
-};
-
-/**
- * Wrap an Effect in a Workflow checkpoint. Step names must be unique within a
- * run — they are the dedup key for checkpoint replay. `step.waitForEvent`
- * hibernates the Workflow until an external event arrives, or times out.
- */
-export declare const step: {
+type StepFn = {
+  /**
+   * Wrap an Effect in a durable checkpoint. Step names must be unique within a
+   * run — they are the dedup key for checkpoint replay. Delegates to the
+   * ambient `StepRunner`: a body failure stays in the typed `E` channel
+   * (re-failed, never thrown out of the Effect); `StepFailed` is added to the
+   * channel for infra failures the runner surfaces.
+   */
   <A, E>(
     name: string,
     body: () => Effect.Effect<A, E, RunContext>,
     opts?: StepOpts,
   ): Effect.Effect<A, E | StepFailed, RunContext>;
 
+  /**
+   * Hibernate the Workflow until an external event arrives, or time out.
+   * Not implemented in V0 — the Dispatcher signalling route lands with the
+   * first human-in-the-loop run (specs/pm/plan.md § 2).
+   */
   readonly waitForEvent: <P>(
     name: string,
     opts: {
@@ -71,3 +87,23 @@ export declare const step: {
     },
   ) => Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext>;
 };
+
+const stepImpl = <A, E>(
+  name: string,
+  body: () => Effect.Effect<A, E, RunContext>,
+  opts?: StepOpts,
+): Effect.Effect<A, E | StepFailed, RunContext> =>
+  Effect.flatMap(StepRunner, (runner) => runner.run(name, body, opts));
+
+const waitForEvent = <P>(
+  _name: string,
+  _opts: {
+    type: string;
+    timeout: Duration.Duration | string;
+    payloadSchema: Schema.Schema<P, unknown>;
+  },
+): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext> =>
+  // V0 stub — human-in-the-loop is deferred (specs/pm/plan.md § 2).
+  Effect.die("step.waitForEvent: not implemented in V0");
+
+export const step: StepFn = Object.assign(stepImpl, { waitForEvent });
