@@ -1,0 +1,42 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = "BYOC (Cloudflare) CI/CD that offloads the expensive half of CI from GitHub Actions onto Cloudflare Workflows, Containers, and Browser Rendering. Typed Effect-TS runs." } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site).toString();
+---
+
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="generator" content={Astro.generator} />
+<meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0a0a0f" media="(prefers-color-scheme: dark)" />
+<link rel="canonical" href={canonical} />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://api.fontshare.com" />
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+
+<title>{title}</title>
+<meta name="description" content={description} />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:type" content="website" />
+<meta property="og:url" content={canonical} />
+<meta name="twitter:card" content="summary_large_image" />
+
+<script is:inline>
+  // Set theme as early as possible to avoid flash. Prefers stored value, then system.
+  (function () {
+    try {
+      var stored = localStorage.getItem("flaredispatch:theme");
+      var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var theme = stored || (prefersDark ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    } catch (_) {}
+  })();
+</script>

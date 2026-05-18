@@ -1,0 +1,33 @@
+---
+import { nav } from "../lib/nav";
+
+interface Props {
+  currentSlug?: string;
+}
+const { currentSlug } = Astro.props;
+---
+
+<aside class="docs-shell__sidebar" aria-label="Documentation sections">
+  {
+    nav.map((section) => (
+      <div class="sidebar-section">
+        <div class="sidebar-section__header">
+          <span class="sidebar-section__num">§{section.number}</span>
+          <span class="sidebar-section__title">{section.title}</span>
+        </div>
+        <ul class="sidebar-section__list">
+          {section.items.map((item) => (
+            <li>
+              <a
+                href={`/docs/${item.slug}`}
+                aria-current={currentSlug === item.slug ? "page" : undefined}
+              >
+                {item.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))
+  }
+</aside>

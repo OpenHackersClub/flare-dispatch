@@ -1,0 +1,124 @@
+---
+import { getCollection, render } from "astro:content";
+import { Code } from "astro:components";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import RecipeSidebar from "../../components/RecipeSidebar.astro";
+import MermaidRunner from "../../components/MermaidRunner.astro";
+import { recipes } from "../../lib/recipes";
+import { readRecipeFile } from "../../lib/recipe-files";
+
+export async function getStaticPaths() {
+  return recipes.map((recipe) => ({
+    params: { slug: recipe.slug },
+    props: { recipe },
+  }));
+}
+
+const { recipe } = Astro.props;
+
+// Adjacent recipes for the prev/next footer.
+const idx = recipes.findIndex((r) => r.slug === recipe.slug);
+const prev = idx > 0 ? recipes[idx - 1] : undefined;
+const next = idx < recipes.length - 1 ? recipes[idx + 1] : undefined;
+
+// Optional per-recipe README, rendered as prose.
+const readmeEntries = recipe.hasReadme ? await getCollection("recipes") : [];
+const readmeEntry = readmeEntries.find(
+  (e) => e.id.toLowerCase() === `${recipe.slug}/readme`,
+);
+const Readme = readmeEntry ? (await render(readmeEntry)).Content : undefined;
+
+// Source files, read from the monorepo-root recipes/ directory at build time.
+const sources = recipe.files.map((file) => ({
+  file,
+  code: readRecipeFile(recipe.slug, file.name),
+}));
+
+const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
+---
+
+<BaseLayout
+  title={`${recipe.label} — FlareDispatch recipes`}
+  description={recipe.blurb}
+>
+  <div class="docs-shell docs-shell--recipe">
+    <RecipeSidebar currentSlug={recipe.slug} />
+    <article>
+      <header class="doc-header">
+        <div class="doc-header__crumb">
+          <a href="/recipes">Recipes</a>
+          <span class="sep">/</span>
+          <span>{recipe.mode} mode</span>
+        </div>
+        <h1>{recipe.label}</h1>
+      </header>
+
+      <p class="recipe-lede">{recipe.blurb}</p>
+
+      <dl class="recipe-meta">
+        <div>
+          <dt>Use case</dt>
+          <dd>{recipe.useCase}</dd>
+        </div>
+        <div>
+          <dt>Trigger mode</dt>
+          <dd>{recipe.mode}</dd>
+        </div>
+        <div>
+          <dt>Files</dt>
+          <dd>{recipe.files.map((f) => f.name).join(", ")}</dd>
+        </div>
+      </dl>
+
+      {
+        Readme && (
+          <div class="prose">
+            <Readme />
+          </div>
+        )
+      }
+
+      <section class="recipe-source">
+        <h2>Source</h2>
+        {
+          sources.map(({ file, code }) => (
+            <figure class="recipe-file">
+              <figcaption>recipes/{recipe.slug}/{file.name}</figcaption>
+              <Code
+                code={code}
+                lang={file.lang}
+                themes={shikiThemes}
+                defaultColor={false}
+                wrap
+              />
+            </figure>
+          ))
+        }
+      </section>
+
+      <nav class="page-nav" aria-label="Adjacent recipes">
+        {
+          prev ? (
+            <a href={`/recipes/${prev.slug}`} class="page-nav__prev">
+              <span class="page-nav__direction">← Previous</span>
+              <span class="page-nav__label">{prev.label}</span>
+            </a>
+          ) : (
+            <span />
+          )
+        }
+        {
+          next ? (
+            <a href={`/recipes/${next.slug}`} class="page-nav__next">
+              <span class="page-nav__direction">Next →</span>
+              <span class="page-nav__label">{next.label}</span>
+            </a>
+          ) : (
+            <span />
+          )
+        }
+      </nav>
+    </article>
+  </div>
+  <MermaidRunner />
+</BaseLayout>

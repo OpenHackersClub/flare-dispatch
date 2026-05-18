@@ -1,0 +1,67 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import Sidebar from "../components/Sidebar.astro";
+import PageOutline from "../components/PageOutline.astro";
+import MermaidRunner from "../components/MermaidRunner.astro";
+import { findNext, findPrev, nav } from "../lib/nav";
+import type { MarkdownHeading } from "astro";
+
+interface Props {
+  title: string;
+  description?: string;
+  slug: string;
+  headings: MarkdownHeading[];
+  section?: string;
+}
+const { title, description, slug, headings, section } = Astro.props;
+
+const prev = findPrev(slug);
+const next = findNext(slug);
+const sectionTitle =
+  section ??
+  nav.find((s) => s.items.some((i) => i.slug === slug))?.title ??
+  "Specs";
+---
+
+<BaseLayout title={`${title} — FlareDispatch specs`} description={description}>
+  <div class="docs-shell">
+    <Sidebar currentSlug={slug} />
+    <article>
+      <header class="doc-header">
+        <div class="doc-header__crumb">
+          <a href="/docs">Specs</a>
+          <span class="sep">/</span>
+          <span>{sectionTitle}</span>
+        </div>
+        <h1>{title}</h1>
+      </header>
+      <div class="prose">
+        <slot />
+      </div>
+      <nav class="page-nav" aria-label="Adjacent pages">
+        {
+          prev ? (
+            <a href={`/docs/${prev.slug}`} class="page-nav__prev">
+              <span class="page-nav__direction">← Previous</span>
+              <span class="page-nav__label">{prev.label}</span>
+            </a>
+          ) : (
+            <span />
+          )
+        }
+        {
+          next ? (
+            <a href={`/docs/${next.slug}`} class="page-nav__next">
+              <span class="page-nav__direction">Next →</span>
+              <span class="page-nav__label">{next.label}</span>
+            </a>
+          ) : (
+            <span />
+          )
+        }
+      </nav>
+    </article>
+    <PageOutline headings={headings} />
+  </div>
+  <MermaidRunner />
+</BaseLayout>

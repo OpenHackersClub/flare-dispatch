@@ -1,0 +1,205 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import HeroDiagram from "../components/HeroDiagram.astro";
+import { site } from "../lib/site";
+
+const runs = [
+  {
+    id: "RUN 01",
+    title: "offload-test",
+    body: "Run any test command — pnpm test, pytest, cargo test — in a CF Sandbox. The V0 walking skeleton: green/red back to a PR check.",
+  },
+  {
+    id: "RUN 02",
+    title: "matrix-fanout",
+    body: "Fan one command across N shards. Workflows createBatch spawns up to 100 children per call, scale-to-zero between runs.",
+  },
+  {
+    id: "RUN 03",
+    title: "playwright-e2e",
+    body: "Playwright end-to-end suites on Browser Rendering, sharded across the managed browser pool.",
+  },
+  {
+    id: "RUN 04",
+    title: "cdp-acceptance",
+    body: "Boot an app, drive it over the Chrome DevTools Protocol, assert on network / console / heap observations.",
+  },
+  {
+    id: "RUN 05",
+    title: "security-scan",
+    body: "Dependency and vulnerability scans — gated on PRs and on a weekly schedule.",
+  },
+  {
+    id: "RUN 06",
+    title: "custom-sandbox",
+    body: "The escape hatch: an arbitrary container command with cache and R2 artifacts already wired in.",
+  },
+];
+---
+
+<BaseLayout
+  title="FlareDispatch — offload the expensive half of CI onto Cloudflare"
+  description={site.blurb}
+>
+  <section class="hero">
+    <div class="container">
+      <div class="hero__meta">
+        <span class="section-marker reveal" data-delay="1">§00 / Manifest</span>
+        <span class="section-marker reveal" data-delay="1">{site.status}</span>
+      </div>
+      <h1 class="hero__title reveal" data-delay="2">
+        Offload the <em>expensive&#160;half</em> of CI onto Cloudflare.
+      </h1>
+      <p class="hero__sub reveal" data-delay="3">
+        FlareDispatch runs Playwright e2e, acceptance suites, sharded matrices, and
+        security scans on Cloudflare Workflows, Containers, and Browser Rendering —
+        billed per vCPU-second on your own account. GitHub Actions stays the trigger
+        and the PR gate; runs take the heavy compute. Runs are typed Effect-TS
+        programs, not YAML.
+      </p>
+      <div class="hero__cta reveal" data-delay="4">
+        <a class="btn" href="/docs/prd">Read the PRD</a>
+        <a class="btn btn--ghost" href="/recipes">Browse recipes</a>
+      </div>
+    </div>
+    <HeroDiagram />
+  </section>
+
+  <section class="manifesto">
+    <div class="container">
+      <div class="manifesto__header">
+        <span class="section-marker">§01 / What "offload" means</span>
+        <h2>Not a replacement for GitHub Actions. An offload target.</h2>
+      </div>
+      <ol class="manifesto__list">
+        <li class="manifesto__item">
+          <span class="manifesto__num">§01.01</span>
+          <div>
+            <p class="manifesto__statement">GHA stays the <strong>trigger</strong>, not the compute.</p>
+            <p class="manifesto__body">GitHub Actions is excellent as a trigger and a PR gate, and fine for cheap jobs — lint, type-check, unit. Runs take only the heavy half: the jobs that dominate the bill and the wall clock.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§01.02</span>
+          <div>
+            <p class="manifesto__statement">A run is a <strong>typed program</strong>, not stringly-typed YAML.</p>
+            <p class="manifesto__body">Each run has a Schema-defined input and output, composable steps, tagged errors, and retry/Schedule combinators. Fork it, vendor-edit it, unit-test it without booting a container.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§01.03</span>
+          <div>
+            <p class="manifesto__statement">BYOC — <strong>bring your own Cloudflare</strong>.</p>
+            <p class="manifesto__body">One <code>wrangler deploy</code> into the account you already pay for. No operator runs it for you, no second dashboard, no self-hosted runner fleet to secure.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§01.04</span>
+          <div>
+            <p class="manifesto__statement">Compute is <strong>per vCPU-second</strong>, scale-to-zero.</p>
+            <p class="manifesto__body">Per-execution work is billed at CF Container rates instead of GHA per-minute. Between runs, nothing runs and nothing bills.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§01.05</span>
+          <div>
+            <p class="manifesto__statement">No <strong>platform ceilings</strong>.</p>
+            <p class="manifesto__body">Multi-step Workflows have no 6-hour job limit. R2 cache and artifacts have no 10 GB cap and retention you control — not a fixed 90 days.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§01.06</span>
+          <div>
+            <p class="manifesto__statement">The <strong>PR is the UI</strong>.</p>
+            <p class="manifesto__body">Status reports back as a GitHub Check Run. Logs and artifacts are R2 signed URLs linked from the check summary. There is no new dashboard to learn.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="tenets">
+    <div class="container">
+      <div class="tenets__header">
+        <span class="section-marker">§02 / In the box</span>
+        <h2>Six runs ship as the starter library. The DSL is the contract.</h2>
+      </div>
+      <div class="tenets__grid">
+        {runs.map((r) => (
+          <article class="tenet">
+            <span class="tenet__id">{r.id}</span>
+            <h3 class="tenet__title">{r.title}</h3>
+            <p class="tenet__rationale">{r.body}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="compare">
+    <div class="container">
+      <div class="compare__intro">
+        <div>
+          <span class="section-marker">§03 / Positioning</span>
+          <h2>Every option trades away one of three things. FlareDispatch keeps all three.</h2>
+        </div>
+        <p>
+          Heavy CI today forces a trade-off: hosted runners are easy but billed per
+          minute with hard ceilings; self-hosted and hybrid runners drop the ceilings
+          but hand you a fleet to operate. FlareDispatch runs on serverless Cloudflare
+          primitives — in the account you already own.
+        </p>
+      </div>
+
+      <table class="compare__table">
+        <thead>
+          <tr>
+            <th>Heavy-CI option</th>
+            <th>Serverless, scale-to-zero compute</th>
+            <th>No 6&#8239;h / 10&#8239;GB ceilings</th>
+            <th>No runner fleet to operate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GHA hosted runners</td>
+            <td class="compare__no">—</td>
+            <td class="compare__no">—</td>
+            <td class="compare__yes">✓</td>
+          </tr>
+          <tr>
+            <td>Self-hosted runners</td>
+            <td class="compare__no">—</td>
+            <td class="compare__yes">✓</td>
+            <td class="compare__no">—</td>
+          </tr>
+          <tr>
+            <td>Buildkite Agent (hybrid)</td>
+            <td class="compare__no">—</td>
+            <td class="compare__yes">✓</td>
+            <td class="compare__no">—</td>
+          </tr>
+          <tr class="is-flaredispatch">
+            <td>FlareDispatch</td>
+            <td class="compare__yes">✓</td>
+            <td class="compare__yes">✓</td>
+            <td class="compare__yes">✓</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="container">
+    <div class="cta-band">
+      <div>
+        <span class="section-marker">§04 / Read on</span>
+        <h2>Pre-implementation. The specs are the contract.</h2>
+      </div>
+      <div class="cta-band__actions">
+        <a class="btn" href="/docs/prd">Open the PRD</a>
+        <a class="btn btn--ghost" href="/recipes">Browse recipes</a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

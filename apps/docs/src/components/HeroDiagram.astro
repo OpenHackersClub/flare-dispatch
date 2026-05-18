@@ -1,0 +1,74 @@
+---
+// Decorative architecture SVG for the landing hero.
+// GitHub Actions / GitHub App webhook trigger the Dispatcher Worker, which
+// orchestrates a CF Workflow that fans out to Sandbox, Browser Rendering, and
+// R2 — then reports back to the GitHub Checks tab. Visualizes the offload
+// thesis without a real Mermaid render.
+---
+
+<div class="hero__diagram" aria-hidden="true">
+  <svg viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">
+    <!-- Triggers -->
+    <circle class="node" cx="104" cy="46" r="30" />
+    <text class="label" x="104" y="44" text-anchor="middle">GHA</text>
+    <text class="label" x="104" y="56" text-anchor="middle">trigger</text>
+
+    <circle class="node" cx="256" cy="46" r="30" />
+    <text class="label" x="256" y="44" text-anchor="middle">APP</text>
+    <text class="label" x="256" y="56" text-anchor="middle">webhook</text>
+
+    <!-- Dispatcher Worker -->
+    <circle class="node" cx="180" cy="142" r="44" />
+    <text class="label" x="180" y="138" text-anchor="middle">WORKER</text>
+    <text class="label" x="180" y="150" text-anchor="middle">/v1/dispatch</text>
+
+    <!-- Workflow -->
+    <circle class="node" cx="180" cy="240" r="34" />
+    <text class="label" x="180" y="238" text-anchor="middle">WORKFLOW</text>
+    <text class="label" x="180" y="250" text-anchor="middle">durable</text>
+
+    <!-- Data plane -->
+    <circle class="node agent" cx="62" cy="320" r="26" />
+    <text class="label" x="62" y="318" text-anchor="middle">SANDBOX</text>
+    <text class="label" x="62" y="330" text-anchor="middle">test</text>
+
+    <circle class="node agent" cx="180" cy="328" r="24" />
+    <text class="label" x="180" y="326" text-anchor="middle">BROWSER</text>
+    <text class="label" x="180" y="338" text-anchor="middle">e2e</text>
+
+    <circle class="node agent" cx="298" cy="320" r="26" />
+    <text class="label" x="298" y="318" text-anchor="middle">R2</text>
+    <text class="label" x="298" y="330" text-anchor="middle">cache</text>
+
+    <!-- Edges: triggers -> worker -->
+    <path class="edge" d="M124 70 L152 112" />
+    <path class="edge" d="M236 70 L208 112" />
+
+    <!-- Worker -> Workflow -->
+    <path class="edge" d="M180 186 L180 206" />
+
+    <!-- Workflow -> data plane -->
+    <path class="edge agent" d="M158 264 L82 300" />
+    <path class="edge agent" d="M180 274 L180 304" />
+    <path class="edge agent" d="M202 264 L278 300" />
+
+    <!-- Check-run callback: Worker -> GHA -->
+    <path class="edge" d="M142 124 Q86 96 100 78" stroke-dasharray="3 3" />
+
+    <!-- Op-flow ticks -->
+    <g class="label" fill="currentColor">
+      <text x="132" y="96" font-size="8">▸ HMAC</text>
+      <text x="200" y="96" font-size="8">▸ signed</text>
+      <text x="192" y="200" font-size="8">▸ step</text>
+      <text x="60" y="288" font-size="8">▸ run</text>
+      <text x="232" y="288" font-size="8">▸ artifact</text>
+      <text x="56" y="116" font-size="8">▸ check-run</text>
+    </g>
+
+    <!-- Hairline grid -->
+    <g stroke="currentColor" stroke-width="0.25" opacity="0.18">
+      <line x1="0" y1="180" x2="360" y2="180" />
+      <line x1="180" y1="0" x2="180" y2="360" />
+    </g>
+  </svg>
+</div>

@@ -1,0 +1,315 @@
+---
+// Client-side Mermaid renderer. The remark plugin wraps ```mermaid blocks in
+// <div class="mermaid-source" data-source="..."> elements; this script imports
+// mermaid lazily, decodes the source, and renders SVG in place. Each rendered
+// diagram gets a toolbar with Expand (fullscreen modal w/ pan-zoom) and
+// Open-in-new-tab actions.
+---
+
+<script>
+  import mermaid from "mermaid";
+
+  type Theme = "light" | "dark";
+
+  function configure(theme: Theme) {
+    const isDark = theme === "dark";
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "base",
+      securityLevel: "strict",
+      fontFamily: 'Iosevka Web, "SF Mono", ui-monospace, monospace',
+      themeVariables: {
+        background: isDark ? "#13141B" : "#FDFBF5",
+        primaryColor: isDark ? "#13141B" : "#FDFBF5",
+        primaryTextColor: isDark ? "#EAE7DD" : "#13131A",
+        primaryBorderColor: isDark ? "#353846" : "#13131A",
+        lineColor: isDark ? "#7A7D8C" : "#5C5C66",
+        secondaryColor: isDark ? "#1A1B26" : "#F4F1EA",
+        tertiaryColor: isDark ? "#11121A" : "#EBE6D8",
+        edgeLabelBackground: isDark ? "#13141B" : "#FDFBF5",
+        clusterBkg: isDark ? "transparent" : "transparent",
+        clusterBorder: isDark ? "#353846" : "#D8D2C5",
+        titleColor: isDark ? "#FF7041" : "#FF3D00",
+        nodeBorder: isDark ? "#353846" : "#13131A",
+        mainBkg: isDark ? "#13141B" : "#FDFBF5",
+        actorBkg: isDark ? "#13141B" : "#FDFBF5",
+        actorBorder: isDark ? "#EAE7DD" : "#13131A",
+        actorTextColor: isDark ? "#EAE7DD" : "#13131A",
+        signalColor: isDark ? "#EAE7DD" : "#13131A",
+        signalTextColor: isDark ? "#EAE7DD" : "#13131A",
+      },
+      flowchart: { curve: "basis", padding: 12, useMaxWidth: true },
+      sequence: { useMaxWidth: true },
+    });
+  }
+
+  function currentTheme(): Theme {
+    return (document.documentElement.getAttribute("data-theme") as Theme) || "light";
+  }
+
+  // ---------- Toolbar ----------
+
+  function attachToolbar(figure: HTMLElement, source: string) {
+    if (figure.querySelector(":scope > .mermaid-toolbar")) return;
+    const toolbar = document.createElement("div");
+    toolbar.className = "mermaid-toolbar";
+    toolbar.innerHTML = `
+      <button type="button" class="mermaid-btn" data-action="expand" aria-label="Expand diagram (fullscreen)" title="Expand (F)">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 2h5v2H4v3H2V2zm12 0v5h-2V4H9V2h5zM2 14V9h2v3h3v2H2zm12 0H9v-2h3V9h2v5z"/></svg>
+        <span>Expand</span>
+      </button>
+      <button type="button" class="mermaid-btn" data-action="newtab" aria-label="Open diagram in new tab" title="Open in new tab">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 2h4v4h-2V5.4L7.4 10 6 8.6 10.6 4H10V2zM3 4h4v2H4v6h6V9h2v5H3V4z"/></svg>
+        <span>New tab</span>
+      </button>
+    `;
+    figure.appendChild(toolbar);
+
+    const expandBtn = toolbar.querySelector<HTMLButtonElement>('[data-action="expand"]')!;
+    const newTabBtn = toolbar.querySelector<HTMLButtonElement>('[data-action="newtab"]')!;
+    expandBtn.addEventListener("click", () => openModal(figure));
+    newTabBtn.addEventListener("click", () => openInNewTab(figure, source));
+  }
+
+  function svgOf(figure: HTMLElement): SVGSVGElement | null {
+    return figure.querySelector("svg");
+  }
+
+  // ---------- Open in new tab ----------
+
+  function openInNewTab(figure: HTMLElement, source: string) {
+    const svg = svgOf(figure);
+    if (!svg) return;
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    // Make sure it scales naturally in the new tab.
+    clone.removeAttribute("style");
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", "100%");
+    clone.setAttribute("height", "100%");
+
+    const theme = currentTheme();
+    const bg = theme === "dark" ? "#13141B" : "#FDFBF5";
+    const fg = theme === "dark" ? "#EAE7DD" : "#13131A";
+
+    const html = `<!doctype html>
+<html lang="en" data-theme="${theme}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FlareDispatch diagram</title>
+  <style>
+    html,body{margin:0;padding:0;background:${bg};color:${fg};height:100%;}
+    body{display:flex;align-items:center;justify-content:center;padding:2rem;box-sizing:border-box;}
+    svg{max-width:100%;max-height:100%;width:auto;height:auto;}
+    .src{position:fixed;left:0;right:0;bottom:0;max-height:40vh;overflow:auto;padding:1rem 1.25rem;background:${bg};border-top:1px solid #888;font-family:ui-monospace,"SF Mono",monospace;font-size:12px;white-space:pre;display:none;}
+    .src.open{display:block;}
+    .toggle{position:fixed;right:1rem;bottom:1rem;font:13px/1 ui-sans-serif,system-ui;padding:.4rem .7rem;border:1px solid currentColor;background:transparent;color:inherit;cursor:pointer;border-radius:6px;}
+  </style>
+</head>
+<body>
+  ${clone.outerHTML}
+  <pre class="src" id="src"></pre>
+  <button class="toggle" type="button" onclick="document.getElementById('src').classList.toggle('open')">source</button>
+  <script>document.getElementById('src').textContent = ${JSON.stringify(source)};<\/script>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank", "noopener,noreferrer");
+    // Revoke shortly after to free the blob; the new tab has already loaded.
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    if (!w) {
+      // Pop-up blocked — fall back to navigating the current tab.
+      window.location.href = url;
+    }
+  }
+
+  // ---------- Fullscreen modal with pan + zoom ----------
+
+  let modal: HTMLDialogElement | null = null;
+  let stage: HTMLDivElement | null = null;
+  let viewport: HTMLDivElement | null = null;
+  const transform = { scale: 1, tx: 0, ty: 0 };
+
+  function ensureModal(): HTMLDialogElement {
+    if (modal) return modal;
+    modal = document.createElement("dialog");
+    modal.className = "mermaid-modal";
+    modal.innerHTML = `
+      <div class="mermaid-modal__chrome">
+        <div class="mermaid-modal__controls">
+          <button type="button" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button>
+          <button type="button" data-zoom="reset" aria-label="Reset zoom" title="Reset (0)">100%</button>
+          <button type="button" data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button>
+        </div>
+        <button type="button" class="mermaid-modal__close" data-close aria-label="Close (Esc)" title="Close (Esc)">✕</button>
+      </div>
+      <div class="mermaid-modal__viewport">
+        <div class="mermaid-modal__stage"></div>
+      </div>
+      <div class="mermaid-modal__hint">scroll to zoom · drag to pan · double-click to reset</div>
+    `;
+    document.body.appendChild(modal);
+
+    stage    = modal.querySelector<HTMLDivElement>(".mermaid-modal__stage");
+    viewport = modal.querySelector<HTMLDivElement>(".mermaid-modal__viewport");
+
+    modal.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.dataset.close !== undefined || t === modal) modal!.close();
+      if (t.dataset.zoom === "in")    zoomBy(1.25);
+      if (t.dataset.zoom === "out")   zoomBy(1 / 1.25);
+      if (t.dataset.zoom === "reset") resetTransform();
+    });
+
+    // Wheel zoom (with cursor-anchored zoom).
+    viewport!.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = viewport!.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      zoomAtPoint(factor, cx, cy);
+    }, { passive: false });
+
+    // Drag pan.
+    let dragging = false;
+    let lastX = 0, lastY = 0;
+    viewport!.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      lastX = e.clientX; lastY = e.clientY;
+      viewport!.setPointerCapture(e.pointerId);
+      viewport!.classList.add("is-panning");
+    });
+    viewport!.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      transform.tx += e.clientX - lastX;
+      transform.ty += e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      applyTransform();
+    });
+    const endDrag = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      try { viewport!.releasePointerCapture(e.pointerId); } catch {}
+      viewport!.classList.remove("is-panning");
+    };
+    viewport!.addEventListener("pointerup", endDrag);
+    viewport!.addEventListener("pointercancel", endDrag);
+    viewport!.addEventListener("dblclick", () => resetTransform());
+
+    // Keyboard shortcuts while modal is open.
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "+" || e.key === "=") { zoomBy(1.25); e.preventDefault(); }
+      else if (e.key === "-")              { zoomBy(1 / 1.25); e.preventDefault(); }
+      else if (e.key === "0")              { resetTransform(); e.preventDefault(); }
+    });
+
+    return modal;
+  }
+
+  function applyTransform() {
+    if (!stage) return;
+    stage.style.transform =
+      `translate(${transform.tx}px, ${transform.ty}px) scale(${transform.scale})`;
+  }
+
+  function centerStage() {
+    if (!stage || !viewport) return;
+    // Reset transform first so getBoundingClientRect reports the untransformed size.
+    transform.scale = 1; transform.tx = 0; transform.ty = 0;
+    applyTransform();
+    const vp = viewport.getBoundingClientRect();
+    const r  = stage.getBoundingClientRect();
+    // Fit-to-viewport if the diagram exceeds the viewport.
+    const margin = 32;
+    const fit = Math.min(
+      (vp.width  - margin * 2) / r.width,
+      (vp.height - margin * 2) / r.height,
+      1,
+    );
+    transform.scale = fit;
+    transform.tx = (vp.width  - r.width  * fit) / 2;
+    transform.ty = (vp.height - r.height * fit) / 2;
+    applyTransform();
+  }
+
+  function resetTransform() {
+    centerStage();
+  }
+
+  function zoomBy(factor: number) {
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    zoomAtPoint(factor, rect.width / 2, rect.height / 2);
+  }
+
+  function zoomAtPoint(factor: number, cx: number, cy: number) {
+    const next = Math.min(8, Math.max(0.1, transform.scale * factor));
+    const actual = next / transform.scale;
+    // Keep the content point under (cx, cy) fixed: tx' = cx - actual*(cx - tx).
+    transform.tx = cx - (cx - transform.tx) * actual;
+    transform.ty = cy - (cy - transform.ty) * actual;
+    transform.scale = next;
+    applyTransform();
+  }
+
+  function openModal(figure: HTMLElement) {
+    const svg = svgOf(figure);
+    if (!svg) return;
+    const m = ensureModal();
+    if (!stage) return;
+    stage.innerHTML = "";
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    clone.removeAttribute("style");
+    clone.style.maxWidth = "none";
+    clone.style.maxHeight = "none";
+    clone.style.height = "auto";
+    clone.style.width = "auto";
+    stage.appendChild(clone);
+    if (!m.open) m.showModal();
+    // Center after the modal has laid out so getBoundingClientRect is meaningful.
+    requestAnimationFrame(() => centerStage());
+  }
+
+  // ---------- Render ----------
+
+  async function renderAll() {
+    const nodes = document.querySelectorAll<HTMLElement>(".mermaid-source");
+    if (nodes.length === 0) return;
+    configure(currentTheme());
+
+    let i = 0;
+    for (const node of nodes) {
+      const raw = node.dataset.source;
+      if (!raw) continue;
+      try {
+        const source = decodeURIComponent(raw);
+        const { svg } = await mermaid.render(`mmd-${Date.now()}-${i++}`, source);
+        node.innerHTML = svg;
+        node.dataset.rendered = "true";
+        const figure = node.closest<HTMLElement>(".mermaid-figure");
+        if (figure) attachToolbar(figure, source);
+      } catch (err) {
+        // Leave the <pre class="mermaid-fallback"> visible.
+        // eslint-disable-next-line no-console
+        console.warn("mermaid render failed", err);
+      }
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", renderAll);
+  } else {
+    renderAll();
+  }
+
+  window.addEventListener("flaredispatch:theme-change", () => {
+    document.querySelectorAll<HTMLElement>(".mermaid-source").forEach((n) => {
+      n.removeAttribute("data-rendered");
+    });
+    document.querySelectorAll<HTMLElement>(".mermaid-toolbar").forEach((t) => t.remove());
+    renderAll();
+  });
+</script>

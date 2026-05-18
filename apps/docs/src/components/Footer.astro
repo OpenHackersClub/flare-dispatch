@@ -1,0 +1,38 @@
+---
+import { site } from "../lib/site";
+import { recipes } from "../lib/recipes";
+
+const now = new Date();
+const stamp = now.toISOString().slice(0, 10);
+---
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="site-footer__grid">
+      <div class="site-footer__col">
+        <h4>Specs</h4>
+        <ul>
+          <li><a href="/docs/prd">Product Requirements</a></li>
+          <li><a href="/docs/01-architecture">Architecture</a></li>
+          <li><a href="/docs/02-runs">Runs</a></li>
+          <li><a href="/docs/04-gha-integration">GHA Integration</a></li>
+          <li><a href="/docs/05-byoc">BYOC Deployment</a></li>
+          <li><a href="/docs/06-cost">Cost</a></li>
+        </ul>
+      </div>
+      <div class="site-footer__col">
+        <h4>Recipes</h4>
+        <ul>
+          {recipes.map((r) => (
+            <li><a href={`/recipes/${r.slug}`}>{r.label}</a></li>
+          ))}
+        </ul>
+      </div>
+    </div>
+    <div class="site-footer__stamp">
+      <span>status / {site.status}</span>
+      <span>build / {stamp}</span>
+      <span>repo / <a href={site.repo} target="_blank" rel="noreferrer noopener">{site.repo.replace("https://", "")}</a></span>
+    </div>
+  </div>
+</footer>

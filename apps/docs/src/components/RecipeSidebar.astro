@@ -1,0 +1,40 @@
+---
+import { recipes } from "../lib/recipes";
+
+interface Props {
+  currentSlug?: string;
+}
+const { currentSlug } = Astro.props;
+
+const groups = [
+  { mode: "Action" as const, number: "01", title: "Action mode" },
+  { mode: "Webhook" as const, number: "02", title: "Webhook mode" },
+];
+---
+
+<aside class="docs-shell__sidebar" aria-label="Recipe sections">
+  {
+    groups.map((group) => (
+      <div class="sidebar-section">
+        <div class="sidebar-section__header">
+          <span class="sidebar-section__num">§{group.number}</span>
+          <span class="sidebar-section__title">{group.title}</span>
+        </div>
+        <ul class="sidebar-section__list">
+          {recipes
+            .filter((r) => r.mode === group.mode)
+            .map((r) => (
+              <li>
+                <a
+                  href={`/recipes/${r.slug}`}
+                  aria-current={currentSlug === r.slug ? "page" : undefined}
+                >
+                  {r.label}
+                </a>
+              </li>
+            ))}
+        </ul>
+      </div>
+    ))
+  }
+</aside>

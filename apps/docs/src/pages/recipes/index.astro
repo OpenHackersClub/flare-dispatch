@@ -1,0 +1,59 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { recipes } from "../../lib/recipes";
+
+const sections = [
+  {
+    number: "01",
+    title: "Action mode",
+    note: "A GitHub Actions workflow file that calls a shipped run via openhackersclub/flaredispatch-action. No DSL code — the run already exists on your deploy.",
+    items: recipes.filter((r) => r.mode === "Action"),
+  },
+  {
+    number: "02",
+    title: "Webhook mode",
+    note: "A DSL run file you drop into your repo's runs/. The FlareDispatch GitHub App webhook fires it directly — zero GHA minutes, no workflow file.",
+    items: recipes.filter((r) => r.mode === "Webhook"),
+  },
+];
+---
+
+<BaseLayout
+  title="Recipes — FlareDispatch"
+  description="Worked examples of wiring real CI use cases onto FlareDispatch — browser tests, test matrices, CDP acceptance, security scans, deploy smoke, and AI code review."
+>
+  <div class="docs-index">
+    <header class="docs-index__header">
+      <div>
+        <span class="section-marker">§ / Recipes</span>
+        <h1>Worked examples.</h1>
+      </div>
+      <p>
+        Each recipe is a copy-paste starting point for wiring a real CI use case
+        onto FlareDispatch — adjust the inputs and drop it into your repo. Recipes
+        come in two shapes, matching the two trigger modes: Action-mode recipes are
+        a GitHub Actions workflow file; Webhook-mode recipes are a typed DSL run.
+      </p>
+    </header>
+
+    {
+      sections.map((section) => (
+        <section class="docs-index__section">
+          <header class="docs-index__section-header">
+            <span class="docs-index__section-num">§{section.number}</span>
+            <h2 class="docs-index__section-title">{section.title}</h2>
+          </header>
+          <p class="docs-index__section-note">{section.note}</p>
+          <div class="docs-index__grid">
+            {section.items.map((recipe) => (
+              <a class="docs-index__card" href={`/recipes/${recipe.slug}`}>
+                <span class="docs-index__card-title">{recipe.label}</span>
+                <p class="docs-index__card-blurb">{recipe.useCase}.</p>
+              </a>
+            ))}
+          </div>
+        </section>
+      ))
+    }
+  </div>
+</BaseLayout>
