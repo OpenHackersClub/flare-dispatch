@@ -1,0 +1,66 @@
+# FlareDispatch composite Action — specs/04-gha-integration.md § Action mode.
+#
+# HMAC-signs a dispatch body and POSTs it to a FlareDispatch Dispatcher. The
+# run executes asynchronously on Cloudflare; the result is reported back to the
+# PR via a GitHub check-run, not via this step. V0 ships fire-and-forget only.
+name: FlareDispatch
+description: Dispatch a FlareDispatch run — HMAC-signs the request and POSTs it to your Dispatcher.
+author: OpenHackersClub
+
+inputs:
+  run:
+    description: Run slug. Must exist on the target Dispatcher deploy.
+    required: true
+  endpoint:
+    description: Dispatcher base URL, e.g. https://flare-dispatch.<account>.workers.dev
+    required: true
+  hmac-secret:
+    description: Shared HMAC secret — same value as the Worker's HMAC_SECRET.
+    required: true
+  inputs:
+    description: JSON object of run inputs. Validated against the run's Schema on the Worker side.
+    required: false
+    default: "{}"
+  mode:
+    description: "Dispatch mode. V0 supports 'fire-and-forget' only; 'await' is deferred to V1."
+    required: false
+    default: fire-and-forget
+  check-name:
+    description: Overrides the check-run name (default flare-dispatch/<run>).
+    required: false
+    default: ""
+  installation-id:
+    description: >-
+      GitHub App installation id for the target repo. Optional — when omitted,
+      a Dispatcher that has already seen this repo resolves it server-side from
+      the App's webhook-registered installation map.
+    required: false
+    default: "0"
+
+outputs:
+  execution-id:
+    description: ULID of the execution on Cloudflare — returned by the Dispatcher in the 202.
+    value: ${{ steps.dispatch.outputs.execution-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate mode
+      shell: bash
+      run: |
+        if [ "${{ inputs.mode }}" != "fire-and-forget" ]; then
+          echo "::error::mode='${{ inputs.mode }}' — await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md § 2). Use mode: fire-and-forget."
+          exit 1
+        fi
+
+    - name: Dispatch
+      id: dispatch
+      shell: bash
+      run: bash "${{ github.action_path }}/dispatch.sh"
+      env:
+        INPUT_RUN: ${{ inputs.run }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_HMAC_SECRET: ${{ inputs.hmac-secret }}
+        INPUT_INPUTS: ${{ inputs.inputs }}
+        INPUT_CHECK_NAME: ${{ inputs.check-name }}
+        INPUT_INSTALLATION_ID: ${{ inputs.installation-id }}

@@ -1,0 +1,56 @@
+# FlareDispatch V0 acceptance smoke.
+#
+# Exercises the local composite Action (./actions/flare-dispatch-action) by
+# dispatching `offload-test` against this repo's own SHA — the PR-driven smoke
+# from specs/pm/plan.md § 5 step 10.
+#
+# IMPORTANT — this workflow must NOT fail CI for ordinary PRs:
+#   * There is no live Cloudflare deploy wired to this repo yet, and no
+#     `FLAREDISPATCH_ENDPOINT` repo variable / `FLAREDISPATCH_HMAC` secret
+#     is configured.
+#   * The dispatch step is therefore guarded by `if: vars.FLAREDISPATCH_ENDPOINT != ''`.
+#     With no endpoint configured the job logs a clear "skipped" notice and
+#     concludes success — it never blocks a PR.
+#
+# Wiring this to a real deploy is the OPERATOR's step (specs/pm/plan.md § 5 /
+# § 10, specs/05-byoc.md § First deploy walkthrough):
+#   1. `wrangler deploy` the Dispatcher; note the *.workers.dev URL.
+#   2. Set repo variable  FLAREDISPATCH_ENDPOINT = that URL.
+#   3. Set repo secret    FLAREDISPATCH_HMAC     = the Worker's HMAC_SECRET.
+# Once both exist, the dispatch step runs and posts a `flare-dispatch/offload-test`
+# check-run on the PR commit.
+name: Acceptance
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+
+concurrency:
+  group: acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: dispatch offload-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Acceptance skipped — no endpoint configured
+        if: vars.FLAREDISPATCH_ENDPOINT == ''
+        run: |
+          echo "::notice::Acceptance skipped — FLAREDISPATCH_ENDPOINT is not set."
+          echo "Wire a live Dispatcher per specs/pm/plan.md § 5 to enable this smoke:"
+          echo "  - repo variable FLAREDISPATCH_ENDPOINT = https://flare-dispatch.<account>.workers.dev"
+          echo "  - repo secret   FLAREDISPATCH_HMAC     = the Worker's HMAC_SECRET"
+
+      - name: Dispatch offload-test
+        if: vars.FLAREDISPATCH_ENDPOINT != ''
+        uses: ./actions/flare-dispatch-action
+        with:
+          run: offload-test
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            { "repo": "${{ github.repository }}", "sha": "${{ github.sha }}", "command": "pnpm test" }
+          mode: fire-and-forget
