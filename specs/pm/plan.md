@@ -24,7 +24,7 @@ timeline
 | **V1 — Fan-out + cache + artifacts** | Queues for matrix; R2 cache helper; R2 artifact upload with signed URLs | `+ matrix-fanout`, `+ cache-pnpm`, `+ r2-artifacts` (building blocks) | 8-shard test matrix on CF beats GHA wall time on a real repo |
 | **V2 — Browser e2e + acceptance** | Browser Rendering integration; CDP observation helper | `+ playwright-e2e`, `+ cdp-acceptance` | Sharded Playwright suite reports per-shard status; gctrl-board acceptance suite executes |
 | **V3 — Long-running + security** | Step chaining for suites past the Workflow step limit; security scan runs | `+ security-scan`, `+ custom-sandbox` | 30-min suite completes; npm audit / cargo audit / trivy run in Sandbox |
-| **V4 — Polish** | OpenTelemetry export, Logpush integration, retention policies, `flaredispatch init` CLI | — | Time-to-first-green-check < 30 min on a fresh CF account |
+| **V4 — Polish** | OpenTelemetry export, Logpush integration, retention policies, `flare-dispatch init` CLI | — | Time-to-first-green-check < 30 min on a fresh CF account |
 
 ## V0 walking-skeleton plan
 
@@ -54,11 +54,11 @@ Everything else from V1–V4 is deferred. This plan covers what we build, in wha
 | Browser Rendering binding, `playwright-e2e`, `cdp-acceptance` | Requires browser pool + CDP plumbing + report merging. Orthogonal to "Sandbox → check-run." → V2. |
 | Cache restore/save (`cache.restoreOr`, `cache.save`) | Optimization, not a correctness primitive. V0 re-executes `pnpm install` every execution; that's fine for a smoke. → V1. |
 | Other runs (`matrix-fanout`, `security-scan`, `custom-sandbox`) | One run is enough to prove the contract; the others are variations on the same DSL. → V1/V3. |
-| CLI (`flaredispatch init`, `flaredispatch dispatch`, etc.) | A `curl` script and `wrangler deploy` cover V0 onboarding. → V4. |
+| CLI (`flare-dispatch init`, `flare-dispatch dispatch`, etc.) | A `curl` script and `wrangler deploy` cover V0 onboarding. → V4. |
 | OpenTelemetry export | Workflows' built-in metrics + R2 NDJSON logs are enough to debug V0. → V4. |
 | Multi-environment (`env.staging` / `env.prod`) | Single deploy on `*.workers.dev`. Splitting environments is mechanical once V0 works. → V4. |
 | Retention crons (R2 lifecycle, D1 prune) | At V0 volumes, retention is "delete the bucket if you want a reset." → V4. |
-| Custom domain | `https://flaredispatch-v0.<account>.workers.dev` is the public endpoint. Custom domain is DNS, not code. → V4. |
+| Custom domain | `https://flare-dispatch-v0.<account>.workers.dev` is the public endpoint. Custom domain is DNS, not code. → V4. |
 | `await` mode in the GHA Action | Fire-and-forget covers the acceptance criterion. Await mode adds polling + GHA timeout logic. → V1. |
 | **App-webhook trigger surface** (`POST /v1/webhooks/github`) | V0 proves the HMAC-POST dispatch path end-to-end. The autonomous App-webhook trigger ([04-gha-integration § Webhook mode](../04-gha-integration.md#webhook-mode)) adds receiver-side gate logic, run-level trigger config, and `check_run.rerequested` re-run handling — orthogonal to "Sandbox → check-run." → V1. |
 | **`step.waitForEvent` + `/v1/admin/events/:wf_id`** | Human-in-loop runs (release approval, manual gates) aren't part of the V0 acceptance criterion. The DSL primitive is documented in [03-dsl § Human-in-the-loop](../03-dsl.md#human-in-the-loop-with-stepwaitforevent) but the Dispatcher route + CF Access wiring lands with the first run that needs it. → V2/V3. |
@@ -68,7 +68,7 @@ Everything else from V1–V4 is deferred. This plan covers what we build, in wha
 ### 3. Repository layout for V0
 
 ```
-flaredispatch/
+flare-dispatch/
 ├── wrangler.jsonc                              # bindings: Workflow, Container, R2, D1; no DO/Queue/Browser in V0
 ├── package.json                                # pnpm workspace root
 ├── pnpm-workspace.yaml                         # packages/* + apps/dispatcher
@@ -78,7 +78,7 @@ flaredispatch/
 │       └── ci.yml                              # typecheck + vitest on every PR
 ├── apps/
 │   └── dispatcher/
-│       ├── package.json                        # depends on @flaredispatch/core + @flaredispatch/runtime-cf
+│       ├── package.json                        # depends on @flare-dispatch/core + @flare-dispatch/runtime-cf
 │       ├── src/
 │       │   ├── index.ts                        # Worker entry: fetch handler dispatching to routes
 │       │   ├── routes/
@@ -90,7 +90,7 @@ flaredispatch/
 │       │   └── env.ts                          # typed Env interface for bindings
 │       └── tsconfig.json
 ├── packages/
-│   ├── core/                                   # @flaredispatch/core — DSL primitives
+│   ├── core/                                   # @flare-dispatch/core — DSL primitives
 │   │   ├── package.json
 │   │   ├── src/
 │   │   │   ├── index.ts                        # public exports
@@ -111,7 +111,7 @@ flaredispatch/
 │   │   │       ├── checks-fake.ts              # records check-run create/update calls
 │   │   │       └── executions-fake.ts          # in-memory executions + steps tables
 │   │   └── tsconfig.json
-│   ├── runtime-cf/                             # @flaredispatch/runtime-cf — live CF bindings
+│   ├── runtime-cf/                             # @flare-dispatch/runtime-cf — live CF bindings
 │   │   ├── package.json
 │   │   ├── src/
 │   │   │   ├── index.ts                        # exports CFRuntimeLive Layer
@@ -121,7 +121,7 @@ flaredispatch/
 │   │   │   ├── executions-d1.ts                # ExecutionsService via D1 binding (INSERT executions/steps)
 │   │   │   └── checks-github.ts                # ChecksService via GitHub App installation token
 │   │   └── tsconfig.json
-│   └── github-app/                             # @flaredispatch/github-app — App auth helpers
+│   └── github-app/                             # @flare-dispatch/github-app — App auth helpers
 │       ├── package.json
 │       ├── src/
 │       │   ├── index.ts
@@ -150,19 +150,19 @@ Each PR targets `main`, is independently mergeable, and ships a single concern. 
 #### PR 1 — Repo scaffold + wrangler config
 
 - **What:** pnpm workspace, `tsconfig.base.json`, `wrangler.jsonc` declaring V0 bindings only (Workflow, Container, R2, D1 — no Queue/DO/Browser), `infra/d1-schema.sql`, empty `apps/dispatcher/src/index.ts` returning `{status: "ok"}` on `/health`, CI workflow executing `pnpm typecheck` + `pnpm test`.
-- **Verifiable acceptance:** `pnpm install && pnpm typecheck && wrangler deploy --dry-run` exits 0; `wrangler d1 execute flaredispatch-v0 --file infra/d1-schema.sql --local` creates both tables.
+- **Verifiable acceptance:** `pnpm install && pnpm typecheck && wrangler deploy --dry-run` exits 0; `wrangler d1 execute flare-dispatch-v0 --file infra/d1-schema.sql --local` creates both tables.
 
-#### PR 2 — `@flaredispatch/core` DSL + tagged errors + fakes
+#### PR 2 — `@flare-dispatch/core` DSL + tagged errors + fakes
 
 - **What:** `defineRun`, `step`, all `Schema.TaggedError` classes from [03-dsl § Errors](../03-dsl.md#errors), `Context.Tag`s for `SandboxService`/`ArtifactService`/`IOService`/`ChecksService`/`ExecutionsService`, and the in-memory fake Layer for each. No live implementations.
-- **Verifiable acceptance:** `pnpm --filter @flaredispatch/core test` passes. A unit test composes `step("a", () => Effect.succeed(1))` and asserts the run runtime invokes the fake `ExecutionsService` once per step. `Match.exhaustive` on every tagged error compiles.
+- **Verifiable acceptance:** `pnpm --filter @flare-dispatch/core test` passes. A unit test composes `step("a", () => Effect.succeed(1))` and asserts the run runtime invokes the fake `ExecutionsService` once per step. `Match.exhaustive` on every tagged error compiles.
 
 #### PR 3 — `offload-test` run + run-level unit tests
 
 - **What:** `runs/offload-test.ts` exactly as sketched in [03-dsl § Top-level shape](../03-dsl.md#top-level-shape). Uses only `sandbox.git.clone`, `sandbox.exec`, `artifact.upload`, `io.now`. Unit tests under `runs/offload-test.test.ts` using `CFRuntimeTest` + a `sandboxFakeProgram` matching the [03-dsl § Unit-testing runs](../03-dsl.md#unit-testing-runs) pattern.
 - **Verifiable acceptance:** `pnpm test` passes for: (a) green path — fake `pnpm test` exits 0, output `.exitCode === 0`; (b) red path — fake exits 1, output `.exitCode === 1`, no thrown error; (c) timeout — fake raises `ExecTimeout`, run re-fails with the same tag.
 
-#### PR 4 — Live runtime Layers (`@flaredispatch/runtime-cf`) + `RunWorkflow` class
+#### PR 4 — Live runtime Layers (`@flare-dispatch/runtime-cf`) + `RunWorkflow` class
 
 - **What:** `SandboxCloudflareLive` calling the Containers binding, `R2ArtifactLive` writing log NDJSON, `D1ExecutionsLive` writing `executions`/`steps` rows, `IOLive` using platform `crypto.randomUUID()`/`Date.now()`. `apps/dispatcher/src/workflow.ts` exports `RunWorkflow extends WorkflowEntrypoint`, whose `run(event, step)` maps each `step.do(name, ...)` call to a run `step(name, ...)` boundary. `wrangler.jsonc` workflows binding added.
 - **Verifiable acceptance:** `pnpm dev` (wrangler dev) + `curl -X POST http://localhost:8787/v1/dispatch/offload-test -H 'X-FlareDispatch-Signature: sha256=<hmac>' -d @fixtures/dispatch.json` returns `202 {executionId}`, and `wrangler d1 execute --local` shows one row in `executions` and N rows in `steps`. R2 `logs/<executionId>/exec.ndjson` exists in local Miniflare R2.
@@ -172,7 +172,7 @@ Each PR targets `main`, is independently mergeable, and ships a single concern. 
 - **What:** `apps/dispatcher/src/routes/dispatch.ts` does Schema-validate the body against `offload-test.inputs`, HMAC-verify with constant-time compare against `env.HMAC_SECRET`, then call `env.RUNS_WORKFLOW.create({...})`. Add `GET /v1/artifacts/:execution/:name` that signs an R2 URL and 302-redirects. `GET /health` lists registered runs.
 - **Verifiable acceptance:** `vitest run apps/dispatcher` covers: invalid HMAC → 401; valid HMAC + invalid body → 400 with Schema error inlined; valid HMAC + valid body → 202 + `{executionId}`. A separate test fetches `/v1/artifacts/<executionId>/exec.ndjson` after a fake execution and asserts 302 with a signed URL pointing at R2.
 
-#### PR 6 — GitHub App auth (`@flaredispatch/github-app`) + ChecksService live binding
+#### PR 6 — GitHub App auth (`@flare-dispatch/github-app`) + ChecksService live binding
 
 - **What:** RS256 JWT signer using the PEM secret, installation-token exchange + cache (Worker memory only in V0 — the `INSTALL_TOKEN_KV` fallback is deferred to V1 per § 2; see [04-gha-integration § Check-runs callback](../04-gha-integration.md#check-runs-callback-shared-by-both-modes)), `POST` / `PATCH` to `/repos/{owner}/{repo}/check-runs`. Wire `ChecksGithubLive` into the runtime Layer so `offload-test` posts `in_progress` on start and `completed` with conclusion at end.
 - **Verifiable acceptance:** Integration test against an MSW-mocked `api.github.com` asserts: (a) one POST to `/repos/.../check-runs` with `status: in_progress`; (b) one PATCH with `status: completed` and `conclusion: success` for green, `failure` for red. End-to-end manual: dispatch against a real test repo, observe check-run appears on the commit's Checks tab.
@@ -188,7 +188,7 @@ The full V0 walking skeleton works iff this sequence executes green from a fresh
 
 ```sh
 # 0. Prereqs — Cloudflare Workers Paid, gh CLI authed, wrangler ≥ 4
-git clone https://github.com/openhackersclub/flaredispatch && cd flaredispatch
+git clone https://github.com/openhackersclub/flare-dispatch && cd flare-dispatch
 pnpm install
 pnpm typecheck                       # PR1 + PR2 + PR3 + PR4 invariants
 pnpm test                            # all unit tests across packages
@@ -196,9 +196,9 @@ pnpm test                            # all unit tests across packages
 
 ```sh
 # 1. Provision CF resources
-wrangler r2 bucket create flaredispatch-v0
-wrangler d1 create flaredispatch-v0
-wrangler d1 execute flaredispatch-v0 --remote --file infra/d1-schema.sql
+wrangler r2 bucket create flare-dispatch-v0
+wrangler d1 create flare-dispatch-v0
+wrangler d1 execute flare-dispatch-v0 --remote --file infra/d1-schema.sql
 # wrangler writes IDs back into wrangler.jsonc
 
 # 2. Set secrets
@@ -209,10 +209,10 @@ wrangler secret put GITHUB_WEBHOOK_SECRET                # not used in V0 but pr
 
 # 3. Deploy
 wrangler deploy
-# Note the deployed URL, e.g. https://flaredispatch-v0.<account>.workers.dev
+# Note the deployed URL, e.g. https://flare-dispatch-v0.<account>.workers.dev
 
 # 4. Health check
-curl -fsS https://flaredispatch-v0.<account>.workers.dev/health
+curl -fsS https://flare-dispatch-v0.<account>.workers.dev/health
 # Expected: {"status":"ok","runs":["offload-test"]}
 ```
 
@@ -223,7 +223,7 @@ curl -fsS https://flaredispatch-v0.<account>.workers.dev/health
 # 6. Direct dispatch — simulates what the GHA Action does
 BODY='{"run":"offload-test","github":{"repo":"owner/test-repo","ref":"refs/heads/main","sha":"<sha>","installation_id":<id>},"inputs":{"repo":"owner/test-repo","sha":"<sha>","command":"pnpm test"},"trigger":{}}'
 SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$HMAC_SECRET" -binary | xxd -p -c 256)
-curl -fsS -X POST https://flaredispatch-v0.<account>.workers.dev/v1/dispatch/offload-test \
+curl -fsS -X POST https://flare-dispatch-v0.<account>.workers.dev/v1/dispatch/offload-test \
   -H "Content-Type: application/json" \
   -H "X-FlareDispatch-Signature: sha256=$SIG" \
   -d "$BODY"
@@ -233,14 +233,14 @@ curl -fsS -X POST https://flaredispatch-v0.<account>.workers.dev/v1/dispatch/off
 ```sh
 # 7. Observe — within the run's wall-time ceiling
 gh pr checks <pr-number-of-test-commit>
-# Expected: flaredispatch/offload-test  PASS (or FAIL with the test command's exit)
+# Expected: flare-dispatch/offload-test  PASS (or FAIL with the test command's exit)
 
 # 8. Inspect via D1
-wrangler d1 execute flaredispatch-v0 --remote --command "SELECT id, status, completed_at FROM executions WHERE id = '01J...'"
+wrangler d1 execute flare-dispatch-v0 --remote --command "SELECT id, status, completed_at FROM executions WHERE id = '01J...'"
 # Expected: status = success | failure, completed_at populated
 
 # 9. Inspect log
-wrangler d1 execute flaredispatch-v0 --remote --command "SELECT log_uri FROM steps WHERE execution_id = '01J...' AND name = 'exec'"
+wrangler d1 execute flare-dispatch-v0 --remote --command "SELECT log_uri FROM steps WHERE execution_id = '01J...' AND name = 'exec'"
 # Open the returned log_uri (signed via /v1/artifacts/...); see NDJSON of exec output
 ```
 
@@ -254,19 +254,19 @@ wrangler d1 execute flaredispatch-v0 --remote --command "SELECT log_uri FROM ste
 #         endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
 #         hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
 #         inputs: '{"repo":"${{ github.repository }}","sha":"${{ github.sha }}","command":"pnpm test"}'
-gh pr create --title "smoke: flaredispatch v0" --body "Tests the V0 walking skeleton"
+gh pr create --title "smoke: flare-dispatch v0" --body "Tests the V0 walking skeleton"
 gh pr checks <pr>
-# Expected: flaredispatch/offload-test reports green when `pnpm test` passes, red when it fails.
+# Expected: flare-dispatch/offload-test reports green when `pnpm test` passes, red when it fails.
 ```
 
 If steps 4, 6, 7, and 10 all pass, V0 is complete and the [roadmap](#roadmap) V0 exit criterion is met.
 
 ### 6. Risks + open questions
 
-- **Container image is upstream of V0.** The run assumes a working Node container image. The OHC base images (`flaredispatch-node:latest`) are a separate workstream; for V0 we either (a) hand-build a local image and reference it by digest, or (b) use `node:lts-slim` directly. PR1 should resolve which. *Risk:* slow first deploy if image isn't cached on CF's edge.
+- **Container image is upstream of V0.** The run assumes a working Node container image. The OHC base images (`flare-dispatch-node:latest`) are a separate workstream; for V0 we either (a) hand-build a local image and reference it by digest, or (b) use `node:lts-slim` directly. PR1 should resolve which. *Risk:* slow first deploy if image isn't cached on CF's edge.
 - **Sandbox / Containers binding API.** The spec assumes a `RUNS_SANDBOX` binding with a `fetch`-like exec surface. The current Cloudflare Containers API has been evolving; PR4's `SandboxCloudflareLive` is the most likely spot to discover a mismatch between [01-architecture § Sandbox](../01-architecture.md#data-plane) and reality. *Mitigation:* keep the `SandboxService` Tag interface narrow (`clone`, `exec`) so the live binding is a small surface to revise.
 - **D1 write rate under load.** V0 writes one row per step transition (start + end). With only `offload-test` (4 steps), this is well within budget — but [01-architecture § Platform limits](../01-architecture.md#platform-limits--design-constraints) flags D1 hot-path writes as a concern at V1+ matrix scale. Worth a row-count assertion in PR4's test.
-- **Coordinator DO + Queue declared but unused.** [05-byoc § Wrangler config](../05-byoc.md#wrangler-config) shows the Coordinator DO and `flaredispatch-fanout` Queue in `wrangler.jsonc`. For V0 we omit both — they're unused and a DO migration is irreversible. *Open question:* do we ship a stub `Coordinator` class in V0 to make the V1 migration a no-op, or land it cleanly in V1? Plan currently chooses the latter.
+- **Coordinator DO + Queue declared but unused.** [05-byoc § Wrangler config](../05-byoc.md#wrangler-config) shows the Coordinator DO and `flare-dispatch-fanout` Queue in `wrangler.jsonc`. For V0 we omit both — they're unused and a DO migration is irreversible. *Open question:* do we ship a stub `Coordinator` class in V0 to make the V1 migration a no-op, or land it cleanly in V1? Plan currently chooses the latter.
 - **Artifact endpoint scope ambiguity.** [03-dsl § artifact](../03-dsl.md#artifact) describes `artifact.upload` as a building block that returns a signed URL embedded in the check-run summary. For V0 we use it for logs only — but the dispatcher endpoint `GET /v1/artifacts/:execution/:name` still needs to exist so the check-run summary's "view logs" link works. PR5 covers this; just noting the scope creep risk.
 - **GitHub App per-installation token cache eviction.** [04-gha-integration § Check-runs callback](../04-gha-integration.md#check-runs-callback-shared-by-both-modes) caches installation tokens in Worker memory with KV fallback. V0's PR6 ships memory-only — if the Worker is recycled mid-execution, the next check-run write does a fresh JWT exchange. Acceptable for V0 throughput; flag for V1.
 - **Run replay determinism.** [03-dsl § step Rules](../03-dsl.md#step) requires non-determinism to flow through `io.now` / `io.uuid` so Workflow checkpoint replay is consistent. The `offload-test` run is simple enough that this is easy to enforce; PR3's unit test should explicitly assert no direct `Date.now()` / `crypto.randomUUID()` calls in the run body (lint or grep guard).

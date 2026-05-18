@@ -32,5 +32,5 @@ jobs:
               "uploadReport": true
             }
 
-# Branch protection: require the check-run `flaredispatch/playwright-e2e`,
+# Branch protection: require the check-run `flare-dispatch/playwright-e2e`,
 # not this GHA job — the job succeeds the moment dispatch is accepted.

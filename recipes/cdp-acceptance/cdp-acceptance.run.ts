@@ -9,7 +9,7 @@
 // self-contained. Spec: specs/02-runs.md § 4. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
-import { defineRun, step, sandbox, browser, artifact, io } from "@flaredispatch/core";
+import { defineRun, step, sandbox, browser, artifact, io } from "@flare-dispatch/core";
 
 const Input = Schema.Struct({
   repo: Schema.String,

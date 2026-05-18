@@ -11,7 +11,7 @@
 // DSL:  see specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
-import { defineRun, step, sandbox, io } from "@flaredispatch/core";
+import { defineRun, step, sandbox, io } from "@flare-dispatch/core";
 
 export const deploySmoke = defineRun({
   name: "deploy-smoke",

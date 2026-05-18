@@ -39,5 +39,5 @@ jobs:
               "paths": ["/", "/health", "/api/status"]
             }
 
-# A non-zero `failed` count fails the check-run `flaredispatch/deploy-smoke`
+# A non-zero `failed` count fails the check-run `flare-dispatch/deploy-smoke`
 # on the deployed SHA — require it in branch protection, not this GHA job.

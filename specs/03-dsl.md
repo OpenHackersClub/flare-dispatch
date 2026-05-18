@@ -14,7 +14,7 @@ Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`,
 
 ```ts
 import { Effect, Schema } from "effect";
-import { defineRun, step, sandbox, cache, artifact } from "@flaredispatch/core";
+import { defineRun, step, sandbox, cache, artifact } from "@flare-dispatch/core";
 
 export const offloadTest = defineRun({
   name: "offload-test",
@@ -181,7 +181,7 @@ Usage:
 
 ```ts
 import { Effect, Match, Schema } from "effect";
-import { defineRun, step, artifact, io } from "@flaredispatch/core";
+import { defineRun, step, artifact, io } from "@flare-dispatch/core";
 
 const ApprovalPayload = Schema.Struct({
   decision: Schema.Literal("approve", "reject"),
@@ -397,7 +397,7 @@ namespace config {
 
 ## Errors
 
-All run errors are `Schema.TaggedError`s, defined in `@flaredispatch/core/errors`:
+All run errors are `Schema.TaggedError`s, defined in `@flare-dispatch/core/errors`:
 
 ```ts
 export class CheckoutFailed extends Schema.TaggedError<CheckoutFailed>()(
@@ -538,7 +538,7 @@ The same run executes against any of these:
 
 ```ts
 import { Effect } from "effect";
-import { CFRuntimeLive } from "@flaredispatch/runtime-cf";
+import { CFRuntimeLive } from "@flare-dispatch/runtime-cf";
 import { offloadTest } from "./runs/offload-test";
 
 const program = offloadTest.run({
@@ -556,7 +556,7 @@ Effect.runPromise(program.pipe(Effect.provide(CFRuntimeLive)));
 import { it, expect, vi } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { offloadTest } from "./offload-test";
-import { CFRuntimeTest, sandboxFakeProgram } from "@flaredispatch/runtime-test";
+import { CFRuntimeTest, sandboxFakeProgram } from "@flare-dispatch/runtime-test";
 
 it.effect("offload-test reports exit code from sandbox exec", () =>
   Effect.gen(function* () {

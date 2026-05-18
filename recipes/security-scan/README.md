@@ -9,11 +9,11 @@ Run dependency and vulnerability scanners against a checked-out repo — on ever
 
 ## How it works
 
-`ci.yml` dispatches `security-scan` with a list of `scanners` (`pnpm-audit`, `trivy-fs`, `gitleaks`, …) and a `failOn` severity. Each scanner exits non-zero at or above that severity; the run's check-run, `flaredispatch/security-scan`, is red if any scanner trips. The scheduled run uses the default branch's SHA — same run slug, no extra wiring.
+`ci.yml` dispatches `security-scan` with a list of `scanners` (`pnpm-audit`, `trivy-fs`, `gitleaks`, …) and a `failOn` severity. Each scanner exits non-zero at or above that severity; the run's check-run, `flare-dispatch/security-scan`, is red if any scanner trips. The scheduled run uses the default branch's SHA — same run slug, no extra wiring.
 
 ## Install
 
 1. Deploy FlareDispatch and install the GitHub App — see [specs/05-byoc.md](../../specs/05-byoc.md).
 2. Add `security-scan.run.ts` to your repo's `runs/` directory.
 3. Copy `ci.yml` into `.github/workflows/`; adjust the `scanners` list and `failOn`.
-4. In branch protection, require the `flaredispatch/security-scan` check-run.
+4. In branch protection, require the `flare-dispatch/security-scan` check-run.

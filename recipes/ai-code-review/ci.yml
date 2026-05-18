@@ -39,4 +39,4 @@ jobs:
 # Action need not — and cannot reliably — supply it from the GHA context.
 #
 # Findings post back as inline check-run annotations on the PR's Files-changed
-# tab — require the check-run `flaredispatch/pr-review` in branch protection.
+# tab — require the check-run `flare-dispatch/pr-review` in branch protection.

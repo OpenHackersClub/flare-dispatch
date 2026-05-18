@@ -8,7 +8,7 @@
 // self-contained. Spec: specs/02-runs.md § 3. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
-import { defineRun, step, sandbox, artifact } from "@flaredispatch/core";
+import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
 
 const Input = Schema.Struct({
   repo: Schema.String,
@@ -34,7 +34,7 @@ const Output = Schema.Struct({
 export const playwrightE2E = defineRun({
   name: "playwright-e2e",
   version: "1.0.0",
-  image: "registry.cloudflare.com/openhackersclub/flaredispatch-playwright:latest",
+  image: "registry.cloudflare.com/openhackersclub/flare-dispatch-playwright:latest",
   inputs: Input,
   outputs: Output,
   limits: { maxDurationSec: 2400, maxConcurrency: 8, requiresBrowser: true },

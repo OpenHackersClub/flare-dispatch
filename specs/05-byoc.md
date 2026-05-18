@@ -35,7 +35,7 @@ All bindings are declared in `wrangler.jsonc`. The Dispatcher is the only entry 
 ## Repo layout
 
 ```
-flaredispatch/                                    your fork of the template
+flare-dispatch/                                    your fork of the template
 ├── wrangler.jsonc                             bindings + secrets
 ├── package.json
 ├── src/
@@ -64,7 +64,7 @@ The template ships with all built-in runs wired. Users add their own under `runs
 ```jsonc
 // wrangler.jsonc
 {
-  "name": "flaredispatch",
+  "name": "flare-dispatch",
   "main": "src/dispatcher.ts",
   "compatibility_date": "2026-05-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -78,7 +78,7 @@ The template ships with all built-in runs wired. Users add their own under `runs
       "binding": "RUNS_SANDBOX",
       // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io, or Amazon ECR.
       // GHCR is not a supported pull source — CI mirrors the GHCR image to CF's registry at release.
-      "image": "registry.cloudflare.com/openhackersclub/flaredispatch-node:latest",
+      "image": "registry.cloudflare.com/openhackersclub/flare-dispatch-node:latest",
       // Instance types (2026-05): lite (1/16 vCPU, 256 MiB) | basic (1/4, 1 GiB) |
       //   standard-1 (1/2, 4 GiB) | standard-2 (1, 6 GiB) | standard-3 (2, 8 GiB) | standard-4 (4, 12 GiB).
       // "standard" + "dev" are legacy aliases retained for back-compat.
@@ -96,11 +96,11 @@ The template ships with all built-in runs wired. Users add their own under `runs
   },
 
   "r2_buckets": [
-    { "binding": "RUNS_STORAGE", "bucket_name": "flaredispatch-prod" }
+    { "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-prod" }
   ],
 
   "d1_databases": [
-    { "binding": "RUNS_METADATA", "database_name": "flaredispatch", "database_id": "<filled by wrangler>" }
+    { "binding": "RUNS_METADATA", "database_name": "flare-dispatch", "database_id": "<filled by wrangler>" }
   ],
 
   "kv_namespaces": [
@@ -110,8 +110,8 @@ The template ships with all built-in runs wired. Users add their own under `runs
   ],
 
   "queues": {
-    "producers": [{ "binding": "RUNS_FANOUT", "queue": "flaredispatch-fanout" }],
-    "consumers": [{ "queue": "flaredispatch-fanout", "max_batch_size": 10 }]
+    "producers": [{ "binding": "RUNS_FANOUT", "queue": "flare-dispatch-fanout" }],
+    "consumers": [{ "queue": "flare-dispatch-fanout", "max_batch_size": 10 }]
   },
 
   // migrations are the Durable Object lifecycle mechanism — only DO classes
@@ -224,22 +224,22 @@ Setup:
 
 ```sh
 # 1. Clone the template
-git clone https://github.com/openhackersclub/flaredispatch-template my-flaredispatch
-cd my-flaredispatch
+git clone https://github.com/openhackersclub/flare-dispatch-template my-flare-dispatch
+cd my-flare-dispatch
 pnpm install
 
 # 2. Create the CF resources (Wrangler will prompt for new IDs)
-wrangler r2 bucket create flaredispatch-prod
-wrangler d1 create flaredispatch
+wrangler r2 bucket create flare-dispatch-prod
+wrangler d1 create flare-dispatch
 wrangler kv namespace create RUNS_CONFIG
 wrangler kv namespace create IDEMPOTENCY_KV
 wrangler kv namespace create INSTALL_TOKEN_KV
-wrangler queues create flaredispatch-fanout
+wrangler queues create flare-dispatch-fanout
 
 # Wrangler writes the IDs back into wrangler.jsonc.
 
 # 3. Apply the D1 schema
-wrangler d1 execute flaredispatch --file infra/d1-schema.sql
+wrangler d1 execute flare-dispatch --file infra/d1-schema.sql
 
 # 4. Set secrets
 wrangler secret put HMAC_SECRET
@@ -249,11 +249,11 @@ wrangler secret put HMAC_SECRET
 wrangler deploy
 
 # 6. Verify
-curl -fsS https://flaredispatch.<your-subdomain>.workers.dev/health
+curl -fsS https://flare-dispatch.<your-subdomain>.workers.dev/health
 # {"status":"ok","runs":["offload-test","matrix-fanout",...]}
 
 # 7. Create the GitHub App (interactive)
-pnpm cli github-app create --endpoint https://flaredispatch.<your-subdomain>.workers.dev
+pnpm cli github-app create --endpoint https://flare-dispatch.<your-subdomain>.workers.dev
 
 # 8. Install the App on your org/repo via the URL it prints.
 
@@ -269,17 +269,17 @@ The Dispatcher is itself a Worker, so ongoing deploys don't have to be manual `w
 
 ## CLI
 
-`@flaredispatch/cli` ships as a thin wrapper around the HTTP API. Used for setup, local dispatch, and ops.
+`@flare-dispatch/cli` ships as a thin wrapper around the HTTP API. Used for setup, local dispatch, and ops.
 
 ```sh
-flaredispatch init                         # interactive setup; runs the wrangler/d1/kv create steps
-flaredispatch deploy                       # wrangler deploy + run migrations
-flaredispatch github-app create            # manifest-based App creation
-flaredispatch dispatch <run> ...           # send a one-off dispatch
-flaredispatch executions list              # list recent executions (D1 query)
-flaredispatch executions view <id>         # show execution details + log links
-flaredispatch logs <execution-id> <step>   # stream R2 NDJSON log
-flaredispatch runs list                    # list registered runs
+flare-dispatch init                         # interactive setup; runs the wrangler/d1/kv create steps
+flare-dispatch deploy                       # wrangler deploy + run migrations
+flare-dispatch github-app create            # manifest-based App creation
+flare-dispatch dispatch <run> ...           # send a one-off dispatch
+flare-dispatch executions list              # list recent executions (D1 query)
+flare-dispatch executions view <id>         # show execution details + log links
+flare-dispatch logs <execution-id> <step>   # stream R2 NDJSON log
+flare-dispatch runs list                    # list registered runs
 ```
 
 The CLI uses `@effect/cli` and the same Effect-TS types as the run runtime — so options/args are typed, errors are tagged, and adding a subcommand is one file.
@@ -327,13 +327,13 @@ Two Dispatcher deploys with separate bindings and HMAC secrets:
 {
   "env": {
     "staging": {
-      "r2_buckets": [{ "binding": "RUNS_STORAGE", "bucket_name": "flaredispatch-staging" }],
-      "d1_databases": [{ "binding": "RUNS_METADATA", "database_name": "flaredispatch-staging" }],
+      "r2_buckets": [{ "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-staging" }],
+      "d1_databases": [{ "binding": "RUNS_METADATA", "database_name": "flare-dispatch-staging" }],
       "routes": [{ "pattern": "runs-staging.example.com/*", "custom_domain": true }]
     },
     "prod": {
-      "r2_buckets": [{ "binding": "RUNS_STORAGE", "bucket_name": "flaredispatch-prod" }],
-      "d1_databases": [{ "binding": "RUNS_METADATA", "database_name": "flaredispatch" }],
+      "r2_buckets": [{ "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-prod" }],
+      "d1_databases": [{ "binding": "RUNS_METADATA", "database_name": "flare-dispatch" }],
       "routes": [{ "pattern": "runs.example.com/*", "custom_domain": true }]
     }
   }
@@ -361,7 +361,7 @@ R2 lifecycle policy in `infra/r2-lifecycle.json`:
 }
 ```
 
-Applied with `wrangler r2 bucket lifecycle set flaredispatch-prod --file infra/r2-lifecycle.json` (replaces the full policy). Individual rules can be appended with `wrangler r2 bucket lifecycle add flaredispatch-prod ...` and removed with `wrangler r2 bucket lifecycle remove flaredispatch-prod --id <rule-id>`. There is no `wrangler r2 bucket lifecycle put` subcommand.
+Applied with `wrangler r2 bucket lifecycle set flare-dispatch-prod --file infra/r2-lifecycle.json` (replaces the full policy). Individual rules can be appended with `wrangler r2 bucket lifecycle add flare-dispatch-prod ...` and removed with `wrangler r2 bucket lifecycle remove flare-dispatch-prod --id <rule-id>`. There is no `wrangler r2 bucket lifecycle put` subcommand.
 
 *Source:* https://developers.cloudflare.com/r2/buckets/object-lifecycles/ (2026-05).
 
