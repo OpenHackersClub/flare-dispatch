@@ -1335,6 +1335,61 @@ pre code {
   margin: 0;
 }
 
+/* ---- DSL snippet showcase (homepage) ----------------------------------- */
+
+.snippets {
+  padding: 5rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.snippets__widget {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+.snippets__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--hairline);
+}
+.snippets__tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--hairline);
+  padding: 0.7rem 1.25rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color 150ms var(--easing-precise),
+    background 150ms var(--easing-precise);
+}
+.snippets__tab:hover {
+  color: var(--ink);
+  background: var(--paper-soft);
+}
+.snippets__tab[aria-selected="true"] {
+  color: var(--accent);
+  background: var(--paper);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.snippets__blurb {
+  margin: 0;
+  padding: 1rem 1.25rem;
+  font-size: var(--fs-small);
+  color: var(--muted);
+  border-bottom: 1px solid var(--hairline);
+}
+.snippets__panel pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  max-height: 32rem;
+}
+
 /* ---- Recipe pages ------------------------------------------------------ */
 
 .docs-shell--recipe {

@@ -1,7 +1,11 @@
 ---
+import { Code } from "astro:components";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import HeroDiagram from "../components/HeroDiagram.astro";
 import { site } from "../lib/site";
+import offloadTestSrc from "../snippets/offload-test.txt?raw";
+import deploySmokeSrc from "../snippets/deploy-smoke.txt?raw";
+import prReviewSrc from "../snippets/pr-review.txt?raw";
 
 const value = [
   {
@@ -53,6 +57,32 @@ const runs = [
     body: "The escape hatch: an arbitrary container command with cache and R2 artifacts already wired in.",
   },
 ];
+
+const snippets = [
+  {
+    id: "offload-test",
+    label: "offload-test",
+    blurb:
+      "The walking skeleton — clone a repo, run any test command in a Cloudflare Sandbox, report the exit code straight to a PR check.",
+    code: offloadTestSrc,
+  },
+  {
+    id: "deploy-smoke",
+    label: "deploy-smoke",
+    blurb:
+      "Webhook mode — fires on deployment_status.success and probes your critical URLs in parallel. Zero GHA minutes, no workflow file.",
+    code: deploySmokeSrc,
+  },
+  {
+    id: "pr-review",
+    label: "pr-review",
+    blurb:
+      "Webhook mode — a multi-agent AI reviewer fanned out across domains, then deduplicated by a coordinator into one verdict.",
+    code: prReviewSrc,
+  },
+];
+
+const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
 ---
 
 <BaseLayout
@@ -172,29 +202,68 @@ const runs = [
     </div>
   </section>
 
+  <section class="snippets">
+    <div class="container">
+      <div class="tenets__header">
+        <span class="section-marker">§04 / The DSL</span>
+        <h2>A run is a typed program — read it, fork it, test it.</h2>
+      </div>
+      <div class="snippets__widget">
+        <div class="snippets__tabs" role="tablist" aria-label="Run examples">
+          {snippets.map((s, i) => (
+            <button
+              type="button"
+              class="snippets__tab"
+              role="tab"
+              id={`snippet-tab-${s.id}`}
+              aria-controls={`snippet-panel-${s.id}`}
+              aria-selected={i === 0 ? "true" : "false"}
+              data-snippet-tab={s.id}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        {snippets.map((s, i) => (
+          <div
+            class="snippets__panel"
+            role="tabpanel"
+            id={`snippet-panel-${s.id}`}
+            aria-labelledby={`snippet-tab-${s.id}`}
+            data-snippet-panel={s.id}
+            hidden={i !== 0}
+          >
+            <p class="snippets__blurb">{s.blurb}</p>
+            <Code code={s.code} lang="ts" themes={shikiThemes} defaultColor={false} wrap />
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
   <section class="manifesto">
     <div class="container">
       <div class="manifesto__header">
-        <span class="section-marker">§04 / Design philosophy</span>
+        <span class="section-marker">§05 / Design philosophy</span>
         <h2>Three bets the design is built on.</h2>
       </div>
       <ol class="manifesto__list">
         <li class="manifesto__item">
-          <span class="manifesto__num">§04.01</span>
+          <span class="manifesto__num">§05.01</span>
           <div>
             <p class="manifesto__statement">Offload, <strong>don't replace</strong>.</p>
             <p class="manifesto__body">GitHub Actions is a fine trigger and PR gate. FlareDispatch doesn't compete with it — it takes the heavy compute GHA bills badly and leaves the cheap jobs alone.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§04.02</span>
+          <span class="manifesto__num">§05.02</span>
           <div>
             <p class="manifesto__statement">Runs are <strong>typed programs</strong>, not YAML.</p>
             <p class="manifesto__body">A run is an Effect-TS program — Schema-typed inputs and outputs, composable steps, tagged errors, exhaustive matching. Fork it, vendor-edit it, unit-test it without booting a container.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§04.03</span>
+          <span class="manifesto__num">§05.03</span>
           <div>
             <p class="manifesto__statement">BYOC <strong>by construction</strong>.</p>
             <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs are yours.</p>
@@ -207,7 +276,7 @@ const runs = [
   <section class="container">
     <div class="cta-band">
       <div>
-        <span class="section-marker">§05 / Read on</span>
+        <span class="section-marker">§06 / Read on</span>
         <h2>Pre-implementation. The specs are the contract.</h2>
       </div>
       <div class="cta-band__actions">
@@ -216,4 +285,18 @@ const runs = [
       </div>
     </div>
   </section>
+
+  <script>
+    for (const tab of document.querySelectorAll("[data-snippet-tab]")) {
+      tab.addEventListener("click", () => {
+        const id = tab.getAttribute("data-snippet-tab");
+        for (const t of document.querySelectorAll("[data-snippet-tab]")) {
+          t.setAttribute("aria-selected", String(t === tab));
+        }
+        for (const p of document.querySelectorAll("[data-snippet-panel]")) {
+          p.toggleAttribute("hidden", p.getAttribute("data-snippet-panel") !== id);
+        }
+      });
+    }
+  </script>
 </BaseLayout>
