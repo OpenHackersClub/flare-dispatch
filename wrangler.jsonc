@@ -1,0 +1,60 @@
+{
+  // FlareDispatch V0 walking skeleton — Dispatcher Worker.
+  // V0 bindings only: Workflow, R2, D1, Container. No Queue / DO / Browser (deferred to V1+).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flare-dispatch-v0",
+  "main": "apps/dispatcher/src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": { "enabled": true },
+
+  // RunWorkflow class is stubbed in apps/dispatcher/src/index.ts; the real
+  // step-mapping implementation lands in PR4.
+  "workflows": [
+    {
+      "name": "runs-workflow",
+      "binding": "RUNS_WORKFLOW",
+      "class_name": "RunWorkflow"
+    }
+  ],
+
+  // Container binding. Cloudflare Containers pulls only from
+  // registry.cloudflare.com, docker.io, or Amazon ECR. V0 references the
+  // upstream node:lts-slim image on docker.io directly (per plan § 6 Risks);
+  // the OHC base image is a separate workstream.
+  "containers": [
+    {
+      "class_name": "RunSandbox",
+      "image": "docker.io/library/node:lts-slim",
+      "instance_type": "standard-2",
+      "max_instances": 16
+    }
+  ],
+
+  // The Container runtime is fronted by a Durable Object class — wrangler
+  // requires the class to be registered via a migration. RunSandbox is the
+  // DO class backing the RUNS_SANDBOX container binding (not the Coordinator
+  // fan-out DO, which is deferred to V1).
+  "durable_objects": {
+    "bindings": [
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] }
+  ],
+
+  "r2_buckets": [
+    { "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-v0" }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "RUNS_METADATA",
+      "database_name": "flare-dispatch-v0",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

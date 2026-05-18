@@ -20,8 +20,14 @@ import type {
   StepFailed,
 } from "./errors";
 
-/** Execute an Effect at the Workflow step boundary, rethrowing typed failures. */
-export const runEffect = <A, E>(eff: Effect.Effect<A, E, RunContext>) =>
+/**
+ * Execute an Effect at the Workflow step boundary, rethrowing typed failures.
+ *
+ * The Effect must already have its `RunContext` provided by the runtime Layer
+ * (`R = never`) before it reaches the boundary — `runEffect` is the imperative
+ * shim, not the place capabilities are supplied.
+ */
+export const runEffect = <A, E>(eff: Effect.Effect<A, E, never>) =>
   Effect.runPromiseExit(eff).then((exit) =>
     Exit.match(exit, {
       onSuccess: (a) => a,
@@ -32,8 +38,7 @@ export const runEffect = <A, E>(eff: Effect.Effect<A, E, RunContext>) =>
           onSome: (failure) => failure as unknown as Error,
           onNone: () => new Error(Cause.pretty(cause)),
         });
-        // @ts-expect-error attach cause for downstream serialization
-        err.cause = cause;
+        (err as { cause?: unknown }).cause = cause;
         throw err;
       },
     }),

@@ -1,0 +1,23 @@
+{
+  "name": "flare-dispatch",
+  "version": "0.0.0",
+  "private": true,
+  "description": "FlareDispatch — BYOC CI offload running on Cloudflare. pnpm workspace root.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r --filter \"./packages/*\" --filter \"./apps/dispatcher\" exec tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250510.0",
+    "effect": "^3.10.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.50.0"
+  }
+}
