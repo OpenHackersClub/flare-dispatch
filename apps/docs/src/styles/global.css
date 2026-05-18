@@ -320,11 +320,10 @@ pre code {
 }
 .site-header__brand-mark {
   display: inline-block;
-  width: 11px;
-  height: 11px;
-  background: var(--accent);
-  border-radius: 1px;
-  transform: translateY(-1px) rotate(45deg);
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+  transform: translateY(2px);
 }
 .site-header__brand em {
   font-family: var(--font-mono);
@@ -1375,11 +1374,67 @@ pre code {
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 .snippets__blurb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+  justify-content: space-between;
+  align-items: baseline;
   margin: 0;
   padding: 1rem 1.25rem;
   font-size: var(--fs-small);
   color: var(--muted);
   border-bottom: 1px solid var(--hairline);
+}
+.snippets__blurb em {
+  font-style: normal;
+  color: var(--ink);
+}
+.snippets__blurb a {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--accent);
+  white-space: nowrap;
+  border-bottom: none;
+}
+.snippets__subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--paper-soft);
+  border-bottom: 1px solid var(--hairline);
+}
+.snippets__subtab {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 0.28rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color 150ms var(--easing-precise),
+    border-color 150ms var(--easing-precise);
+}
+.snippets__subtab:hover {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+.snippets__subtab[aria-selected="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.snippets__subtab-lang {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.85em;
+  opacity: 0.7;
 }
 .snippets__panel pre {
   margin: 0;
@@ -1440,6 +1495,16 @@ pre code {
   margin: 0 0 1.25rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--hairline);
+}
+.recipe-source__note {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+  font-size: var(--fs-small);
+  line-height: 1.6;
+}
+.recipe-source__note code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
 }
 .recipe-file {
   margin: 0 0 1.75rem;

@@ -1,0 +1,43 @@
+# Recipe: post-deploy smoke test — Action-mode alternative
+#
+# Use case: same `deploy-smoke` run as ./smoke.run.ts, but dispatched from a
+# GitHub Actions workflow instead of the FlareDispatch GitHub App webhook.
+#
+# Webhook mode (the `triggers` block in ./smoke.run.ts) is preferred — it
+# burns zero GHA minutes and needs no workflow file. Use this Action-mode
+# file when you cannot install the App, or want the smoke test to interleave
+# with other jobs on the deployment.
+#
+# Mode: Action mode, fire-and-forget. See specs/04-gha-integration.md.
+# Run:  deploy-smoke — defined in ./smoke.run.ts.
+
+name: deploy-smoke
+on:
+  deployment_status:
+
+jobs:
+  deploy-smoke:
+    # GHA cannot filter `deployment_status` by state in `on:`, so gate the job
+    # here. This `if:` mirrors the webhook `gate` in ./smoke.run.ts — success
+    # transition, production only, environment_url present.
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'production' &&
+      github.event.deployment_status.environment_url != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flare-dispatch-action@v1
+        with:
+          run: deploy-smoke
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.event.deployment.sha }}",
+              "baseURL": "${{ github.event.deployment_status.environment_url }}",
+              "paths": ["/", "/health", "/api/status"]
+            }
+
+# A non-zero `failed` count fails the check-run `flaredispatch/deploy-smoke`
+# on the deployed SHA — require it in branch protection, not this GHA job.

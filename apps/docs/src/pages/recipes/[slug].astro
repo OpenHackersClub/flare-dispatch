@@ -61,7 +61,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
           <dd>{recipe.useCase}</dd>
         </div>
         <div>
-          <dt>Trigger mode</dt>
+          <dt>Recommended mode</dt>
           <dd>{recipe.mode}</dd>
         </div>
         <div>
@@ -80,6 +80,12 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
 
       <section class="recipe-source">
         <h2>Source</h2>
+        <p class="recipe-source__note">
+          This recipe ships both triggers — a typed Effect-TS run
+          (<code>*.run.ts</code>) and a GitHub Actions workflow
+          (<code>ci.yml</code>). Use whichever fits;
+          {recipe.mode} mode is the recommended default.
+        </p>
         {
           sources.map(({ file, code }) => (
             <figure class="recipe-file">

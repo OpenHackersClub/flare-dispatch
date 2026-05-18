@@ -6,13 +6,13 @@ const sections = [
   {
     number: "01",
     title: "Action mode",
-    note: "A GitHub Actions workflow file that calls a shipped run via openhackersclub/flaredispatch-action. No DSL code — the run already exists on your deploy.",
+    note: "Recommended trigger: a GitHub Actions workflow (ci.yml) that calls the shipped run via openhackersclub/flare-dispatch-action. The typed Effect-TS run is included alongside it.",
     items: recipes.filter((r) => r.mode === "Action"),
   },
   {
     number: "02",
     title: "Webhook mode",
-    note: "A DSL run file you drop into your repo's runs/. The FlareDispatch GitHub App webhook fires it directly — zero GHA minutes, no workflow file.",
+    note: "Recommended trigger: the typed run's own triggers block — the FlareDispatch GitHub App webhook fires it directly, zero GHA minutes. An Action-mode ci.yml is included as the GHA-native alternative.",
     items: recipes.filter((r) => r.mode === "Webhook"),
   },
 ];
@@ -30,9 +30,10 @@ const sections = [
       </div>
       <p>
         Each recipe is a copy-paste starting point for wiring a real CI use case
-        onto FlareDispatch — adjust the inputs and drop it into your repo. Recipes
-        come in two shapes, matching the two trigger modes: Action-mode recipes are
-        a GitHub Actions workflow file; Webhook-mode recipes are a typed DSL run.
+        onto FlareDispatch — adjust the inputs and drop it into your repo. Every
+        recipe ships both pieces — a typed Effect-TS run (<code>*.run.ts</code>)
+        and a GitHub Actions workflow (<code>ci.yml</code>) — so you can trigger it
+        either way. Recipes are grouped below by their recommended trigger mode.
       </p>
     </header>
 

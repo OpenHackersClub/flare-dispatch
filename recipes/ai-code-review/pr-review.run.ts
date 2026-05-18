@@ -5,7 +5,9 @@
 // blog's design maps onto this run.
 //
 // Mode: Webhook mode — fires on every pull_request push, zero GHA minutes,
-//       no workflow file. Drop this file into your repo's `runs/`.
+//       no workflow file. Drop this file into your repo's `runs/`. An
+//       Action-mode alternative (./ci.yml) dispatches the same run from a
+//       GitHub Actions workflow, for repos that cannot install the App.
 // DSL:  see specs/03-dsl.md (uses `config` + `io.priorExecution`); inline
 //       findings are posted as check-run annotations — specs/04-gha-integration.md.
 
@@ -89,7 +91,11 @@ export const prReview = defineRun({
     sha: Schema.String,
     baseSha: Schema.String,
     pr: Schema.Number,
-    installationId: Schema.Number,
+    // Optional: Webhook mode maps it from `payload.installation.id` above;
+    // Action mode (./ci.yml) omits it — the Dispatcher resolves the
+    // installation from the repo→installation KV map when it opens the
+    // check-run. The run body itself never reads it.
+    installationId: Schema.optional(Schema.Number),
   }),
 
   outputs: ReviewOutput,

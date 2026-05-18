@@ -134,7 +134,7 @@ CF Workflows is imperative: its `run(event, step)` method awaits `step.do(...)` 
 
 ```ts
 // packages/core/src/step.ts (sketch)
-import { Effect, Cause, Exit } from "effect";
+import { Effect, Cause, Exit, Option } from "effect";
 
 export const runEffect = <A, E>(eff: Effect.Effect<A, E, RunContext>) =>
   Effect.runPromiseExit(eff).then((exit) =>
@@ -143,8 +143,13 @@ export const runEffect = <A, E>(eff: Effect.Effect<A, E, RunContext>) =>
       onFailure: (cause) => {
         // Tagged failures bubble as throws so Workflows fails the step.
         // The Cause is preserved on the thrown error for OTel + check-run summary.
-        const failure = Cause.failureOption(cause);
-        const err = failure._tag === "Some" ? failure.value : new Error(Cause.pretty(cause));
+        // `Cause.failureOption` is an Option — branch it with `Option.match`,
+        // never a raw `._tag` read: `Some` is a typed run failure, `None` is a
+        // defect (no typed failure), rendered from the pretty Cause.
+        const err = Option.match(Cause.failureOption(cause), {
+          onSome: (failure) => failure,
+          onNone: () => new Error(Cause.pretty(cause)),
+        });
         // @ts-expect-error attach cause for downstream serialization
         err.cause = cause;
         throw err;
@@ -175,7 +180,7 @@ declare const waitForEvent: <P>(
 Usage:
 
 ```ts
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import { defineRun, step, artifact, io } from "@flaredispatch/core";
 
 const ApprovalPayload = Schema.Struct({
@@ -198,11 +203,23 @@ export const releaseNotes = defineRun({
         payloadSchema: ApprovalPayload,
       });
 
-      if (approval.decision === "reject") {
-        return { published: false, reason: "rejected" as const, tag: draft.nextTag };
-      }
-      yield* step("publish-release", () => publishRelease(draft));
-      return { published: true, tag: draft.nextTag };
+      // The approval decision is a literal union — match it exhaustively so a
+      // new decision variant becomes a compile error, not a silent fall-through.
+      return yield* Match.value(approval.decision).pipe(
+        Match.when("reject", () =>
+          Effect.succeed({
+            published: false as const,
+            reason: "rejected" as const,
+            tag: draft.nextTag,
+          }),
+        ),
+        Match.when("approve", () =>
+          step("publish-release", () => publishRelease(draft)).pipe(
+            Effect.as({ published: true as const, tag: draft.nextTag }),
+          ),
+        ),
+        Match.exhaustive,
+      );
     }),
 });
 ```
@@ -598,9 +615,15 @@ export const playwrightE2E = defineRun({
       return summarizeShards(shardResults, reportUri);
     }).pipe(
       Effect.catchTag("BrowserUnavailable", (e) =>
-        e.reason === "quota"
-          ? Effect.fail(new BrowserQuotaExhausted({ retryAfterMs: e.retryAfterMs ?? 60_000 }))
-          : Effect.fail(e),
+        // Match on the failure reason: a hard quota wall becomes its own tagged
+        // error; transient / session-cap failures propagate unchanged for the
+        // retry Schedule to handle.
+        Match.value(e.reason).pipe(
+          Match.when("quota", () =>
+            Effect.fail(new BrowserQuotaExhausted({ retryAfterMs: e.retryAfterMs ?? 60_000 })),
+          ),
+          Match.orElse(() => Effect.fail(e)),
+        ),
       ),
     ),
 });

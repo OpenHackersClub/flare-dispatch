@@ -4,7 +4,7 @@ GitHub talks to FlareDispatch through **two trigger modes**. Pick whichever fits
 
 | Mode | How a run is triggered | GHA workflow file? | GHA minutes per execution | Shared secret to rotate? |
 |---|---|---|---|---|
-| **Action mode** | A GHA workflow calls `openhackersclub/flaredispatch-action`; or any external caller HMAC-signs and POSTs the dispatch endpoint | yes (or none, for direct POST) | ~10 s per dispatch | yes — `FLAREDISPATCH_HMAC` |
+| **Action mode** | A GHA workflow calls `openhackersclub/flare-dispatch-action`; or any external caller HMAC-signs and POSTs the dispatch endpoint | yes (or none, for direct POST) | ~10 s per dispatch | yes — `FLAREDISPATCH_HMAC` |
 | **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret |
 
 Both modes hit the same Dispatcher, share the same dedup discipline, and report results through the same check-run callback. The rest of this doc is **one section per mode**, then the parts they share (check-runs callback, dedup, secrets, failure handling).
@@ -15,7 +15,7 @@ Both modes hit the same Dispatcher, share the same dedup discipline, and report 
 |---|---|---|
 | **Dispatcher Worker** | Single receiver for both modes. See [01-architecture § Dispatcher Worker](01-architecture.md#control-plane). | both |
 | **`FlareDispatch` GitHub App** | Owns the check-runs API token (writes results back). In Webhook mode, also the trigger source. | both for callback; Webhook mode for trigger |
-| **`openhackersclub/flaredispatch-action`** | Composite Action — HMAC-signs the body, POSTs the dispatch, then exits or polls. | Action mode only |
+| **`openhackersclub/flare-dispatch-action`** | Composite Action — HMAC-signs the body, POSTs the dispatch, then exits or polls. | Action mode only |
 
 Installing only the GHA Action still requires the App (for check-run writes). Running only Webhook mode does not require the Action.
 
@@ -35,7 +35,7 @@ A GHA workflow — or any HMAC-signing HTTP caller — POSTs `/v1/dispatch/:run`
 
 ```yaml
 # .github/workflows/ci.yml
-- uses: openhackersclub/flaredispatch-action@v1
+- uses: openhackersclub/flare-dispatch-action@v1
   with:
     run: playwright-e2e
     endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
@@ -91,7 +91,7 @@ HMAC-SHA256 signed; the signature goes in `X-FlareDispatch-Signature: sha256=<he
 ```mermaid
 sequenceDiagram
   participant GHA as GHA workflow
-  participant ACT as flaredispatch-action
+  participant ACT as flare-dispatch-action
   participant DSP as Dispatcher
   GHA->>ACT: step starts
   ACT->>DSP: POST /v1/dispatch (HMAC-signed)
@@ -105,7 +105,7 @@ The GHA step succeeds the moment dispatch is accepted — it has done its job. T
 ### Await sub-mode
 
 ```yaml
-- uses: openhackersclub/flaredispatch-action@v1
+- uses: openhackersclub/flare-dispatch-action@v1
   with:
     run: cdp-acceptance
     mode: await

@@ -31,7 +31,10 @@ export const recipes: Recipe[] = [
     mode: "Action",
     blurb:
       "Offload a Playwright e2e suite to the shipped `playwright-e2e` run — sharded across the Browser Rendering pool, results posted back as a Check Run.",
-    files: [{ name: "ci.yml", lang: "yaml" }],
+    files: [
+      { name: "ci.yml", lang: "yaml" },
+      { name: "playwright-e2e.run.ts", lang: "ts" },
+    ],
     hasReadme: false,
   },
   {
@@ -41,7 +44,10 @@ export const recipes: Recipe[] = [
     mode: "Action",
     blurb:
       "Fan one test command across N shards via the `matrix-fanout` run — Workflows `createBatch` spawns the children, scale-to-zero between runs.",
-    files: [{ name: "ci.yml", lang: "yaml" }],
+    files: [
+      { name: "ci.yml", lang: "yaml" },
+      { name: "matrix-fanout.run.ts", lang: "ts" },
+    ],
     hasReadme: false,
   },
   {
@@ -51,7 +57,10 @@ export const recipes: Recipe[] = [
     mode: "Action",
     blurb:
       "Boot an app, drive it over the Chrome DevTools Protocol, and assert on network / console / heap observations using the `cdp-acceptance` run.",
-    files: [{ name: "ci.yml", lang: "yaml" }],
+    files: [
+      { name: "ci.yml", lang: "yaml" },
+      { name: "cdp-acceptance.run.ts", lang: "ts" },
+    ],
     hasReadme: false,
   },
   {
@@ -61,7 +70,10 @@ export const recipes: Recipe[] = [
     mode: "Action",
     blurb:
       "Run a dependency and vulnerability scan with the `security-scan` run — gated on PRs and on a weekly schedule, no GHA minutes burned on the scan itself.",
-    files: [{ name: "ci.yml", lang: "yaml" }],
+    files: [
+      { name: "ci.yml", lang: "yaml" },
+      { name: "security-scan.run.ts", lang: "ts" },
+    ],
     hasReadme: false,
   },
   {
@@ -70,8 +82,11 @@ export const recipes: Recipe[] = [
     useCase: "Hit critical URLs after a successful deploy",
     mode: "Webhook",
     blurb:
-      "A custom DSL run that hits critical URLs after a successful deploy. The GitHub App webhook fires it directly — zero GHA minutes, no workflow file.",
-    files: [{ name: "smoke.run.ts", lang: "ts" }],
+      "A custom DSL run that hits critical URLs after a successful deploy. The GitHub App webhook fires it directly — zero GHA minutes, no workflow file; an Action-mode `ci.yml` is included as the GHA-native alternative.",
+    files: [
+      { name: "smoke.run.ts", lang: "ts" },
+      { name: "ci.yml", lang: "yaml" },
+    ],
     hasReadme: false,
   },
   {
@@ -81,7 +96,10 @@ export const recipes: Recipe[] = [
     mode: "Webhook",
     blurb:
       "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR, findings deduplicated into one consolidated review.",
-    files: [{ name: "pr-review.run.ts", lang: "ts" }],
+    files: [
+      { name: "pr-review.run.ts", lang: "ts" },
+      { name: "ci.yml", lang: "yaml" },
+    ],
     hasReadme: true,
   },
 ];

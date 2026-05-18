@@ -63,7 +63,7 @@ A team installs runs by:
 2. Setting Workers Secrets (GitHub App key, HMAC secret).
 3. `wrangler deploy`.
 4. Installing the companion GitHub App on their org/repos.
-5. Adding `uses: openhackersclub/flaredispatch-action@v1` to their workflow (Action mode), or just letting the App webhook fire runs (Webhook mode).
+5. Adding `uses: openhackersclub/flare-dispatch-action@v1` to their workflow (Action mode), or just letting the App webhook fire runs (Webhook mode).
 
 After that, each PR fires runs against the team's own Cloudflare bill. The project supplies the runs, the GHA Action, and the Effect-TS DSL packages. The team supplies the account. Full deploy guide in [05-byoc](05-byoc.md).
 

@@ -9,7 +9,7 @@ Offload a slow Playwright e2e suite from GitHub Actions to Cloudflare. The suite
 
 ## How it works
 
-On `pull_request`, `ci.yml` calls `openhackersclub/flaredispatch-action`, which HMAC-signs a dispatch to your Dispatcher. The `playwright-e2e` run executes on Cloudflare; the result comes back as the `flaredispatch/playwright-e2e` check-run. The GHA job itself finishes in ~10 s — it only fires the dispatch.
+On `pull_request`, `ci.yml` calls `openhackersclub/flare-dispatch-action`, which HMAC-signs a dispatch to your Dispatcher. The `playwright-e2e` run executes on Cloudflare; the result comes back as the `flaredispatch/playwright-e2e` check-run. The GHA job itself finishes in ~10 s — it only fires the dispatch.
 
 ## Install
 

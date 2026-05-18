@@ -135,7 +135,7 @@ flaredispatch/
 │   ├── d1-schema.sql                           # executions + steps tables verbatim from 05-byoc § D1 schema
 │   └── github-app-manifest.json                # GitHub App manifest (see 05-byoc § GitHub App setup)
 ├── actions/
-│   └── flaredispatch-action/
+│   └── flare-dispatch-action/
 │       ├── action.yml                          # composite Action: 'using: composite', steps run dispatch.sh
 │       ├── dispatch.sh                         # ~30 LOC: compute HMAC, curl POST, exit 0
 │       └── README.md                           # usage snippet
@@ -179,7 +179,7 @@ Each PR targets `main`, is independently mergeable, and ships a single concern. 
 
 #### PR 7 — GHA composite Action + acceptance smoke
 
-- **What:** `actions/flaredispatch-action/action.yml` (composite, `using: composite`) calling `dispatch.sh`. `dispatch.sh` is ~30 LOC: compute `HMAC = openssl dgst -sha256 -hmac "$INPUT_HMAC_SECRET"`, curl POST, exit 0 on 202, fail on anything else. Plus a `.github/workflows/acceptance.yml` in this repo that uses the local action against the live deploy. Quickstart `README.md` with copy-paste deploy steps.
+- **What:** `actions/flare-dispatch-action/action.yml` (composite, `using: composite`) calling `dispatch.sh`. `dispatch.sh` is ~30 LOC: compute `HMAC = openssl dgst -sha256 -hmac "$INPUT_HMAC_SECRET"`, curl POST, exit 0 on 202, fail on anything else. Plus a `.github/workflows/acceptance.yml` in this repo that uses the local action against the live deploy. Quickstart `README.md` with copy-paste deploy steps.
 - **Verifiable acceptance:** A PR against this repo triggers `.github/workflows/acceptance.yml`, which calls the Action, which dispatches `offload-test` with `command: "pnpm test"` against this repo's own SHA. The check-run posted by the Worker turns green and appears as a required-status candidate on the PR. End-to-end timing recorded in PR comment.
 
 ### 5. Acceptance test
@@ -248,7 +248,7 @@ wrangler d1 execute flaredispatch-v0 --remote --command "SELECT log_uri FROM ste
 # 10. PR-driven smoke (the real acceptance bar)
 # In a downstream repo:
 #   .github/workflows/ci.yml:
-#     - uses: openhackersclub/flaredispatch-action@v0
+#     - uses: openhackersclub/flare-dispatch-action@v0
 #       with:
 #         run: offload-test
 #         endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}

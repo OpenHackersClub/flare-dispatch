@@ -1,0 +1,42 @@
+# Recipe: AI code review — Action-mode alternative
+#
+# Use case: same `pr-review` run as ./pr-review.run.ts, but dispatched from a
+# GitHub Actions workflow instead of the FlareDispatch GitHub App webhook.
+#
+# Webhook mode (the `triggers` block in ./pr-review.run.ts) is preferred — it
+# burns zero GHA minutes and the run's own `gate` handles draft / bot /
+# opt-out filtering. Use this Action-mode file when the App is not installed,
+# or you want the review dispatch to sit alongside other PR jobs.
+#
+# Mode: Action mode, fire-and-forget. See specs/04-gha-integration.md.
+# Run:  pr-review — defined in ./pr-review.run.ts.
+
+name: ai-code-review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  ai-code-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flare-dispatch-action@v1
+        with:
+          run: pr-review
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.event.pull_request.head.sha }}",
+              "baseSha": "${{ github.event.pull_request.base.sha }}",
+              "pr": ${{ github.event.pull_request.number }}
+            }
+
+# `installationId` is intentionally absent from `inputs`: the Dispatcher
+# resolves the installation from the repo→installation KV map when it opens
+# the check-run (specs/04-gha-integration.md § Check-runs callback), so the
+# Action need not — and cannot reliably — supply it from the GHA context.
+#
+# Findings post back as inline check-run annotations on the PR's Files-changed
+# tab — require the check-run `flaredispatch/pr-review` in branch protection.
