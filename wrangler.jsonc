@@ -9,8 +9,8 @@
 
   "observability": { "enabled": true },
 
-  // RunWorkflow class is stubbed in apps/dispatcher/src/index.ts; the real
-  // step-mapping implementation lands in PR4.
+  // RunWorkflow (apps/dispatcher/src/workflow.ts) maps each run `step(...)` to a
+  // durable WorkflowStep.do checkpoint under an Effect runtime — see PR4.
   "workflows": [
     {
       "name": "runs-workflow",
@@ -19,14 +19,16 @@
     }
   ],
 
-  // Container binding. Cloudflare Containers pulls only from
-  // registry.cloudflare.com, docker.io, or Amazon ECR. V0 references the
-  // upstream node:lts-slim image on docker.io directly (per plan § 6 Risks);
-  // the OHC base image is a separate workstream.
+  // Container binding. The `@cloudflare/sandbox` SDK's Sandbox DO speaks an
+  // RPC protocol to a server baked into the container, so the image is built
+  // from the matching `docker.io/cloudflare/sandbox` base via a Dockerfile
+  // (infra/Dockerfile.sandbox) — a bare node image has no sandbox server.
+  // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io,
+  // or Amazon ECR; the Dockerfile's FROM resolves docker.io.
   "containers": [
     {
       "class_name": "RunSandbox",
-      "image": "docker.io/library/node:lts-slim",
+      "image": "./infra/Dockerfile.sandbox",
       "instance_type": "standard-2",
       "max_instances": 16
     }

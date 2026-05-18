@@ -1,39 +1,21 @@
 // FlareDispatch Dispatcher Worker — V0 walking-skeleton entry point.
 //
-// PR1 ships the minimal shell: `GET /health` returns {"status":"ok"}, every
-// other path 404s. HMAC verify, the `/v1/dispatch/:run` route, and the
-// artifact endpoint land in PR5; the RunWorkflow body lands in PR4.
+// The Worker `fetch` handler serves `GET /health`; every other path 404s. The
+// `/v1/dispatch/:run` route, HMAC verify, and the artifact endpoint land in
+// PR5. The Workflow body (`RunWorkflow`) and the live runtime Layers landed in
+// PR4 — see workflow.ts and `@flare-dispatch/runtime-cf`.
+//
+// wrangler resolves two Durable Object / Workflow classes from this entry, so
+// both are re-exported here:
+//   * `RunWorkflow`  — the Workflow class (workflow.ts).
+//   * `RunSandbox`   — the Container-backed Durable Object class (below).
 
-import { WorkflowEntrypoint } from "cloudflare:workers";
-import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
+import { RunSandbox } from "./sandbox";
 
-/**
- * RunWorkflow — the single Workflow class bound as `RUNS_WORKFLOW`.
- *
- * PR1 stub: an empty `run` so wrangler accepts the `workflows` binding and the
- * dry-run succeeds. PR4 maps each `step.do(...)` to a run `step(...)` boundary
- * under an Effect runtime.
- */
-export class RunWorkflow extends WorkflowEntrypoint<Env> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  override async run(_event: WorkflowEvent<unknown>, _step: WorkflowStep): Promise<void> {
-    // Not implemented in V0 PR1 — see specs/pm/plan.md § 4 PR 4.
-  }
-}
-
-/**
- * RunSandbox — the Durable Object class backing the `RUNS_SANDBOX` container
- * binding. PR1 stub so the migration / binding is valid; the live exec surface
- * lands with the runtime Layers in PR4.
- */
-export class RunSandbox extends DurableObject<Env> {
-  override async fetch(_request: Request): Promise<Response> {
-    // Not implemented in V0 PR1 — see specs/pm/plan.md § 4 PR 4.
-    return new Response("not implemented", { status: 501 });
-  }
-}
+// Re-export the binding classes so wrangler's `main` entry resolves them.
+export { RunWorkflow } from "./workflow";
+export { RunSandbox };
 
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
