@@ -25,9 +25,13 @@ export { makeR2ArtifactLive } from "./artifact-r2";
 export { makeSandboxCloudflareLive } from "./sandbox-cf";
 export { makeStepRunnerCloudflare } from "./step-runner-cf";
 export {
+  makeChecksGithubLive,
+  NOOP_CHECK_RUN_ID,
+  type ChecksGithubConfig,
+} from "./checks-github";
+export {
   BrowserDeferred,
   CacheDeferred,
-  ChecksDeferred,
   ConfigDeferred,
 } from "./deferred";
 
