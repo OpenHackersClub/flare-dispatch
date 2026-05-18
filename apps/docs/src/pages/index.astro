@@ -3,6 +3,24 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 import HeroDiagram from "../components/HeroDiagram.astro";
 import { site } from "../lib/site";
 
+const value = [
+  {
+    id: "01 / Cost",
+    title: "Pay per vCPU-second",
+    body: "Heavy compute is billed at Cloudflare Container rates — per vCPU-second, scale-to-zero between runs — instead of GitHub Actions per-minute. The jobs that dominate your CI bill move to the cheapest place to run them.",
+  },
+  {
+    id: "02 / Headroom",
+    title: "No platform ceilings",
+    body: "No 6-hour job limit. No 10 GB cache cap. Artifact retention you set, not a fixed 90 days. The limits that push teams onto self-hosted runners simply aren't there.",
+  },
+  {
+    id: "03 / Fit",
+    title: "Drops into your setup",
+    body: "GitHub Actions stays the trigger and the PR gate. One wrangler deploy into the Cloudflare account you already pay for. Results land as a GitHub Check Run — no new dashboard, no runner fleet to operate.",
+  },
+];
+
 const runs = [
   {
     id: "RUN 01",
@@ -38,7 +56,7 @@ const runs = [
 ---
 
 <BaseLayout
-  title="FlareDispatch — offload the expensive half of CI onto Cloudflare"
+  title="FlareDispatch — offload the expensive half of GitHub Actions onto Cloudflare"
   description={site.blurb}
 >
   <section class="hero">
@@ -48,14 +66,13 @@ const runs = [
         <span class="section-marker reveal" data-delay="1">{site.status}</span>
       </div>
       <h1 class="hero__title reveal" data-delay="2">
-        Offload the <em>expensive&#160;half</em> of CI onto Cloudflare.
+        Offload the <em>expensive&#160;half</em> of
+        GitHub&#160;Actions onto Cloudflare.
       </h1>
       <p class="hero__sub reveal" data-delay="3">
-        FlareDispatch runs Playwright e2e, acceptance suites, sharded matrices, and
-        security scans on Cloudflare Workflows, Containers, and Browser Rendering —
-        billed per vCPU-second on your own account. GitHub Actions stays the trigger
-        and the PR gate; runs take the heavy compute. Runs are typed Effect-TS
-        programs, not YAML.
+        FlareDispatch moves Playwright e2e, acceptance suites, sharded matrices, and
+        security scans off GitHub Actions and onto Cloudflare — billed per vCPU-second
+        on your own account. GHA stays the trigger; runs take the heavy compute.
       </p>
       <div class="hero__cta reveal" data-delay="4">
         <a class="btn" href="/docs/prd">Read the PRD</a>
@@ -65,71 +82,18 @@ const runs = [
     <HeroDiagram />
   </section>
 
-  <section class="manifesto">
-    <div class="container">
-      <div class="manifesto__header">
-        <span class="section-marker">§01 / What "offload" means</span>
-        <h2>Not a replacement for GitHub Actions. An offload target.</h2>
-      </div>
-      <ol class="manifesto__list">
-        <li class="manifesto__item">
-          <span class="manifesto__num">§01.01</span>
-          <div>
-            <p class="manifesto__statement">GHA stays the <strong>trigger</strong>, not the compute.</p>
-            <p class="manifesto__body">GitHub Actions is excellent as a trigger and a PR gate, and fine for cheap jobs — lint, type-check, unit. Runs take only the heavy half: the jobs that dominate the bill and the wall clock.</p>
-          </div>
-        </li>
-        <li class="manifesto__item">
-          <span class="manifesto__num">§01.02</span>
-          <div>
-            <p class="manifesto__statement">A run is a <strong>typed program</strong>, not stringly-typed YAML.</p>
-            <p class="manifesto__body">Each run has a Schema-defined input and output, composable steps, tagged errors, and retry/Schedule combinators. Fork it, vendor-edit it, unit-test it without booting a container.</p>
-          </div>
-        </li>
-        <li class="manifesto__item">
-          <span class="manifesto__num">§01.03</span>
-          <div>
-            <p class="manifesto__statement">BYOC — <strong>bring your own Cloudflare</strong>.</p>
-            <p class="manifesto__body">One <code>wrangler deploy</code> into the account you already pay for. No operator runs it for you, no second dashboard, no self-hosted runner fleet to secure.</p>
-          </div>
-        </li>
-        <li class="manifesto__item">
-          <span class="manifesto__num">§01.04</span>
-          <div>
-            <p class="manifesto__statement">Compute is <strong>per vCPU-second</strong>, scale-to-zero.</p>
-            <p class="manifesto__body">Per-execution work is billed at CF Container rates instead of GHA per-minute. Between runs, nothing runs and nothing bills.</p>
-          </div>
-        </li>
-        <li class="manifesto__item">
-          <span class="manifesto__num">§01.05</span>
-          <div>
-            <p class="manifesto__statement">No <strong>platform ceilings</strong>.</p>
-            <p class="manifesto__body">Multi-step Workflows have no 6-hour job limit. R2 cache and artifacts have no 10 GB cap and retention you control — not a fixed 90 days.</p>
-          </div>
-        </li>
-        <li class="manifesto__item">
-          <span class="manifesto__num">§01.06</span>
-          <div>
-            <p class="manifesto__statement">The <strong>PR is the UI</strong>.</p>
-            <p class="manifesto__body">Status reports back as a GitHub Check Run. Logs and artifacts are R2 signed URLs linked from the check summary. There is no new dashboard to learn.</p>
-          </div>
-        </li>
-      </ol>
-    </div>
-  </section>
-
   <section class="tenets">
     <div class="container">
       <div class="tenets__header">
-        <span class="section-marker">§02 / In the box</span>
-        <h2>Six runs ship as the starter library. The DSL is the contract.</h2>
+        <span class="section-marker">§01 / Why it pays off</span>
+        <h2>Heavy CI, at the price of raw serverless compute.</h2>
       </div>
       <div class="tenets__grid">
-        {runs.map((r) => (
+        {value.map((v) => (
           <article class="tenet">
-            <span class="tenet__id">{r.id}</span>
-            <h3 class="tenet__title">{r.title}</h3>
-            <p class="tenet__rationale">{r.body}</p>
+            <span class="tenet__id">{v.id}</span>
+            <h3 class="tenet__title">{v.title}</h3>
+            <p class="tenet__rationale">{v.body}</p>
           </article>
         ))}
       </div>
@@ -140,14 +104,14 @@ const runs = [
     <div class="container">
       <div class="compare__intro">
         <div>
-          <span class="section-marker">§03 / Positioning</span>
+          <span class="section-marker">§02 / Positioning</span>
           <h2>Every option trades away one of three things. FlareDispatch keeps all three.</h2>
         </div>
         <p>
-          Heavy CI today forces a trade-off: hosted runners are easy but billed per
-          minute with hard ceilings; self-hosted and hybrid runners drop the ceilings
-          but hand you a fleet to operate. FlareDispatch runs on serverless Cloudflare
-          primitives — in the account you already own.
+          Hosted runners are easy but billed per minute with hard ceilings; self-hosted
+          and hybrid runners drop the ceilings but hand you a fleet to operate.
+          FlareDispatch runs on serverless Cloudflare primitives — in the account you
+          already own.
         </p>
       </div>
 
@@ -190,10 +154,60 @@ const runs = [
     </div>
   </section>
 
+  <section class="tenets">
+    <div class="container">
+      <div class="tenets__header">
+        <span class="section-marker">§03 / What ships</span>
+        <h2>Six runs in the box. The DSL is the contract.</h2>
+      </div>
+      <div class="tenets__grid">
+        {runs.map((r) => (
+          <article class="tenet">
+            <span class="tenet__id">{r.id}</span>
+            <h3 class="tenet__title">{r.title}</h3>
+            <p class="tenet__rationale">{r.body}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="manifesto">
+    <div class="container">
+      <div class="manifesto__header">
+        <span class="section-marker">§04 / Design philosophy</span>
+        <h2>Three bets the design is built on.</h2>
+      </div>
+      <ol class="manifesto__list">
+        <li class="manifesto__item">
+          <span class="manifesto__num">§04.01</span>
+          <div>
+            <p class="manifesto__statement">Offload, <strong>don't replace</strong>.</p>
+            <p class="manifesto__body">GitHub Actions is a fine trigger and PR gate. FlareDispatch doesn't compete with it — it takes the heavy compute GHA bills badly and leaves the cheap jobs alone.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§04.02</span>
+          <div>
+            <p class="manifesto__statement">Runs are <strong>typed programs</strong>, not YAML.</p>
+            <p class="manifesto__body">A run is an Effect-TS program — Schema-typed inputs and outputs, composable steps, tagged errors, exhaustive matching. Fork it, vendor-edit it, unit-test it without booting a container.</p>
+          </div>
+        </li>
+        <li class="manifesto__item">
+          <span class="manifesto__num">§04.03</span>
+          <div>
+            <p class="manifesto__statement">BYOC <strong>by construction</strong>.</p>
+            <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs are yours.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
   <section class="container">
     <div class="cta-band">
       <div>
-        <span class="section-marker">§04 / Read on</span>
+        <span class="section-marker">§05 / Read on</span>
         <h2>Pre-implementation. The specs are the contract.</h2>
       </div>
       <div class="cta-band__actions">
