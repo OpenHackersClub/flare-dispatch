@@ -1,0 +1,35 @@
+# Recipe: security / dependency scan on Cloudflare
+#
+# Use case: dependency and vulnerability scanning that you want on every PR
+# *and* on a weekly schedule (to catch newly-disclosed CVEs in code that
+# hasn't changed). Offload to the shipped `security-scan` run, which runs
+# each selected scanner in its own container in parallel.
+#
+# Mode: Action mode, fire-and-forget. See specs/04-gha-integration.md.
+# Run:  security-scan — see specs/02-runs.md#5-security-scan.
+
+name: security-scan
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flaredispatch-action@v1
+        with:
+          run: security-scan
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.sha }}",
+              "scanners": ["pnpm-audit", "trivy-fs", "gitleaks"],
+              "failOn": "high"
+            }
+
+# The scheduled run uses github.sha of the default branch — the same run
+# slug, no extra wiring. Findings land in the check-run summary.

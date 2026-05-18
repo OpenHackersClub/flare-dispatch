@@ -1,0 +1,281 @@
+---
+// Client-side Mermaid renderer. The remark plugin wraps ```mermaid blocks in
+// <div class="mermaid-source" data-source="..."> elements; this script imports
+// mermaid lazily, decodes the source, and renders SVG in place. Each rendered
+// diagram gets a toolbar with Expand (fullscreen modal w/ pan-zoom) and
+// Open-in-new-tab actions.
+---
+
+<script>
+  import mermaid from "mermaid";
+  import svgPanZoom from "svg-pan-zoom";
+
+  type Theme = "light" | "dark";
+
+  function configure(theme: Theme) {
+    const isDark = theme === "dark";
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "base",
+      securityLevel: "strict",
+      fontFamily: 'Iosevka Web, "SF Mono", ui-monospace, monospace',
+      themeVariables: {
+        background: isDark ? "#13141B" : "#FDFBF5",
+        primaryColor: isDark ? "#13141B" : "#FDFBF5",
+        primaryTextColor: isDark ? "#EAE7DD" : "#13131A",
+        primaryBorderColor: isDark ? "#353846" : "#13131A",
+        lineColor: isDark ? "#7A7D8C" : "#5C5C66",
+        secondaryColor: isDark ? "#1A1B26" : "#F4F1EA",
+        tertiaryColor: isDark ? "#11121A" : "#EBE6D8",
+        edgeLabelBackground: isDark ? "#13141B" : "#FDFBF5",
+        clusterBkg: isDark ? "transparent" : "transparent",
+        clusterBorder: isDark ? "#353846" : "#D8D2C5",
+        titleColor: isDark ? "#FF7041" : "#FF3D00",
+        nodeBorder: isDark ? "#353846" : "#13131A",
+        mainBkg: isDark ? "#13141B" : "#FDFBF5",
+        actorBkg: isDark ? "#13141B" : "#FDFBF5",
+        actorBorder: isDark ? "#EAE7DD" : "#13131A",
+        actorTextColor: isDark ? "#EAE7DD" : "#13131A",
+        signalColor: isDark ? "#EAE7DD" : "#13131A",
+        signalTextColor: isDark ? "#EAE7DD" : "#13131A",
+      },
+      flowchart: { curve: "basis", padding: 12, useMaxWidth: true },
+      sequence: { useMaxWidth: true },
+    });
+  }
+
+  function currentTheme(): Theme {
+    return (document.documentElement.getAttribute("data-theme") as Theme) || "light";
+  }
+
+  // ---------- Toolbar ----------
+
+  function attachToolbar(figure: HTMLElement, source: string) {
+    if (figure.querySelector(":scope > .mermaid-toolbar")) return;
+    const toolbar = document.createElement("div");
+    toolbar.className = "mermaid-toolbar";
+    toolbar.innerHTML = `
+      <button type="button" class="mermaid-btn" data-action="expand" aria-label="Expand diagram (fullscreen)" title="Expand (F)">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 2h5v2H4v3H2V2zm12 0v5h-2V4H9V2h5zM2 14V9h2v3h3v2H2zm12 0H9v-2h3V9h2v5z"/></svg>
+        <span>Expand</span>
+      </button>
+      <button type="button" class="mermaid-btn" data-action="newtab" aria-label="Open diagram in new tab" title="Open in new tab">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 2h4v4h-2V5.4L7.4 10 6 8.6 10.6 4H10V2zM3 4h4v2H4v6h6V9h2v5H3V4z"/></svg>
+        <span>New tab</span>
+      </button>
+    `;
+    figure.appendChild(toolbar);
+
+    const expandBtn = toolbar.querySelector<HTMLButtonElement>('[data-action="expand"]')!;
+    const newTabBtn = toolbar.querySelector<HTMLButtonElement>('[data-action="newtab"]')!;
+    expandBtn.addEventListener("click", () => openModal(figure));
+    newTabBtn.addEventListener("click", () => openInNewTab(figure, source));
+  }
+
+  function svgOf(figure: HTMLElement): SVGSVGElement | null {
+    return figure.querySelector("svg");
+  }
+
+  // ---------- Open in new tab ----------
+
+  function openInNewTab(figure: HTMLElement, source: string) {
+    const svg = svgOf(figure);
+    if (!svg) return;
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    // Make sure it scales naturally in the new tab.
+    clone.removeAttribute("style");
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", "100%");
+    clone.setAttribute("height", "100%");
+
+    const theme = currentTheme();
+    const bg = theme === "dark" ? "#13141B" : "#FDFBF5";
+    const fg = theme === "dark" ? "#EAE7DD" : "#13131A";
+
+    const html = `<!doctype html>
+<html lang="en" data-theme="${theme}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FlareDispatch diagram</title>
+  <style>
+    html,body{margin:0;padding:0;background:${bg};color:${fg};height:100%;}
+    body{display:flex;align-items:center;justify-content:center;padding:2rem;box-sizing:border-box;}
+    svg{max-width:100%;max-height:100%;width:auto;height:auto;}
+    .src{position:fixed;left:0;right:0;bottom:0;max-height:40vh;overflow:auto;padding:1rem 1.25rem;background:${bg};border-top:1px solid #888;font-family:ui-monospace,"SF Mono",monospace;font-size:12px;white-space:pre;display:none;}
+    .src.open{display:block;}
+    .toggle{position:fixed;right:1rem;bottom:1rem;font:13px/1 ui-sans-serif,system-ui;padding:.4rem .7rem;border:1px solid currentColor;background:transparent;color:inherit;cursor:pointer;border-radius:6px;}
+  </style>
+</head>
+<body>
+  ${clone.outerHTML}
+  <pre class="src" id="src"></pre>
+  <button class="toggle" type="button" onclick="document.getElementById('src').classList.toggle('open')">source</button>
+  <script>document.getElementById('src').textContent = ${JSON.stringify(source)};<\/script>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank", "noopener,noreferrer");
+    // Revoke shortly after to free the blob; the new tab has already loaded.
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    if (!w) {
+      // Pop-up blocked — fall back to navigating the current tab.
+      window.location.href = url;
+    }
+  }
+
+  // ---------- Fullscreen modal (pan + zoom via svg-pan-zoom) ----------
+
+  // Zoom is delegated to svg-pan-zoom: it transforms a <g> *inside* the SVG,
+  // so the browser re-renders the vector content sharp at every zoom level —
+  // unlike a CSS transform on the container, which upscales a fixed raster.
+
+  let modal: HTMLDialogElement | null = null;
+  let stage: HTMLDivElement | null = null;
+  let panZoom: ReturnType<typeof svgPanZoom> | null = null;
+
+  function destroyPanZoom() {
+    if (!panZoom) return;
+    try {
+      panZoom.destroy();
+    } catch {
+      /* instance already torn down */
+    }
+    panZoom = null;
+  }
+
+  function ensureModal(): HTMLDialogElement {
+    if (modal) return modal;
+    modal = document.createElement("dialog");
+    modal.className = "mermaid-modal";
+    modal.innerHTML = `
+      <div class="mermaid-modal__chrome">
+        <div class="mermaid-modal__controls">
+          <button type="button" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button>
+          <button type="button" data-zoom="reset" aria-label="Reset zoom" title="Reset (0)">Reset</button>
+          <button type="button" data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button>
+        </div>
+        <button type="button" class="mermaid-modal__close" data-close aria-label="Close (Esc)" title="Close (Esc)">✕</button>
+      </div>
+      <div class="mermaid-modal__viewport">
+        <div class="mermaid-modal__stage"></div>
+      </div>
+      <div class="mermaid-modal__hint">scroll to zoom · drag to pan · double-click to reset</div>
+    `;
+    document.body.appendChild(modal);
+
+    stage = modal.querySelector<HTMLDivElement>(".mermaid-modal__stage");
+    const viewport = modal.querySelector<HTMLDivElement>(".mermaid-modal__viewport");
+
+    modal.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.dataset.close !== undefined || t === modal) {
+        modal!.close();
+        return;
+      }
+      if (!panZoom) return;
+      if (t.dataset.zoom === "in") panZoom.zoomIn();
+      if (t.dataset.zoom === "out") panZoom.zoomOut();
+      if (t.dataset.zoom === "reset") panZoom.reset();
+    });
+
+    viewport?.addEventListener("dblclick", () => panZoom?.reset());
+
+    // Keyboard shortcuts while the modal is open.
+    modal.addEventListener("keydown", (e) => {
+      if (!panZoom) return;
+      if (e.key === "+" || e.key === "=") {
+        panZoom.zoomIn();
+        e.preventDefault();
+      } else if (e.key === "-") {
+        panZoom.zoomOut();
+        e.preventDefault();
+      } else if (e.key === "0") {
+        panZoom.reset();
+        e.preventDefault();
+      }
+    });
+
+    // Drop the svg-pan-zoom instance whenever the dialog closes.
+    modal.addEventListener("close", destroyPanZoom);
+
+    return modal;
+  }
+
+  function openModal(figure: HTMLElement) {
+    const svg = svgOf(figure);
+    if (!svg) return;
+    const m = ensureModal();
+    if (!stage) return;
+    destroyPanZoom();
+    stage.innerHTML = "";
+
+    // Fill the modal with the SVG; svg-pan-zoom owns fit / zoom / pan.
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    clone.removeAttribute("style");
+    clone.setAttribute("width", "100%");
+    clone.setAttribute("height", "100%");
+    stage.appendChild(clone);
+
+    if (!m.open) m.showModal();
+
+    // Initialise after the dialog has laid out, so the SVG has a real size.
+    requestAnimationFrame(() => {
+      panZoom = svgPanZoom(clone, {
+        zoomEnabled: true,
+        panEnabled: true,
+        controlIconsEnabled: false,
+        dblClickZoomEnabled: false,
+        mouseWheelZoomEnabled: true,
+        preventMouseEventsDefault: true,
+        fit: true,
+        center: true,
+        minZoom: 0.2,
+        maxZoom: 40,
+        zoomScaleSensitivity: 0.3,
+      });
+    });
+  }
+
+  // ---------- Render ----------
+
+  async function renderAll() {
+    const nodes = document.querySelectorAll<HTMLElement>(".mermaid-source");
+    if (nodes.length === 0) return;
+    configure(currentTheme());
+
+    let i = 0;
+    for (const node of nodes) {
+      const raw = node.dataset.source;
+      if (!raw) continue;
+      try {
+        const source = decodeURIComponent(raw);
+        const { svg } = await mermaid.render(`mmd-${Date.now()}-${i++}`, source);
+        node.innerHTML = svg;
+        node.dataset.rendered = "true";
+        const figure = node.closest<HTMLElement>(".mermaid-figure");
+        if (figure) attachToolbar(figure, source);
+      } catch (err) {
+        // Leave the <pre class="mermaid-fallback"> visible.
+        // eslint-disable-next-line no-console
+        console.warn("mermaid render failed", err);
+      }
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", renderAll);
+  } else {
+    renderAll();
+  }
+
+  window.addEventListener("flaredispatch:theme-change", () => {
+    document.querySelectorAll<HTMLElement>(".mermaid-source").forEach((n) => {
+      n.removeAttribute("data-rendered");
+    });
+    document.querySelectorAll<HTMLElement>(".mermaid-toolbar").forEach((t) => t.remove());
+    renderAll();
+  });
+</script>

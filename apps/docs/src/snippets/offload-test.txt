@@ -1,0 +1,28 @@
+import { Effect, Schema } from "effect";
+import { defineRun, step, sandbox } from "@flaredispatch/core";
+
+// Run any test command in a Cloudflare Sandbox and report the result
+// straight to a PR check. The V0 walking skeleton.
+export const offloadTest = defineRun({
+  name: "offload-test",
+  version: "1.0.0",
+
+  inputs: Schema.Struct({
+    repo: Schema.String,
+    sha: Schema.String,
+    command: Schema.String,
+  }),
+  outputs: Schema.Struct({ exitCode: Schema.Number }),
+  limits: { maxDurationSec: 1800 },
+
+  run: (input) =>
+    Effect.gen(function* () {
+      const dir = yield* step("checkout", () =>
+        sandbox.git.clone({ repo: input.repo, sha: input.sha }),
+      );
+      const result = yield* step("test", () =>
+        sandbox.exec({ cwd: dir, command: input.command }),
+      );
+      return { exitCode: result.exitCode };
+    }),
+});

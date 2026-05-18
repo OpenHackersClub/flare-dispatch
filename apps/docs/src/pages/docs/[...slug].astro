@@ -1,0 +1,48 @@
+---
+import { getCollection, render } from "astro:content";
+import DocLayout from "../../layouts/DocLayout.astro";
+import { allItems } from "../../lib/nav";
+
+// The glob loader keeps the on-disk file name (e.g. `PRD`, `pm/plan`); we
+// lowercase it so URLs and nav slugs are stable and case-insensitive.
+const toSlug = (id: string): string => id.replace(/\.md$/, "").toLowerCase();
+
+export async function getStaticPaths() {
+  const docs = await getCollection("specs");
+  return docs.map((doc) => ({
+    params: { slug: doc.id.replace(/\.md$/, "").toLowerCase() },
+    props: { doc },
+  }));
+}
+
+const { doc } = Astro.props;
+const { Content, headings } = await render(doc);
+const slug = toSlug(doc.id);
+
+// Derive a title: prefer frontmatter, then the sidebar label, then the first
+// H1 from the body, then a humanized version of the slug.
+function humanize(s: string): string {
+  return s
+    .replace(/^\d+-/, "")
+    .replace(/[-_/]/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+const navItem = allItems().find((i) => i.slug === slug);
+const fmTitle = (doc.data as { title?: string } | undefined)?.title;
+const firstH1 = headings.find((h) => h.depth === 1)?.text;
+const title = fmTitle ?? navItem?.label ?? firstH1 ?? humanize(slug);
+const description = (doc.data as { description?: string } | undefined)?.description;
+
+// Drop the first H1 (rendered in the doc header) from the outline.
+const outlineHeadings = headings.filter((h) => h.depth >= 2);
+---
+
+<DocLayout
+  title={title}
+  description={description}
+  slug={slug}
+  headings={outlineHeadings}
+>
+  <Content />
+</DocLayout>

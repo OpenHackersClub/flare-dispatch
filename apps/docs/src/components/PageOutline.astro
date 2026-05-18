@@ -1,0 +1,25 @@
+---
+import type { MarkdownHeading } from "astro";
+
+interface Props {
+  headings: MarkdownHeading[];
+}
+const { headings } = Astro.props;
+// Show H2 and H3 only
+const items = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+
+{
+  items.length > 0 && (
+    <aside class="docs-shell__outline" aria-label="On this page">
+      <p class="outline-title">On this page</p>
+      <ul class="outline-list">
+        {items.map((h) => (
+          <li class={h.depth === 3 ? "is-h3" : "is-h2"}>
+            <a href={`#${h.slug}`}>{h.text}</a>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  )
+}

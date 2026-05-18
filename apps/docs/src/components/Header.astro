@@ -1,0 +1,24 @@
+---
+import ThemeToggle from "./ThemeToggle.astro";
+import { site } from "../lib/site";
+
+const path = Astro.url.pathname;
+const isDocs = path.startsWith("/docs");
+const isRecipes = path.startsWith("/recipes");
+---
+
+<header class="site-header">
+  <div class="site-header__inner">
+    <a href="/" class="site-header__brand" aria-label="FlareDispatch home">
+      <span class="site-header__brand-mark" aria-hidden="true"></span>
+      FlareDispatch<em>v0 · spec</em>
+    </a>
+    <nav class="site-header__nav" aria-label="Primary">
+      <a href="/" aria-current={path === "/" ? "page" : undefined}>Index</a>
+      <a href="/docs" aria-current={isDocs ? "page" : undefined}>Specs</a>
+      <a href="/recipes" aria-current={isRecipes ? "page" : undefined}>Recipes</a>
+      <a href={site.repo} target="_blank" rel="noreferrer noopener">Repo ↗</a>
+      <ThemeToggle />
+    </nav>
+  </div>
+</header>

@@ -1,0 +1,34 @@
+# Recipe: sharded test matrix on Cloudflare
+#
+# Use case: a unit/integration suite that is fast per-shard but long in total.
+# Offload it to the shipped `matrix-fanout` run, which spawns N child
+# Workflows (one container per shard) and reports a single parent check-run
+# that is green only if every shard passes.
+#
+# Mode: Action mode, fire-and-forget. See specs/04-gha-integration.md.
+# Run:  matrix-fanout — see specs/02-runs.md#2-matrix-fanout.
+
+name: test-matrix
+on:
+  pull_request:
+
+jobs:
+  test-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flaredispatch-action@v1
+        with:
+          run: matrix-fanout
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.sha }}",
+              "command": "pnpm test --shard $SHARD_INDEX/$SHARD_TOTAL",
+              "shards": 8,
+              "failureBehavior": "wait-all"
+            }
+
+# Each shard receives SHARD_INDEX / SHARD_TOTAL in its environment.
+# Require the check-run `flaredispatch/matrix-fanout` in branch protection.
