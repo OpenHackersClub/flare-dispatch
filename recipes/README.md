@@ -11,9 +11,9 @@ import { workspace, sharded } from "@flare-dispatch/core/primitives";
 
 When a recipe needs something no primitive covers, it drops to raw capabilities — the escape hatch is always open.
 
-Every recipe folder ships **both triggers** for the same run, so you can wire it whichever way fits:
+Every recipe folder ships the same run wired for more than one [trigger mode](../specs/04-gha-integration.md), so you can pick whichever fits:
 
-- **`*.run.ts`** — the typed Effect-TS run, written against the [DSL](../specs/03-dsl.md). In Webhook mode this file is the whole recipe: its `triggers` block declares the GitHub events that fire it, and the `FlareDispatch` GitHub App webhook dispatches it directly — zero GHA minutes, no workflow file needed.
+- **`*.run.ts`** — the typed Effect-TS run, written against the [DSL](../specs/03-dsl.md). In Webhook mode this file is the whole recipe: its `triggers` block declares the GitHub events that fire it, and the `FlareDispatch` GitHub App webhook dispatches it directly — zero GHA minutes, no workflow file needed. A run whose trigger is a wall-clock cadence instead declares a `schedules` block (Schedule mode) — see [`ai-code-review/pr-review-sweep.run.ts`](ai-code-review/pr-review-sweep.run.ts).
 - **`ci.yml`** — a GitHub Actions workflow that dispatches the same run via `openhackersclub/flare-dispatch-action`. Use Action mode when the run should interleave with other GHA jobs, needs GHA's native trigger filters, or runs in a repo where the App can't be installed.
 - **`README.md`** — per-recipe notes.
 
@@ -21,7 +21,7 @@ The **Recommended mode** column is the default each recipe is tuned for — both
 
 | Recipe | Use case | Recommended mode | Files |
 |---|---|---|---|
-| [ai-code-review](ai-code-review/) | Multi-agent agentic code review on every PR | Webhook | `pr-review.run.ts`, `ci.yml`, `README.md` |
+| [ai-code-review](ai-code-review/) | Multi-agent agentic code review on every PR, plus an optional nightly sweep of open PRs | Webhook (+ Schedule) | `pr-review.run.ts`, `pr-review-sweep.run.ts`, `ci.yml`, `README.md` |
 | [browser-tests](browser-tests/) | Playwright e2e suite, sharded across the browser pool | Action | `ci.yml`, `playwright-e2e.run.ts`, `README.md` |
 | [test-matrix](test-matrix/) | Same command fanned out across N shards | Action | `ci.yml`, `matrix-fanout.run.ts`, `README.md` |
 | [cdp-acceptance](cdp-acceptance/) | Boot an app, drive it over CDP, assert on observations | Action | `ci.yml`, `cdp-acceptance.run.ts`, `README.md` |

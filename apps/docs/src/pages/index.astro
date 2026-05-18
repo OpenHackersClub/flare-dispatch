@@ -20,7 +20,7 @@ const value = [
   {
     id: "03 / Fit",
     title: "Drops into your setup",
-    body: "GitHub Actions stays the trigger and the PR gate. One wrangler deploy into the Cloudflare account you already pay for. Results land as a GitHub Check Run — no new dashboard, no runner fleet to operate.",
+    body: "Keep GitHub Actions as your trigger and PR gate, or let runs fire autonomously from the GitHub App or a cron schedule. One wrangler deploy into the Cloudflare account you already pay for. Results land as a GitHub Check Run — no new dashboard, no runner fleet to operate.",
   },
 ];
 
@@ -54,8 +54,8 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
       <p class="hero__sub reveal" data-delay="3">
         FlareDispatch moves agentic code review, Playwright e2e, acceptance suites,
         sharded matrices, and security scans off GitHub Actions and onto Cloudflare —
-        billed per vCPU-second on your own account. GHA stays the trigger; runs take
-        the heavy compute.
+        billed per vCPU-second on your own account. Trigger a run from GitHub Actions,
+        the GitHub App, or a cron schedule; runs take the heavy compute.
       </p>
       <div class="hero__cta reveal" data-delay="4">
         <a class="btn" href="/docs/prd">Read the PRD</a>
@@ -219,7 +219,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
           <span class="manifesto__num">§04.01</span>
           <div>
             <p class="manifesto__statement"><strong>Progressive</strong> offloading.</p>
-            <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions stays the trigger and keeps the cheap jobs; nothing is all-or-nothing.</p>
+            <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions keeps the cheap jobs and the PR gate; nothing is all-or-nothing.</p>
           </div>
         </li>
         <li class="manifesto__item">

@@ -18,7 +18,7 @@ export type Recipe = {
   slug: string;
   label: string;
   useCase: string;
-  mode: "Action" | "Webhook";
+  mode: "Action" | "Webhook" | "Schedule";
   blurb: string;
   /** Source files shown as code on the recipe page. */
   files: RecipeFile[];
@@ -30,12 +30,13 @@ export const recipes: Recipe[] = [
   {
     slug: "ai-code-review",
     label: "AI code review",
-    useCase: "Multi-agent agentic code review on every PR",
+    useCase: "Multi-agent agentic code review on every PR — plus a nightly sweep",
     mode: "Webhook",
     blurb:
-      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR, findings deduplicated into one consolidated review. Runs on every push for zero GHA minutes.",
+      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR, findings deduplicated into one consolidated review. Fires on every push (Webhook mode) for zero GHA minutes; an optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
     files: [
       { name: "pr-review.run.ts", lang: "ts" },
+      { name: "pr-review-sweep.run.ts", lang: "ts" },
       { name: "ci.yml", lang: "yaml" },
     ],
     hasReadme: true,

@@ -1,6 +1,6 @@
 # 03 — DSL
 
-Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and six capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes.
+Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and seven capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes.
 
 ## The layering: capabilities, primitives, recipes
 
@@ -12,7 +12,7 @@ flowchart TB
     EFF[Schema · Layer · tagged errors · Schedule]
   end
   subgraph L1[Capabilities — @flare-dispatch/core]
-    CAP["sandbox · browser · cache<br/>artifact · io · config"]
+    CAP["sandbox · browser · cache · artifact<br/>io · config · github"]
   end
   subgraph L2[Primitives — @flare-dispatch/core/primitives]
     PRIM["workspace · installCached · sharded<br/>bootApp · probeHttp"]
@@ -30,7 +30,7 @@ flowchart TB
 - **Primitives** are reusable Effect-TS compositions the DSL ships *on top of* capabilities — `workspace`, `installCached`, `sharded`, `bootApp`, `probeHttp`. Every recipe was re-deriving the same checkout → install → fan-out → upload shapes by hand; a primitive is that shape, named once, typed once, tested once. **This is the DX layer**: the DSL "creates primitives" so a recipe author rides them instead of rebuilding them. Primitives are still just Effects — composable, layer-swappable, unit-testable — see [§ Primitives](#primitives).
 - **Recipes** are `defineRun` programs that ride on primitives and carry only the logic unique to *that* CI use case. A recipe drops to raw capabilities only for the part no primitive covers — the escape hatch is always open, but the common path is a primitive call.
 
-The rest of this spec walks the tiers bottom-up: `defineRun` / `step` (the run frame), the six capability namespaces, then the primitives built from them. The worked recipes that ride on this stack are in [recipes/](../recipes/). How each tier is shipped — `@flare-dispatch/core` as a pinned library, recipes as copy-paste — and what that split means for the supply chain is [§ Distribution and supply chain](#distribution-and-supply-chain).
+The rest of this spec walks the tiers bottom-up: `defineRun` / `step` (the run frame), the seven capability namespaces, then the primitives built from them. The worked recipes that ride on this stack are in [recipes/](../recipes/). How each tier is shipped — `@flare-dispatch/core` as a pinned library, recipes as copy-paste — and what that split means for the supply chain is [§ Distribution and supply chain](#distribution-and-supply-chain).
 
 > **Terminology.** "Primitive" in this spec always means a DSL primitive (this layering). The Cloudflare building blocks a run consumes — Workers, Workflows, Containers, R2, D1 — are called **platform primitives** to keep the two apart; [02-runs](02-runs.md) tags each run with the platform primitives it touches.
 
@@ -114,6 +114,7 @@ declare const defineRun: <I, O, IEnc, OEnc>(
     outputs: Schema.Schema<O, OEnc>;
     limits: RunLimits;
     triggers?: readonly TriggerSpec<I>[];     // Webhook-mode trigger config
+    schedules?: readonly ScheduleSpec<I>[];   // Schedule-mode trigger config
     run: (input: I) => Effect.Effect<O, RunError, RunContext>;
   },
 ) => Run<I, O>;
@@ -121,7 +122,11 @@ declare const defineRun: <I, O, IEnc, OEnc>(
 
 `defineRun` is a passive constructor — it validates the spec at module load and registers it for discovery. It doesn't bind to any runtime; the same `Run` value is portable.
 
-`triggers` is optional and only consumed in Webhook mode: the receiver evaluates every run's `triggers` on each GitHub App webhook delivery (see [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode)). A run with no `triggers` is dispatch-only (Action mode).
+`triggers` and `schedules` are both optional and select how the run is fired. A run with neither is dispatch-only (Action mode). A run may declare both — fire on every PR push *and* sweep nightly — and `run` is always required regardless.
+
+### `triggers` — Webhook-mode trigger config
+
+`triggers` is consumed only in Webhook mode: the receiver evaluates every run's `triggers` on each GitHub App webhook delivery (see [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode)).
 
 ```ts
 // A single Webhook-mode trigger binding.
@@ -133,6 +138,28 @@ type TriggerSpec<I> = {
   inputs: (ctx: { payload: WebhookPayload }) => I;               // map the payload to run inputs
 };
 ```
+
+### `schedules` — Schedule-mode trigger config
+
+`schedules` is consumed only in Schedule mode: a Cloudflare Cron Trigger invokes the Dispatcher's `scheduled()` handler, which routes the firing `controller.cron` to whichever runs declared that expression (see [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)).
+
+```ts
+// The context a cron tick provides — no GitHub payload exists.
+type ScheduleContext = {
+  cron: string;                              // the expression that fired (controller.cron)
+  firedAt: number;                           // controller.scheduledTime, ms epoch
+};
+
+// A single Schedule-mode trigger binding.
+type ScheduleSpec<I> = {
+  cron: string;                              // CF cron expression; must also be in wrangler triggers.crons
+  idempotencyKey: (ctx: ScheduleContext) => string;  // collapses duplicate cron deliveries
+  gate?: (ctx: ScheduleContext) => boolean;          // receiver-side skip (freeze window, holiday)
+  inputs: (ctx: ScheduleContext) => I;               // coarse scope — NOT a concrete target
+};
+```
+
+`ScheduleSpec` deliberately mirrors `TriggerSpec`, with one structural difference: a cron tick carries no `WebhookPayload`, so every callback receives `ScheduleContext` instead. The consequence is that `inputs` **cannot name a concrete target** — there is no repo, no SHA, no PR in a clock tick. It returns a *scope* (e.g. `{ scope: "open-prs", staleAfterHours: 24 }`); the run's first `step` performs the actual enumeration — listing installations and open PRs via the App JWT, then fanning out one child execution per target. The worked recipe is [recipes/ai-code-review § Scheduled sweep](../recipes/ai-code-review/). Threading a repo through `ScheduleSpec.inputs` fights the model — enumeration belongs in the run body, where it can do I/O and be checkpointed.
 
 ## `step`
 
@@ -222,7 +249,18 @@ const ApprovalPayload = Schema.Struct({
 
 export const releaseNotes = defineRun({
   name: "release-notes",
-  // ...
+  // Schedule mode: a cron tick drafts the notes every Monday 09:00 UTC; the
+  // run then hibernates on step.waitForEvent until a human approves. The
+  // idempotencyKey is the ISO-week window — re-firing the same week is a
+  // no-op (see 04-gha-integration § Receiver dedup).
+  schedules: [
+    {
+      cron: "0 9 * * 1",
+      idempotencyKey: ({ firedAt }) => `release-notes:${isoYearWeek(firedAt)}`,
+      inputs: ({ firedAt }) => ({ since: firedAt - 7 * 86_400_000 }),
+    },
+  ],
+  // ...inputs, outputs
   run: (input) =>
     Effect.gen(function* () {
       const draft = yield* step("draft-notes", () => draftWithClaude(input));
@@ -268,6 +306,45 @@ export class ApprovalTimedOut extends Schema.TaggedError<ApprovalTimedOut>()(
 ```
 
 Two-layer approval dedup is the receiver's job, not the run's: `/v1/admin/events/:wf_id` debounces `(wf_id, decider_email)` in `IDEMPOTENCY_KV` with a 1h window so two reviewers racing to approve produces deterministic ordering (first writer wins, second gets `409 Conflict`).
+
+### Deferred scheduling with `step.sleepUntil`
+
+A *recurring* schedule is a Cron Trigger (`schedules` above, [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). A *one-off* future action — "re-check this PR in 24 hours," "poll this deployment until it settles, then report" — is not a cadence and does not belong in `wrangler.jsonc`. It is a single durable sleep *inside* a run, and CF Workflows expresses it natively: a step can [`sleep`](https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/) for a relative duration or `sleepUntil` an absolute time. The Workflow **hibernates** for the interval — consuming no CPU, surviving Worker eviction — then resumes from the checkpoint.
+
+The DSL exposes both:
+
+```ts
+declare const sleep: (name: string, duration: Duration | string) =>
+  Effect.Effect<void, never, RunContext>;
+
+declare const sleepUntil: (name: string, wakeAt: Date | number) =>
+  Effect.Effect<void, never, RunContext>;
+```
+
+A scheduled sweep ([recipes/ai-code-review § Scheduled sweep](../recipes/ai-code-review/)) uses `sleepUntil` to *stagger* its fan-out — spreading 200 child reviews over an hour so the GitHub API rate limit and the model provider are never hit in a burst:
+
+```ts
+import { Effect } from "effect";
+import { step } from "@flare-dispatch/core";
+import { sharded } from "@flare-dispatch/core/primitives";
+
+// Spread N child dispatches evenly across `windowMs`, each on a durable sleep.
+const staggered = (targets: readonly Target[], windowMs: number) =>
+  sharded({
+    count: targets.length,
+    concurrency: targets.length,
+    body: ({ index, total }) =>
+      Effect.gen(function* () {
+        const offset = Math.floor((windowMs / total) * (index - 1));
+        yield* step.sleepUntil(`stagger-${index}`, Date.now() + offset);
+        return yield* step(`dispatch-${index}`, () =>
+          spawnChildRun({ run: "pr-review", input: toInput(targets[index - 1]) }),
+        );
+      }),
+  });
+```
+
+`sleep` / `sleepUntil` do **not** count against the Workflow step-count quota ([01-architecture § Platform limits](01-architecture.md#platform-limits--design-constraints)), so a run may sleep freely. The wakeup time itself is non-deterministic input — derive it from `io.now()`, never a bare `Date.now()` outside a step, so checkpoint replay stays consistent (see [§ `step` Rules](#step)). The example above reads `Date.now()` only inside a step body, which is the checkpointed boundary.
 
 ## Capability namespaces
 
@@ -405,7 +482,7 @@ namespace io {
 }
 ```
 
-`io.priorExecution` reads D1 execution metadata for the most recent **terminal** execution whose Workflow `instanceId` starts with `family:` — excluding the current one. The `family` is the semantic dedup key (see [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-both-modes)) minus its head-SHA component: `pr-review:{repo}:{pr}` rather than `pr-review:{repo}:{pr}:{head_sha}`. A run uses it to make its current decision relative to its last one — incremental review, "did this regress since the previous push," resolving stale findings. The prior `output` is decoded against `outputSchema`; a decode mismatch (the prior execution ran an older run version with a different output shape) yields `Option.none()` rather than failing.
+`io.priorExecution` reads D1 execution metadata for the most recent **terminal** execution whose Workflow `instanceId` starts with `family:` — excluding the current one. The `family` is the semantic dedup key (see [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-all-modes)) minus its head-SHA component: `pr-review:{repo}:{pr}` rather than `pr-review:{repo}:{pr}:{head_sha}`. A run uses it to make its current decision relative to its last one — incremental review, "did this regress since the previous push," resolving stale findings. The prior `output` is decoded against `outputSchema`; a decode mismatch (the prior execution ran an older run version with a different output shape) yields `Option.none()` rather than failing.
 
 ### `config`
 
@@ -426,6 +503,39 @@ namespace config {
 ```
 
 `config` is read-only from a run — runs never write it; operators edit `CONFIG_KV` directly (or through a small admin surface). Because every failure mode degrades gracefully — an unset key is `undefined`, a malformed JSON value is `Option.none()` — a run that reads `config` **must always carry a sensible default**. Config *tunes* behavior; it does not *gate* it. This is the seam for the kind of live model-routing / circuit-breaker control plane a multi-agent run wants (see [recipes/ai-code-review](../recipes/ai-code-review/)) without coupling routing decisions to a redeploy.
+
+### `github`
+
+Read-only access to the GitHub API, scoped to the installations of the `FlareDispatch` App. The Dispatcher already holds the App private key for the check-run *write* callback ([04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes)); `github` is the symmetric *read* surface, backed by the same short-lived installation tokens. A run never sees a token — the capability Layer mints, caches, and scopes them.
+
+```ts
+type PullRequestRef = {
+  repo: string;                              // "owner/name"
+  number: number;
+  headSha: string;
+  baseSha: string;
+  title: string;
+  draft: boolean;
+  labels: readonly string[];
+  author: string;
+  installationId: number;
+  updatedAt: number;                         // epoch ms
+};
+
+namespace github {
+  // Open PRs across every repo the App is installed on. Paginates internally;
+  // backs off on secondary rate limits. The primary surface Schedule-mode
+  // sweeps enumerate against — a cron tick names no target, so the run must
+  // discover them (see 04-gha-integration § Schedule mode).
+  declare const openPullRequests: (opts?: {
+    updatedWithinHours?: number;             // skip PRs idle longer than this
+    includeDrafts?: boolean;                 // default false
+    repos?: readonly string[];               // default: all installed repos
+  }) => Effect.Effect<readonly PullRequestRef[], GitHubApiError, RunContext>;
+}
+```
+
+`github` is deliberately **read-only and narrow**. Writing to GitHub is the Dispatcher's job and stays there — a run produces `findings` and an output, and the Dispatcher renders the check-run. The capability exists so a run can *discover what to act on*, not so it can act on GitHub directly. `GitHubApiError` ([§ Errors](#errors)) is a transient-friendly tagged error: a `403` secondary-rate-limit is retryable on a `Schedule`, a `401` (revoked installation) is not.
 
 ## Primitives
 
@@ -629,11 +739,20 @@ export class EventPayloadInvalid extends Schema.TaggedError<EventPayloadInvalid>
   { eventName: Schema.String, reason: Schema.String },
 ) {}
 
+export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
+  "GitHubApiError",
+  {
+    status: Schema.Number,                   // HTTP status from the GitHub API
+    reason: Schema.Literal("rate-limited", "unauthorized", "transient", "other"),
+    retryAfterMs: Schema.optional(Schema.Number),
+  },
+) {}
+
 export type RunError =
   | CheckoutFailed | ExecFailed | ExecTimeout
   | ContainerLaunchFailed | PortNeverOpened | BrowserUnavailable
   | CacheError | ArtifactUploadFailed | StepFailed
-  | ApprovalTimedOut | EventPayloadInvalid;
+  | ApprovalTimedOut | EventPayloadInvalid | GitHubApiError;
 ```
 
 Runs recover with `Effect.catchTag` / `Effect.catchTags`. Anything not caught fails the execution with the full Cause attached to the check-run summary.
@@ -675,6 +794,7 @@ const summarize = (e: RunError): string =>
     Match.tag("ArtifactUploadFailed", ({ name }) => `Artifact upload failed: ${name}`),
     Match.tag("StepFailed", ({ step }) => `Step "${step}" failed`),
     Match.tag("ApprovalTimedOut", ({ eventName }) => `Approval "${eventName}" timed out`),
+    Match.tag("GitHubApiError", ({ status, reason }) => `GitHub API ${status} (${reason})`),
     Match.tag("EventPayloadInvalid", ({ eventName, reason }) => `Event "${eventName}" payload invalid: ${reason}`),
     Match.exhaustive,
   );

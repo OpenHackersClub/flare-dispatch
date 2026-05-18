@@ -49,7 +49,7 @@ export const nav: NavSection[] = [
       {
         slug: "04-gha-integration",
         label: "GHA Integration",
-        blurb: "Two trigger modes (Action / Webhook), HMAC auth, check-runs callback.",
+        blurb: "Three trigger modes (Action / Webhook / Schedule), HMAC auth, Cron Triggers, check-runs callback.",
       },
       {
         slug: "05-byoc",

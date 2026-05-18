@@ -30,7 +30,7 @@ A single Worker (the Dispatcher) bound to:
 - 3 × **KV namespaces** — `RUNS_CONFIG` (installation map, feature flags), `IDEMPOTENCY_KV` (receiver dedup, 24h TTL), `INSTALL_TOKEN_KV` (App install-token cache, 55min TTL)
 - 1 × **Queue** producer + consumer — `RUNS_FANOUT`
 
-All bindings are declared in `wrangler.jsonc`. The Dispatcher is the only entry point exposed publicly. The `/v1/admin/*` sub-path is additionally gated by a Cloudflare Access application at the edge — the Worker re-verifies the Access JWT in code, so an Access misconfiguration cannot leak the admin surface.
+All bindings are declared in `wrangler.jsonc`, alongside a `triggers.crons` array — not a binding, but the Cron Triggers that drive Schedule-mode runs (and the D1 retention sweep). The Dispatcher is the only entry point exposed publicly. The `/v1/admin/*` sub-path is additionally gated by a Cloudflare Access application at the edge — the Worker re-verifies the Access JWT in code, so an Access misconfiguration cannot leak the admin surface.
 
 ## Repo layout
 
@@ -121,6 +121,17 @@ The template ships with all built-in runs wired. Users add their own under `runs
   ],
 
   "observability": { "enabled": true },
+
+  // Cron Triggers — the heartbeat for Schedule-mode runs (04-gha-integration
+  // § Schedule mode). Every cron expression a run's `schedules` declares MUST
+  // appear in this array — it is what Cloudflare actually subscribes to; the
+  // Worker's `scheduled()` handler then routes `controller.cron` to the
+  // matching run(s). "0 3 * * *" is shared by the D1 retention sweep
+  // (§ Retention) and a nightly pr-review-sweep; "0 9 * * 1" drives weekly
+  // release-notes. Multiple runs may share one expression.
+  "triggers": {
+    "crons": ["0 3 * * *", "0 9 * * 1"]
+  },
 
   "routes": [
     { "pattern": "runs.example.com/*", "custom_domain": true }
@@ -365,10 +376,12 @@ Applied with `wrangler r2 bucket lifecycle set flare-dispatch-prod --file infra/
 
 *Source:* https://developers.cloudflare.com/r2/buckets/object-lifecycles/ (2026-05).
 
-D1 has no built-in lifecycle. A nightly Cron Trigger Worker (`infra/cron-cleanup.ts`) prunes `executions` and `steps` older than 90 days. Schedule defined in `wrangler.jsonc`:
+D1 has no built-in lifecycle. The Dispatcher's `scheduled()` handler prunes `executions` and `steps` older than 90 days (`infra/cron-cleanup.ts`) on the `0 3 * * *` tick. This is *not* a separate Worker — there is one `scheduled()` handler per Dispatcher, and it does two things on each tick: run any internal housekeeping (the D1 sweep) and instantiate a scheduling Workflow for every run whose `schedules` declares the firing expression. So `0 3 * * *` can drive both the retention sweep and a nightly `pr-review-sweep` at once.
+
+The cron lives in the Worker-wide `triggers.crons` array (see [§ Wrangler config](#wrangler-config)) — there is no separate retention-only cron:
 
 ```jsonc
-"triggers": { "crons": ["0 3 * * *"] }
+"triggers": { "crons": ["0 3 * * *", "0 9 * * 1"] }
 ```
 
 ## Cost ceiling — what to expect
@@ -414,4 +427,5 @@ A `infra/grafana/` dashboard ships in V4 once OTel export is wired.
 - [ ] One successful dispatch end-to-end (CLI, GHA Action, or App webhook)
 - [ ] Check-run appears on the PR
 - [ ] Required-status-check configured on the protected branch
-- [ ] Cron cleanup Worker scheduled
+- [ ] `triggers.crons` lists every expression a run's `schedules` declares, plus `0 3 * * *` for the D1 retention sweep
+- [ ] Schedule-mode runs verified — `controller.cron` routes to the expected run(s); a cron tick produces a scheduling Workflow (check D1 `executions`)
