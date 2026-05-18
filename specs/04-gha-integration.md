@@ -208,6 +208,27 @@ A successful execution renders as:
 
 For a failure, the summary inlines the first N failing test names with stack traces and direct links to per-shard reports. The summary is markdown; GitHub renders it in the check-run detail page.
 
+### Inline findings — annotations
+
+The summary is one markdown blob on the check-run detail page. For findings that belong to a **specific line of a specific file** — a security issue on `auth.ts:42`, the source location of a failed assertion, an AI reviewer's comment — the Dispatcher additionally posts GitHub **check-run annotations**.
+
+A run surfaces these by returning a `findings` array in its output:
+
+```ts
+const Finding = Schema.Struct({
+  path: Schema.String,                       // repo-relative path
+  startLine: Schema.Number,
+  endLine: Schema.Number,
+  level: Schema.Literal("notice", "warning", "failure"),
+  title: Schema.String,
+  message: Schema.String,
+});
+```
+
+The Dispatcher maps each `Finding` onto a check-run annotation (`annotation_level` ← `level`) and attaches them when it `PATCH`es the check-run. GitHub's API caps `output.annotations` at **50 per request**, so the Dispatcher batches: the first 50 land on the closing `updateCheckRun`, the remainder in follow-up `PATCH`es of the same `check_run_id`. Annotations render inline on the PR's **Files changed** tab, anchored to the exact lines — the GitHub-native equivalent of a per-line review comment, with no separate PR review thread to manage and nothing to clean up on the next push: a new execution opens a new check-run, so its annotations replace the prior set wholesale.
+
+This keeps the single-surface model intact — the check-run is still the only thing FlareDispatch writes to the PR. Annotations are part of the check-run, not a second channel. A run that produces no line-anchored findings simply omits `findings`; the summary stands alone, exactly as before.
+
 ### Re-running
 
 The App listens for `check_run.rerequested` and `check_run.created`. Clicking "Re-run failed checks" on a PR fires `POST /v1/webhooks/github`, which the Dispatcher routes to a new Workflow execution with the same inputs. The run re-executes in place — no GHA workflow re-runs, regardless of which mode originally triggered it.

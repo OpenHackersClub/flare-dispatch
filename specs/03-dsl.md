@@ -1,6 +1,6 @@
 # 03 — DSL
 
-Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and five capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes.
+Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and six capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes.
 
 ## Why Effect-TS and not YAML / a custom config schema
 
@@ -330,6 +330,13 @@ namespace artifact {
 Effect-friendly access to non-deterministic primitives. Must be used instead of `Date.now()` / `crypto.randomUUID()` / `process.env` so step replay is deterministic.
 
 ```ts
+type PriorExecution<O> = {
+  executionId: string;                       // ULID of the prior execution
+  sha: string;                               // its head SHA
+  output: O;                                 // its recorded, schema-decoded output
+  finishedAt: number;                        // epoch ms
+};
+
 namespace io {
   declare const now: Effect.Effect<number, never, RunContext>;
   declare const uuid: Effect.Effect<string, never, RunContext>;
@@ -337,8 +344,39 @@ namespace io {
   declare const sleep: (d: Duration) => Effect.Effect<void, never, RunContext>;
   declare const log: (level: "debug" | "info" | "warn" | "error", msg: string, attrs?: Record<string, unknown>) =>
     Effect.Effect<void, never, RunContext>;
+
+  // The most recent terminal execution in this run's semantic family — the
+  // instanceId prefix shared across re-runs of the same PR / branch. Powers
+  // re-reviews and incremental runs: read what last time concluded before
+  // deciding again. Option.none() on the first execution of a family.
+  declare const priorExecution: <O>(opts: {
+    family: string;                          // instanceId prefix, e.g. "pr-review:owner/name:42"
+    outputSchema: Schema.Schema<O, unknown>;
+  }) => Effect.Effect<Option.Option<PriorExecution<O>>, never, RunContext>;
 }
 ```
+
+`io.priorExecution` reads D1 execution metadata for the most recent **terminal** execution whose Workflow `instanceId` starts with `family:` — excluding the current one. The `family` is the semantic dedup key (see [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-both-modes)) minus its head-SHA component: `pr-review:{repo}:{pr}` rather than `pr-review:{repo}:{pr}:{head_sha}`. A run uses it to make its current decision relative to its last one — incremental review, "did this regress since the previous push," resolving stale findings. The prior `output` is decoded against `outputSchema`; a decode mismatch (the prior execution ran an older run version with a different output shape) yields `Option.none()` rather than failing.
+
+### `config`
+
+Read-only access to dynamic configuration — model routing, provider enable/disable switches, feature flags — held in a `CONFIG_KV` namespace binding. Edits to that KV propagate to **subsequent executions within seconds, with no `wrangler deploy`**: the control plane is data, not code.
+
+```ts
+namespace config {
+  // Raw string value; undefined if the key is unset.
+  declare const get: (key: string) =>
+    Effect.Effect<string | undefined, never, RunContext>;
+
+  // Schema-decoded JSON value. A miss or a malformed value yields
+  // Option.none() (the decode failure is logged) — config is best-effort
+  // tuning, never a hard run failure.
+  declare const getJSON: <A>(key: string, schema: Schema.Schema<A, unknown>) =>
+    Effect.Effect<Option.Option<A>, never, RunContext>;
+}
+```
+
+`config` is read-only from a run — runs never write it; operators edit `CONFIG_KV` directly (or through a small admin surface). Because every failure mode degrades gracefully — an unset key is `undefined`, a malformed JSON value is `Option.none()` — a run that reads `config` **must always carry a sensible default**. Config *tunes* behavior; it does not *gate* it. This is the seam for the kind of live model-routing / circuit-breaker control plane a multi-agent run wants (see [recipes/ai-code-review](../recipes/ai-code-review/)) without coupling routing decisions to a redeploy.
 
 ## Errors
 
