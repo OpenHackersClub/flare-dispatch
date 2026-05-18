@@ -12,7 +12,7 @@
 //       findings are posted as check-run annotations — specs/04-gha-integration.md.
 
 import { Effect, Schema, Match, Option } from "effect";
-import { defineRun, step, sandbox, config, io } from "@flaredispatch/core";
+import { defineRun, step, sandbox, config, io } from "@flare-dispatch/core";
 
 // Local helper — true if the PR carries the given label. The webhook
 // payload's pull_request.labels is an array of { name }.
@@ -63,7 +63,7 @@ const ReviewOutput = Schema.Struct({
 export const prReview = defineRun({
   name: "pr-review",
   version: "2.0.0",
-  image: "registry.cloudflare.com/openhackersclub/flaredispatch-review:latest",
+  image: "registry.cloudflare.com/openhackersclub/flare-dispatch-review:latest",
 
   triggers: [
     {

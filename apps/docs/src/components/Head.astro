@@ -33,7 +33,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site).toString();
   // Set theme as early as possible to avoid flash. Prefers stored value, then system.
   (function () {
     try {
-      var stored = localStorage.getItem("flaredispatch:theme");
+      var stored = localStorage.getItem("flare-dispatch:theme");
       var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
       var theme = stored || (prefersDark ? "dark" : "light");
       document.documentElement.setAttribute("data-theme", theme);

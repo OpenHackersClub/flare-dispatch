@@ -9,11 +9,11 @@ Run the same command across N shards in parallel — one CF container per shard.
 
 ## How it works
 
-On `pull_request`, `ci.yml` dispatches `matrix-fanout` with a `command` and a `shards` count. The run executes every shard on Cloudflare and reports a single `flaredispatch/matrix-fanout` check-run. A typical `command` is `pnpm test --shard $SHARD_INDEX/$SHARD_TOTAL`.
+On `pull_request`, `ci.yml` dispatches `matrix-fanout` with a `command` and a `shards` count. The run executes every shard on Cloudflare and reports a single `flare-dispatch/matrix-fanout` check-run. A typical `command` is `pnpm test --shard $SHARD_INDEX/$SHARD_TOTAL`.
 
 ## Install
 
 1. Deploy FlareDispatch and install the GitHub App — see [specs/05-byoc.md](../../specs/05-byoc.md).
 2. Add `matrix-fanout.run.ts` to your repo's `runs/` directory.
 3. Copy `ci.yml` into `.github/workflows/`; adjust `command` and `shards`.
-4. In branch protection, require the `flaredispatch/matrix-fanout` check-run.
+4. In branch protection, require the `flare-dispatch/matrix-fanout` check-run.

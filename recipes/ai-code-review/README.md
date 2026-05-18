@@ -49,7 +49,7 @@ The run is deliberately thin — it orchestrates, it does not contain model logi
 
 ## The review agent
 
-Each step shells out to a `review-agent` CLI baked into the container image (`flaredispatch-review`). That mirrors the blog's approach of spawning a coding-agent child process — the agent, its model client, **prompt caching, the per-model circuit breaker, and provider failover** all live inside that CLI, not in the DSL. The run only orchestrates: check out, slice the diff, tier it, fan out, coordinate, return findings.
+Each step shells out to a `review-agent` CLI baked into the container image (`flare-dispatch-review`). That mirrors the blog's approach of spawning a coding-agent child process — the agent, its model client, **prompt caching, the per-model circuit breaker, and provider failover** all live inside that CLI, not in the DSL. The run only orchestrates: check out, slice the diff, tier it, fan out, coordinate, return findings.
 
 Swapping the model or the agent framework is a change to the image (or a `config` key), not to this run.
 
@@ -57,6 +57,6 @@ Swapping the model or the agent framework is a change to the image (or a `config
 
 1. Deploy FlareDispatch and install the GitHub App — [specs/05-byoc.md](../../specs/05-byoc.md).
 2. Copy `pr-review.run.ts` into your repo's `runs/` directory.
-3. Push. The Dispatcher auto-discovers the run; the next PR gets a `flaredispatch/pr-review` check, with inline annotations on the Files-changed tab.
+3. Push. The Dispatcher auto-discovers the run; the next PR gets a `flare-dispatch/pr-review` check, with inline annotations on the Files-changed tab.
 
 Opt a PR out with the `skip-ai-review` label; force review on a draft with `request-ai-review`.

@@ -271,7 +271,7 @@
     renderAll();
   }
 
-  window.addEventListener("flaredispatch:theme-change", () => {
+  window.addEventListener("flare-dispatch:theme-change", () => {
     document.querySelectorAll<HTMLElement>(".mermaid-source").forEach((n) => {
       n.removeAttribute("data-rendered");
     });

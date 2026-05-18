@@ -8,7 +8,7 @@
 // self-contained. Spec: specs/02-runs.md § 5. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
-import { defineRun, step, sandbox, artifact } from "@flaredispatch/core";
+import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
 
 const Scanner = Schema.Literal(
   "npm-audit", "pnpm-audit", "cargo-audit", "uv-audit",

@@ -19,9 +19,9 @@
       var current = document.documentElement.getAttribute("data-theme") || "light";
       var next = current === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", next);
-      try { localStorage.setItem("flaredispatch:theme", next); } catch (_) {}
+      try { localStorage.setItem("flare-dispatch:theme", next); } catch (_) {}
       // Notify mermaid runner to re-render with the new theme
-      window.dispatchEvent(new CustomEvent("flaredispatch:theme-change", { detail: { theme: next } }));
+      window.dispatchEvent(new CustomEvent("flare-dispatch:theme-change", { detail: { theme: next } }));
     });
   })();
 </script>

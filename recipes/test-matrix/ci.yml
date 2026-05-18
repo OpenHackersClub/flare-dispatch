@@ -31,4 +31,4 @@ jobs:
             }
 
 # Each shard receives SHARD_INDEX / SHARD_TOTAL in its environment.
-# Require the check-run `flaredispatch/matrix-fanout` in branch protection.
+# Require the check-run `flare-dispatch/matrix-fanout` in branch protection.

@@ -7,7 +7,7 @@ import rehypeSlug from "rehype-slug";
 import rehypeAutolinkHeadings from "rehype-autolink-headings";
 import remarkMermaid from "./src/lib/remark-mermaid.mjs";
 
-const SITE = "https://flaredispatch.openhackers.club";
+const SITE = "https://flare-dispatch.openhackers.club";
 
 export default defineConfig({
   site: SITE,

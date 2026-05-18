@@ -9,7 +9,7 @@ Boot the app under test in a CF container, attach Cloudflare Browser Rendering o
 
 ## How it works
 
-On `pull_request`, `ci.yml` dispatches `cdp-acceptance`. The run boots the app, drives it over CDP, and reports the `flaredispatch/cdp-acceptance` check-run. Because the workflow uses `mode: await`, the GHA step mirrors the run's conclusion — a deploy gate downstream can depend on it.
+On `pull_request`, `ci.yml` dispatches `cdp-acceptance`. The run boots the app, drives it over CDP, and reports the `flare-dispatch/cdp-acceptance` check-run. Because the workflow uses `mode: await`, the GHA step mirrors the run's conclusion — a deploy gate downstream can depend on it.
 
 ## Screenshots & demo on the PR
 

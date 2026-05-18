@@ -18,4 +18,4 @@ The gate also requires a non-empty `environment_url` (the field is optional in G
 
 1. Deploy FlareDispatch and install the GitHub App — see [specs/05-byoc.md](../../specs/05-byoc.md). The App must subscribe to the `deployment_status` event (the manifest in 05-byoc does).
 2. Add `smoke.run.ts` to your repo's `runs/` directory and push.
-3. The Dispatcher auto-discovers the run; the next successful production deploy gets a `flaredispatch/deploy-smoke` check.
+3. The Dispatcher auto-discovers the run; the next successful production deploy gets a `flare-dispatch/deploy-smoke` check.

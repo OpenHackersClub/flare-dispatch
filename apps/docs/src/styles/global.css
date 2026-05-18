@@ -709,10 +709,10 @@ pre code {
   font-weight: 500;
   border-bottom: 2px solid var(--ink);
 }
-.compare__table tbody tr.is-flaredispatch {
+.compare__table tbody tr.is-flare-dispatch {
   background: var(--accent-soft);
 }
-.compare__table tbody tr.is-flaredispatch td:first-child {
+.compare__table tbody tr.is-flare-dispatch td:first-child {
   color: var(--accent);
   font-weight: 600;
 }

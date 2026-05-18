@@ -1,4 +1,4 @@
-# @flaredispatch/docs
+# @flare-dispatch/docs
 
 Landing page + documentation site for FlareDispatch.
 
@@ -30,7 +30,7 @@ Run `pnpm build` from this directory — recipe source files are read from
 ## Deploy
 
 The site auto-deploys to [Cloudflare Pages](https://pages.cloudflare.com)
-(project `flaredispatch-docs`) via `.github/workflows/deploy-docs.yml`:
+(project `flare-dispatch-docs`) via `.github/workflows/deploy-docs.yml`:
 
 - **Production** — every push to `main` deploys to the production URL.
 - **Preview** — every pull request gets its own per-branch preview deploy,
@@ -96,4 +96,4 @@ theme change.
 
 CSS variables + `data-theme` attribute on `<html>`. Light = "paper" (warm
 off-white), dark = "terminal" (near-black). Toggle persists in `localStorage`
-under `flaredispatch:theme`.
+under `flare-dispatch:theme`.

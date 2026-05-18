@@ -55,7 +55,7 @@ A GHA workflow — or any HMAC-signing HTTP caller — POSTs `/v1/dispatch/:run`
 | `inputs` | no | `{}` | JSON or YAML mapping. Validated against the run's Schema on the Worker side. |
 | `mode` | no | `fire-and-forget` | `fire-and-forget` returns 202 immediately; `await` polls until terminal. |
 | `timeout` | no | `30m` | Await sub-mode poll ceiling. |
-| `check-name` | no | `flaredispatch/<run>` | Overrides the check-run name. |
+| `check-name` | no | `flare-dispatch/<run>` | Overrides the check-run name. |
 
 ### Outputs
 
@@ -100,7 +100,7 @@ sequenceDiagram
   Note over DSP: Workflow runs asynchronously, result reported via check-run
 ```
 
-The GHA step succeeds the moment dispatch is accepted — it has done its job. The **check run** is the actual PR signal. In branch protection, require the check-run name (e.g. `flaredispatch/playwright-e2e`), not the GHA job. Zero GHA minutes are spent for the execution duration. This is the recommended sub-mode.
+The GHA step succeeds the moment dispatch is accepted — it has done its job. The **check run** is the actual PR signal. In branch protection, require the check-run name (e.g. `flare-dispatch/playwright-e2e`), not the GHA job. Zero GHA minutes are spent for the execution duration. This is the recommended sub-mode.
 
 ### Await sub-mode
 

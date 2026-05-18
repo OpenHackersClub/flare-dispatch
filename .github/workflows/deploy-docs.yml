@@ -65,7 +65,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/docs
-          command: pages project create flaredispatch-docs --production-branch=main
+          command: pages project create flare-dispatch-docs --production-branch=main
 
       - name: Deploy to Cloudflare Pages
         id: deploy
@@ -74,7 +74,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/docs
-          command: pages deploy dist --project-name=flaredispatch-docs --branch=${{ github.head_ref || github.ref_name }}
+          command: pages deploy dist --project-name=flare-dispatch-docs --branch=${{ github.head_ref || github.ref_name }}
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
