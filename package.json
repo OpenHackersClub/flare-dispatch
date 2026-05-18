@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "typecheck": "pnpm -r --filter \"./packages/*\" --filter \"./apps/dispatcher\" exec tsc --noEmit",
+    "typecheck": "pnpm -r --filter \"./packages/*\" --filter \"./apps/dispatcher\" --filter \"./runs\" exec tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
