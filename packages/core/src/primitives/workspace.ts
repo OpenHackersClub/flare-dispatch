@@ -9,8 +9,7 @@
 // Layer: 03-dsl § Primitives.
 
 import { Effect } from "effect";
-import { sandbox } from "@flare-dispatch/core";
-import type { Container } from "@flare-dispatch/core";
+import { sandbox, type Container } from "../services/sandbox";
 import { installCached } from "./install-cached";
 
 export type Workspace = {

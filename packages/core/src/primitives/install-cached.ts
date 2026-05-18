@@ -9,8 +9,9 @@
 // Rides on the `cache` and `sandbox` capabilities. Layer: 03-dsl § Primitives.
 
 import { Effect } from "effect";
-import { cache, sandbox, io } from "@flare-dispatch/core";
-import type { Container } from "@flare-dispatch/core";
+import { cache } from "../services/cache";
+import { io } from "../services/io";
+import { sandbox, type Container } from "../services/sandbox";
 
 // Per-tool: the lockfile that keys the cache, the install command, and the
 // directories worth caching. R2 keys are content-addressed by lockfile hash +

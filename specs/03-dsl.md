@@ -286,7 +286,7 @@ namespace sandbox {
   // Convenience: clone a repo into a fresh container, return its path.
   declare const git: {
     clone: (opts: { repo: string; sha: string; container?: Container }) =>
-      Effect.Effect<string /* repoDir */, GitFailed>;
+      Effect.Effect<string /* repoDir */, CheckoutFailed>;
   };
 
   // Execute a command in a container.
@@ -433,7 +433,7 @@ Capabilities are atomic. Recipes are not — every recipe needs to *check out a 
 
 **Primitives** are those recurring shapes, lifted out of the recipes and shipped by the DSL. A primitive is a plain Effect-TS function: it composes capabilities (and other primitives), threads the same `RunContext`, fails with the same tagged errors, and swaps Layers for tests exactly like a capability call. It adds no new runtime — only a smaller, higher-level surface to write recipes against.
 
-Primitives live in `@flare-dispatch/core/primitives`; a reference catalogue of their implementations mirrors them under [primitives/](../primitives/). A recipe imports the frame and capabilities from `@flare-dispatch/core` and the compositions from `@flare-dispatch/core/primitives` — the two import paths make the layer boundary visible at the top of every recipe file.
+Primitives live in `@flare-dispatch/core/primitives` — their source is [`packages/core/src/primitives/`](../packages/core/src/primitives/), the `./primitives` sub-path of the core package ([`packages/core/`](../packages/core/)). A recipe imports the frame and capabilities from `@flare-dispatch/core` and the compositions from `@flare-dispatch/core/primitives` — the two import paths make the layer boundary visible at the top of every recipe file.
 
 ```ts
 import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
@@ -460,7 +460,7 @@ declare const workspace: (opts: {
 ```
 
 ```ts
-// primitives/workspace.ts (sketch)
+// packages/core/src/primitives/workspace.ts (sketch)
 export const workspace = (opts) =>
   Effect.gen(function* () {
     const container = yield* sandbox.acquire({ image: opts.image });
@@ -554,7 +554,7 @@ Primitives are the one layer where shipping a library versus letting each projec
 
 **A primitive has a *correct* implementation, not a *preferred* one.** The shadcn model suits code where divergence is taste — a `<Button>` should look the way you want. A primitive is logic with one right answer: `installCached`'s content-addressed cache key is a *security property*, and fifty hand-tweaked copies are fifty subtly-broken cache-integrity guarantees. The DSL ships one tested implementation on purpose.
 
-The library path has one genuine cost: an upgrade lands as a `1.4.2 → 1.4.3` lockfile diff, not as reviewable source — where copy-paste would surface the change as a code diff in your PR. If your threat model requires reviewing the source of every dependency change, read the release diff when you bump (the primitives are a handful of small files — [primitives/](../primitives/)), or eject.
+The library path has one genuine cost: an upgrade lands as a `1.4.2 → 1.4.3` lockfile diff, not as reviewable source — where copy-paste would surface the change as a code diff in your PR. If your threat model requires reviewing the source of every dependency change, read the release diff when you bump (the primitives are a handful of small files — [`packages/core/src/primitives/`](../packages/core/src/primitives/)), or eject.
 
 ### Ejecting
 
@@ -594,6 +594,11 @@ export class ContainerLaunchFailed extends Schema.TaggedError<ContainerLaunchFai
   { image: Schema.String, cause: Schema.Unknown },
 ) {}
 
+export class PortNeverOpened extends Schema.TaggedError<PortNeverOpened>()(
+  "PortNeverOpened",
+  { port: Schema.Number, timeoutSec: Schema.Number },
+) {}
+
 export class BrowserUnavailable extends Schema.TaggedError<BrowserUnavailable>()(
   "BrowserUnavailable",
   { reason: Schema.Literal("quota", "transient", "session-cap"), retryAfterMs: Schema.optional(Schema.Number) },
@@ -626,7 +631,7 @@ export class EventPayloadInvalid extends Schema.TaggedError<EventPayloadInvalid>
 
 export type RunError =
   | CheckoutFailed | ExecFailed | ExecTimeout
-  | ContainerLaunchFailed | BrowserUnavailable
+  | ContainerLaunchFailed | PortNeverOpened | BrowserUnavailable
   | CacheError | ArtifactUploadFailed | StepFailed
   | ApprovalTimedOut | EventPayloadInvalid;
 ```
