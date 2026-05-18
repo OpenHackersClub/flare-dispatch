@@ -20,9 +20,12 @@ import { Layer } from "effect";
 import type { RunContext } from "@flare-dispatch/core";
 import { makeR2ArtifactLive } from "./artifact-r2";
 import {
+  type ChecksGithubConfig,
+  makeChecksGithubLive,
+} from "./checks-github";
+import {
   BrowserDeferred,
   CacheDeferred,
-  ChecksDeferred,
   ConfigDeferred,
 } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
@@ -49,6 +52,13 @@ export type CFRuntimeLiveOptions = {
   readonly executionId: string;
   /** repo/ref/sha/input the `executions` row requires. */
   readonly execution: ExecutionContext;
+  /**
+   * GitHub App credentials + installation id for the `Checks` capability.
+   * `undefined` (no `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` secret, or a
+   * dispatch with no `installation_id`) selects the no-op `Checks` Layer —
+   * the execution still runs, only the PR check-run is skipped.
+   */
+  readonly checks?: ChecksGithubConfig;
 };
 
 /**
@@ -71,6 +81,7 @@ export const makeCFRuntimeLive = (
     opts.workflowStep,
     opts.executionId,
   );
+  const checks = makeChecksGithubLive(opts.checks);
 
   return Layer.mergeAll(
     sandbox,
@@ -79,7 +90,7 @@ export const makeCFRuntimeLive = (
     artifact,
     io,
     ConfigDeferred,
-    ChecksDeferred,
+    checks,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.
     Layer.provide(stepRunner, Layer.merge(executions, io)),

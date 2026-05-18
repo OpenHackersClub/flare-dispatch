@@ -7,13 +7,10 @@
 // specs/pm/plan.md § 1 ("All other DSL surface stubbed to `Effect.die`") they
 // fail loudly rather than silently mis-behaving.
 //
-// `Checks` is special: it is on the V0 *acceptance* path (the run's verdict
-// must reach a PR check-run), but the live GitHub App binding —
-// `ChecksGithubLive` — lands in PR6. Until then `CFRuntimeLive` carries a
-// deferred `Checks` stub so the runtime is a complete `RunContext`; PR6 swaps
-// this Layer for the real one. `offload-test` itself never calls `checks.*`
-// (the check-run callback is `RunWorkflow`/runtime plumbing, not run logic —
-// see runs/offload-test.ts), so a dying `Checks` does not break the V0 run.
+// `Checks` is no longer here: PR6 landed `makeChecksGithubLive` (the live
+// GitHub App check-run binding, see checks-github.ts), so `CFRuntimeLive` now
+// wires a real — or gracefully-degraded no-op — `Checks` Layer rather than a
+// dying stub.
 //
 // Spec: specs/03-dsl.md § Layers, specs/pm/plan.md § PR4 (scope) + § PR6.
 
@@ -23,8 +20,6 @@ import {
   type BrowserService,
   Cache,
   type CacheService,
-  Checks,
-  type ChecksService,
   Config,
   type ConfigService,
 } from "@flare-dispatch/core";
@@ -57,13 +52,3 @@ export const ConfigDeferred: Layer.Layer<Config> = Layer.succeed(
   }))(),
 );
 
-/** Checks — GitHub App check-run binding lands in PR6 (`ChecksGithubLive`). */
-export const ChecksDeferred: Layer.Layer<Checks> = Layer.succeed(
-  Checks,
-  ((): ChecksService => ({
-    create: () =>
-      Effect.die("checks.create: live binding lands in PR6 (github-app)"),
-    update: () =>
-      Effect.die("checks.update: live binding lands in PR6 (github-app)"),
-  }))(),
-);

@@ -29,4 +29,19 @@ export interface Env {
 
   /** D1 database — `executions` + `steps` metadata tables. */
   readonly RUNS_METADATA: D1Database;
+
+  /**
+   * GitHub App id — Worker secret, set via `wrangler secret put GITHUB_APP_ID`.
+   * Numeric, carried as a string. With `GITHUB_APP_PRIVATE_KEY` it authorizes
+   * the check-run callback; absent, the runtime degrades to a no-op `Checks`
+   * Layer (the execution still runs, only the PR check-run is skipped).
+   */
+  readonly GITHUB_APP_ID?: string;
+
+  /**
+   * GitHub App private key — Worker secret, the PKCS#8 PEM piped via
+   * `wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pem`. Pairs with
+   * `GITHUB_APP_ID` to mint short-lived installation tokens (no PATs).
+   */
+  readonly GITHUB_APP_PRIVATE_KEY?: string;
 }
