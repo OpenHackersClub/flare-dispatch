@@ -27,6 +27,24 @@ pnpm preview
 Run `pnpm build` from this directory — recipe source files are read from
 `../../recipes` relative to the build's working directory.
 
+## Deploy
+
+The site auto-deploys to [Cloudflare Pages](https://pages.cloudflare.com)
+(project `flaredispatch-docs`) via `.github/workflows/deploy-docs.yml`:
+
+- **Production** — every push to `main` deploys to the production URL.
+- **Preview** — every pull request gets its own per-branch preview deploy,
+  with the preview URL posted back as a sticky PR comment.
+
+The workflow runs whenever `apps/docs/**`, `specs/**`, or `recipes/**` change
+(the latter two because the site renders that content at build time).
+
+Two repository secrets must be configured under
+**Settings → Secrets and variables → Actions**:
+
+- `CLOUDFLARE_API_TOKEN` — a token with the **Cloudflare Pages: Edit** permission.
+- `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account ID.
+
 ## Layout
 
 ```
