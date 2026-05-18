@@ -106,4 +106,34 @@ export const recipes: Recipe[] = [
     ],
     hasReadme: false,
   },
+  {
+    slug: "nightly-e2e",
+    label: "Nightly e2e",
+    useCase: "Nightly Playwright suite across your deployed environments",
+    mode: "Schedule",
+    blurb:
+      "The simplest Schedule-mode shape: a Cloudflare Cron Trigger fires the run every night, and it dispatches the shipped playwright-e2e run against a fixed list of environments. Static targets — no enumeration, no GHA minutes, no workflow file.",
+    files: [{ name: "nightly-e2e.run.ts", lang: "ts" }],
+    hasReadme: true,
+  },
+  {
+    slug: "release-notes",
+    label: "Release notes",
+    useCase: "Weekly release notes, drafted then published behind a human gate",
+    mode: "Schedule",
+    blurb:
+      "A weekly Cron Trigger drafts release notes from git history, posts the draft, and hibernates on step.waitForEvent — up to 72h at zero CPU cost — until a human approves, then publishes the GitHub Release.",
+    files: [{ name: "release-notes.run.ts", lang: "ts" }],
+    hasReadme: true,
+  },
+  {
+    slug: "scheduled-deps",
+    label: "Scheduled deps audit",
+    useCase: "Nightly dependency audit across every installed repo",
+    mode: "Schedule",
+    blurb:
+      "A nightly Cron Trigger enumerates every repo the App is installed on via the github capability and fans out the shipped security-scan run per repo — so a freshly disclosed CVE surfaces within a day, not at the next unrelated push.",
+    files: [{ name: "scheduled-deps.run.ts", lang: "ts" }],
+    hasReadme: true,
+  },
 ];

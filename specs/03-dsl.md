@@ -509,6 +509,14 @@ namespace config {
 Read-only access to the GitHub API, scoped to the installations of the `FlareDispatch` App. The Dispatcher already holds the App private key for the check-run *write* callback ([04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes)); `github` is the symmetric *read* surface, backed by the same short-lived installation tokens. A run never sees a token — the capability Layer mints, caches, and scopes them.
 
 ```ts
+type RepoRef = {
+  repo: string;                              // "owner/name"
+  defaultBranch: string;
+  installationId: number;
+  archived: boolean;
+  pushedAt: number;                          // epoch ms — last push to any branch
+};
+
 type PullRequestRef = {
   repo: string;                              // "owner/name"
   number: number;
@@ -523,6 +531,14 @@ type PullRequestRef = {
 };
 
 namespace github {
+  // Every repo the App is installed on. The enumeration surface for
+  // Schedule-mode runs whose unit of work is a repo, not a PR — a nightly
+  // dependency audit, a scheduled full-suite run.
+  declare const repositories: (opts?: {
+    includeArchived?: boolean;               // default false
+    pushedWithinDays?: number;               // skip repos idle longer than this
+  }) => Effect.Effect<readonly RepoRef[], GitHubApiError, RunContext>;
+
   // Open PRs across every repo the App is installed on. Paginates internally;
   // backs off on secondary rate limits. The primary surface Schedule-mode
   // sweeps enumerate against — a cron tick names no target, so the run must
