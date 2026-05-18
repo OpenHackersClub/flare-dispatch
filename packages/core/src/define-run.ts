@@ -44,10 +44,37 @@ export type Run<I, O> = RunSpec<I, O, unknown, unknown> & {
   readonly _tag: "Run";
 };
 
+/** kebab-case: lowercase alphanumerics, single hyphens, no leading/trailing. */
+const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** A pragmatic semver match — `major.minor.patch` with optional pre-release. */
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?$/;
+
 export const defineRun = <I, O, IEnc, OEnc>(
   spec: RunSpec<I, O, IEnc, OEnc>,
 ): Run<I, O> => {
-  // Validation (unique kebab-case `name`, semver `version`, a positive
-  // `limits.maxDurationSec`) and registry insertion run here, at module load.
+  // Load-time validation: a malformed run spec is a build-time bug, not a
+  // dispatch-time surprise — fail fast at module load. (specs/03-dsl.md
+  // § defineRun: "validates the spec at module load".)
+  if (!KEBAB_CASE.test(spec.name)) {
+    throw new Error(
+      `defineRun: \`name\` must be kebab-case, got ${JSON.stringify(spec.name)}`,
+    );
+  }
+  if (!SEMVER.test(spec.version)) {
+    throw new Error(
+      `defineRun: \`version\` must be semver (major.minor.patch), got ${JSON.stringify(
+        spec.version,
+      )} for run "${spec.name}"`,
+    );
+  }
+  if (
+    !Number.isFinite(spec.limits.maxDurationSec) ||
+    spec.limits.maxDurationSec <= 0
+  ) {
+    throw new Error(
+      `defineRun: \`limits.maxDurationSec\` must be a positive number, got ${spec.limits.maxDurationSec} for run "${spec.name}"`,
+    );
+  }
   return { ...spec, _tag: "Run" } as Run<I, O>;
 };

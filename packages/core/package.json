@@ -7,9 +7,18 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
-    "./primitives": "./src/primitives/index.ts"
+    "./primitives": "./src/primitives/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
   },
   "peerDependencies": {
     "effect": "^3.10.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "0.14.9",
+    "effect": "^3.10.0",
+    "vitest": "^2.1.8"
   }
 }
