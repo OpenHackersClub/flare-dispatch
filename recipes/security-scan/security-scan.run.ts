@@ -4,11 +4,17 @@
 // own container, in parallel, and fails the check-run if any scanner exits
 // non-zero (each scanner is configured to exit non-zero at/above `failOn`).
 //
+// The scanners are a heterogeneous list, so the fan-out stays plain
+// `Effect.forEach` rather than the count-based `sharded` primitive — but each
+// scanner's container + checkout is the `workspace` primitive. See
+// specs/03-dsl.md § Primitives.
+//
 // This is the shipped `security-scan` run, reproduced here so the recipe is
 // self-contained. Spec: specs/02-runs.md § 5. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
 import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
+import { workspace } from "@flare-dispatch/core/primitives";
 
 const Scanner = Schema.Literal(
   "npm-audit", "pnpm-audit", "cargo-audit", "uv-audit",
@@ -49,11 +55,9 @@ export const securityScan = defineRun({
           input.scanners,
           (scanner) =>
             Effect.gen(function* () {
-              const container = yield* sandbox.acquire({});
-              const dir = yield* sandbox.git.clone({
+              const { container, dir } = yield* workspace({
                 repo: input.repo,
                 sha: input.sha,
-                container,
               });
               const exec = yield* sandbox.exec({
                 cwd: dir,

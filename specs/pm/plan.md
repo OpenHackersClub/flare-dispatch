@@ -21,7 +21,7 @@ timeline
 | Phase | Scope | Runs shipped | Exit criterion |
 |---|---|---|---|
 | **V0 — Walking skeleton** | Dispatcher Worker + one Workflow + one Sandbox + check-run callback | `offload-test` | A `pnpm test` executing in CF Sandbox reports green/red to a PR check |
-| **V1 — Fan-out + cache + artifacts** | Queues for matrix; R2 cache helper; R2 artifact upload with signed URLs | `+ matrix-fanout`, `+ cache-pnpm`, `+ r2-artifacts` (building blocks) | 8-shard test matrix on CF beats GHA wall time on a real repo |
+| **V1 — Fan-out + cache + artifacts** | Queues for matrix; R2 cache helper; R2 artifact upload with signed URLs | `+ matrix-fanout`, `+ cache-pnpm`, `+ r2-artifacts` (primitives) | 8-shard test matrix on CF beats GHA wall time on a real repo |
 | **V2 — Browser e2e + acceptance** | Browser Rendering integration; CDP observation helper | `+ playwright-e2e`, `+ cdp-acceptance` | Sharded Playwright suite reports per-shard status; gctrl-board acceptance suite executes |
 | **V3 — Long-running + security** | Step chaining for suites past the Workflow step limit; security scan runs | `+ security-scan`, `+ custom-sandbox` | 30-min suite completes; npm audit / cargo audit / trivy run in Sandbox |
 | **V4 — Polish** | OpenTelemetry export, Logpush integration, retention policies, `flare-dispatch init` CLI | — | Time-to-first-green-check < 30 min on a fresh CF account |
@@ -98,12 +98,19 @@ flare-dispatch/
 │   │   │   ├── step.ts                         # step() — wraps an Effect in a Workflow checkpoint
 │   │   │   ├── errors.ts                       # Schema.TaggedError classes from 03-dsl § Errors
 │   │   │   ├── context.ts                      # RunContext = Context.Tag union of services
-│   │   │   ├── services/
+│   │   │   ├── services/                       # capabilities — one Context.Tag per namespace
 │   │   │   │   ├── sandbox.ts                  # Context.Tag for SandboxService + interface
 │   │   │   │   ├── artifact.ts                 # Context.Tag for ArtifactService + interface
 │   │   │   │   ├── io.ts                       # Context.Tag for IOService + interface
 │   │   │   │   ├── checks.ts                   # Context.Tag for ChecksService (GitHub check-runs)
 │   │   │   │   └── executions.ts               # Context.Tag for ExecutionsService (D1 metadata writes)
+│   │   │   ├── primitives/                      # reusable compositions — 03-dsl § Primitives
+│   │   │   │   ├── index.ts                    # @flare-dispatch/core/primitives public exports
+│   │   │   │   ├── workspace.ts                # acquire + clone (+ optional cached install)
+│   │   │   │   ├── install-cached.ts           # cache.restoreOr keyed on lockfile hash
+│   │   │   │   ├── sharded.ts                  # count-and-index parallel fan-out
+│   │   │   │   ├── boot-app.ts                 # runDetached + waitForPort
+│   │   │   │   └── probe-http.ts               # curl-and-classify endpoint probe
 │   │   │   └── fakes/                          # in-memory Layers for unit tests
 │   │   │       ├── sandbox-fake.ts             # records exec calls; returns canned ExecResult
 │   │   │       ├── artifact-fake.ts            # in-memory map of name → fake signed URL

@@ -5,11 +5,16 @@
 // every shard passes. Each shard receives SHARD_INDEX / SHARD_TOTAL in its
 // environment so the command can split its own work.
 //
+// This recipe rides on two primitives — `sharded` (count-and-index fan-out)
+// and `workspace` (acquire + clone) — so the body is just "exec the command
+// for this shard". See specs/03-dsl.md § Primitives.
+//
 // This is the shipped `matrix-fanout` run, reproduced here so the recipe is
 // self-contained. Spec: specs/02-runs.md § 2. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
 import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
+import { sharded, workspace } from "@flare-dispatch/core/primitives";
 
 const Input = Schema.Struct({
   repo: Schema.String,
@@ -41,23 +46,24 @@ export const matrixFanout = defineRun({
 
   run: (input) =>
     Effect.gen(function* () {
+      // `sharded` fans the command across N shards, handing each its
+      // { index, total }; `workspace` does the per-shard container + clone.
       const shardResults = yield* step("run-shards", () =>
-        Effect.forEach(
-          Array.from({ length: input.shards }, (_, i) => i + 1),
-          (index) =>
+        sharded({
+          count: input.shards,
+          body: ({ index, total }) =>
             Effect.gen(function* () {
-              const container = yield* sandbox.acquire({ image: input.image });
-              const dir = yield* sandbox.git.clone({
+              const { container, dir } = yield* workspace({
                 repo: input.repo,
                 sha: input.sha,
-                container,
+                image: input.image,
               });
               const exec = yield* sandbox.exec({
                 cwd: dir,
                 container,
                 env: {
                   SHARD_INDEX: String(index),
-                  SHARD_TOTAL: String(input.shards),
+                  SHARD_TOTAL: String(total),
                 },
                 command: input.command,
               });
@@ -73,8 +79,7 @@ export const matrixFanout = defineRun({
                 logUri,
               };
             }),
-          { concurrency: input.shards },
-        ),
+        }),
       );
 
       const failed = shardResults.filter((r) => r.exitCode !== 0).length;

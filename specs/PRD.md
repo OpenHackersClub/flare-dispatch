@@ -39,9 +39,9 @@ A **run** is a typed, named Effect-TS program with:
 - A `Schema`-defined input contract (what the caller sends).
 - A `Schema`-defined output contract (what gets posted back).
 - A sequence of `step`s, each mapped to a CF Workflow step, composed via `Effect.gen`.
-- Access to a fixed set of platform primitives: `sandbox`, `browser`, `cache`, `artifact`, `io`.
+- Access to a fixed set of **capabilities** — `sandbox`, `browser`, `cache`, `artifact`, `io`, `config` — and the **primitives** built on them (`workspace`, `installCached`, `sharded`, …) so the run carries only its own logic, not the boilerplate.
 
-Runs are not opaque — they are TypeScript files in the user's repo. The shipped runs are the starter library; the DSL is the contract. Full catalog in [02-runs](02-runs.md); DSL surface in [03-dsl](03-dsl.md).
+Runs are not opaque — they are TypeScript files in the user's repo. The shipped runs are the starter library; the DSL is the contract. The DSL is layered: capabilities → primitives → runs (recipes), so common CI shapes are written once and reused. Full catalog in [02-runs](02-runs.md); DSL surface and the layering in [03-dsl](03-dsl.md).
 
 ## Operating model — BYOC (Cloudflare)
 

@@ -1,6 +1,8 @@
 # 02 — Runs
 
-Runs are the user-facing unit. Each run has a stable contract — name, input Schema, output Schema, CF primitives used, declared limits — so GHA workflows can call them without knowing the implementation. Building blocks (`cache-*`, `r2-artifacts`) are composed inside other runs via the DSL; they aren't directly dispatch-able.
+Runs are the user-facing unit. Each run has a stable contract — name, input Schema, output Schema, declared limits, and the Cloudflare platform primitives it touches — so GHA workflows can call them without knowing the implementation. A run's body is composed from **DSL primitives** (`workspace`, `installCached`, `sharded`, …) — see [03-dsl § Primitives](03-dsl.md#primitives). The `cache-*` and `r2-artifacts` entries below are primitives, not runs: they are composed inside other runs via the DSL and aren't directly dispatch-able.
+
+> Two senses of "primitive" appear here. **Platform primitives** are the Cloudflare building blocks a run runs on — Sandbox, Workflows, R2, D1, Browser Rendering; each run lists the ones it uses under **Platform:**. **DSL primitives** are the reusable Effect-TS compositions a run is *written with* — [03-dsl § Primitives](03-dsl.md#primitives).
 
 ## Run contract
 
@@ -37,8 +39,8 @@ A user-defined run in their own repo has the same shape. The shipped runs below 
 | 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | V2 |
 | 5 | [`security-scan`](#5-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | V3 |
 | 6 | [`custom-sandbox`](#6-custom-sandbox) | Escape hatch — run any bash in a container | V3 |
-| — | [`cache-*`](#building-block-cache-pnpm--npm--cargo--uv) | Building block — R2-backed package cache | V1 |
-| — | [`r2-artifacts`](#building-block-r2-artifacts) | Building block — artifact upload + signed URLs | V1 |
+| — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | V1 |
+| — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | V1 |
 
 ---
 
@@ -71,7 +73,7 @@ Schema.Struct({
 
 **Steps:** `checkout → exec → upload-log → finalize`
 
-**Primitives:** Sandbox, R2 (logs), D1, GitHub Check Runs.
+**Platform:** Sandbox, R2 (logs), D1, GitHub Check Runs.
 
 **Limits:** `maxDurationSec: 1800` (wall-clock; Workflows steps have unlimited wall-clock per step but are bounded by per-Worker CPU — see [01-architecture](01-architecture.md#platform-limits--design-constraints)). Single container — no concurrency parameter.
 
@@ -115,7 +117,7 @@ Schema.Struct({
 
 **Steps (child, per shard):** `checkout → exec --shard ${i}/${n} → upload-log → report-to-coordinator`
 
-**Primitives:** Sandbox (per shard), Workflows `createBatch` (up to 100 children per call) for spawning, Durable Object (Coordinator DO) for result aggregation, R2, D1, GitHub Check Runs. Queues only used when shard count × dispatch rate would exceed Workflows' per-workflow instance-creation rate of 100/s.
+**Platform:** Sandbox (per shard), Workflows `createBatch` (up to 100 children per call) for spawning, Durable Object (Coordinator DO) for result aggregation, R2, D1, GitHub Check Runs. Queues only used when shard count × dispatch rate would exceed Workflows' per-workflow instance-creation rate of 100/s.
 
 **Limits:** `maxConcurrency: 8` default (overridable up to 100 per `createBatch` call; account-wide ceiling is 50,000 concurrent Workflow instances on Workers Paid, gated in practice by 1,500 vCPU of Container capacity); `maxDurationSec: 1800` per shard.
 
@@ -166,7 +168,7 @@ Schema.Struct({
 | `cf-browser-rendering` | Default. Stateless page tests. | 10 browser-hr/month included on Workers Paid, then $0.09 per additional browser-hr. Concurrent browsers averaged monthly: 10 included, $2.00 per additional. | 120 concurrent sessions per account on Workers Paid (higher on request) |
 | `in-container` | Tests that need long sessions, custom Chromium flags, or unusual browser builds | Container vCPU-s + GiB-s only (\~$0.000020/vCPU-s, \~$0.0000025/GiB-s; 375 vCPU-min + 25 GiB-h included monthly) | Bounded by container concurrency, not browser pool |
 
-**Primitives:** Browser Rendering OR Sandbox-with-Playwright image, R2 (reports + traces), D1, Check Runs.
+**Platform:** Browser Rendering OR Sandbox-with-Playwright image, R2 (reports + traces), D1, Check Runs.
 
 **Limits:** `maxConcurrency: 8` default; `maxDurationSec: 2400` per shard; `requiresBrowser: true` (for `cf-browser-rendering` mode).
 
@@ -205,7 +207,7 @@ Schema.Struct({
 
 **Steps:** `checkout → install → boot-app (detached container) → wait-ready → attach-cdp → run-tests → capture-observations → teardown → finalize`
 
-**Primitives:** Sandbox (app + test runner), Browser Rendering (CDP mode), R2 (observations + reports), D1, Check Runs.
+**Platform:** Sandbox (app + test runner), Browser Rendering (CDP mode), R2 (observations + reports), D1, Check Runs.
 
 **Limits:** `maxDurationSec: 1800`; one app boot per execution (no internal sharding — share boot cost across many tests by writing more tests, not more shards).
 
@@ -248,7 +250,7 @@ Schema.Struct({
 
 **Steps:** `checkout → for each scanner: run-scanner → merge-findings → format-summary → finalize`
 
-**Primitives:** Sandbox (one container per scanner, parallel), R2 (raw scanner outputs), D1, Check Runs.
+**Platform:** Sandbox (one container per scanner, parallel), R2 (raw scanner outputs), D1, Check Runs.
 
 **Limits:** `maxDurationSec: 1200`; `maxConcurrency: 4` (scanner parallelism within one execution).
 
@@ -285,7 +287,7 @@ Schema.Struct({
 
 **Steps:** `checkout → run-script → upload-artifacts → finalize`
 
-**Primitives:** Sandbox, R2, D1, Check Runs.
+**Platform:** Sandbox, R2, D1, Check Runs.
 
 **Limits:** `maxDurationSec: 3600`.
 
@@ -293,11 +295,12 @@ This run exists to keep the cost of forking-a-run low: anything that doesn't fit
 
 ---
 
-## Building block: `cache-pnpm` / `npm` / `cargo` / `uv`
+## Primitive: `cache-pnpm` / `npm` / `cargo` / `uv`
 
-Not a dispatch-able run. A DSL primitive composed inside other runs. Looks up an R2 key derived from the relevant lockfile hash, downloads the archive into the container if present, executes the install command, and uploads the resulting cache if the key was missing.
+Not a dispatch-able run — a DSL primitive composed inside other runs, exposed as [`installCached`](03-dsl.md#installcached). Looks up an R2 key derived from the relevant lockfile hash, downloads the archive into the container if present, executes the install command, and uploads the resulting cache if the key was missing.
 
 ```ts
+// installCached is the primitive; cache.restoreOr is the capability it rides on.
 yield* cache.restoreOr({
   key: yield* hashFile("pnpm-lock.yaml"),
   paths: ["node_modules", ".pnpm-store"],
@@ -307,9 +310,9 @@ yield* cache.restoreOr({
 
 R2 keys are content-addressed by lockfile hash + image digest, so cache poisoning between environments is impossible. Cache entries have no TTL by default — R2 lifecycle policy on the deploy controls eviction (typical: 30 days since last access).
 
-## Building block: `r2-artifacts`
+## Primitive: `r2-artifacts`
 
-DSL primitive for uploading artifacts and returning signed URLs that get embedded in the check-run summary.
+The `artifact` capability ([03-dsl § artifact](03-dsl.md#artifact)) — uploading artifacts and returning signed URLs that get embedded in the check-run summary.
 
 ```ts
 const reportUrl = yield* artifact.upload({

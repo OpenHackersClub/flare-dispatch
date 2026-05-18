@@ -2,6 +2,15 @@
 
 Worked examples of wiring real CI use cases onto FlareDispatch. Each recipe is a copy-paste starting point — adjust the inputs and drop it into your repo.
 
+A recipe is **logic riding on primitives**. The DSL is layered — capabilities → [primitives](../primitives/) → recipes (see [03-dsl § The layering](../specs/03-dsl.md#the-layering-capabilities-primitives-recipes)) — so a recipe imports the reusable shapes (`workspace`, `installCached`, `sharded`, `bootApp`, `probeHttp`) from `@flare-dispatch/core/primitives` and carries only the logic unique to *that* use case. The two import paths at the top of each `*.run.ts` keep the boundary visible:
+
+```ts
+import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
+import { workspace, sharded } from "@flare-dispatch/core/primitives";
+```
+
+When a recipe needs something no primitive covers, it drops to raw capabilities — the escape hatch is always open.
+
 Every recipe folder ships **both triggers** for the same run, so you can wire it whichever way fits:
 
 - **`*.run.ts`** — the typed Effect-TS run, written against the [DSL](../specs/03-dsl.md). In Webhook mode this file is the whole recipe: its `triggers` block declares the GitHub events that fire it, and the `FlareDispatch` GitHub App webhook dispatches it directly — zero GHA minutes, no workflow file needed.

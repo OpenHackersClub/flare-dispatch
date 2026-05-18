@@ -12,16 +12,18 @@ GitHub Actions stays the trigger and PR gate; runs take the heavy compute — Pl
 |---|---|
 | [Product Requirements](https://flare-dispatch.openhackers.club/docs/prd) | Problem, value proposition, non-goals, roadmap |
 | [Architecture](https://flare-dispatch.openhackers.club/docs/01-architecture) | Components, lifecycle, storage, fan-out, platform limits |
-| [Runs](https://flare-dispatch.openhackers.club/docs/02-runs) | Run catalog — inputs, outputs, CF primitives |
-| [DSL](https://flare-dispatch.openhackers.club/docs/03-dsl) | Effect-TS DSL — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
+| [Runs](https://flare-dispatch.openhackers.club/docs/02-runs) | Run catalog — inputs, outputs, platform primitives |
+| [DSL](https://flare-dispatch.openhackers.club/docs/03-dsl) | Effect-TS DSL — `defineRun`, `step`, capabilities, and the primitives recipes ride on |
 | [GHA Integration](https://flare-dispatch.openhackers.club/docs/04-gha-integration) | Trigger modes (Action / Webhook), HMAC auth, check-runs callback |
 | [BYOC Deployment](https://flare-dispatch.openhackers.club/docs/05-byoc) | Bindings, secrets, wrangler config, GitHub App, local dev |
 | [Cost](https://flare-dispatch.openhackers.club/docs/06-cost) | Cost model, worked estimates, head-to-head with GHA pricing |
 | [Roadmap & V0 Plan](https://flare-dispatch.openhackers.club/docs/pm/plan) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |
 
-## Recipes
+## Recipes & primitives
 
 Copy-paste [recipes](https://flare-dispatch.openhackers.club/recipes) for real CI use cases — browser tests, test matrices, CDP acceptance, security scans, deploy smoke, AI code review. Each ships both a GitHub Actions workflow and a typed run.
+
+The DSL is layered — capabilities → [primitives](primitives/) → recipes. A recipe is logic riding on primitives: reusable Effect-TS shapes (`workspace`, `installCached`, `sharded`, `bootApp`, `probeHttp`) the DSL ships so a run carries only what is unique to it. See [03-dsl § The layering](https://flare-dispatch.openhackers.club/docs/03-dsl).
 
 ## Status
 

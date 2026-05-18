@@ -4,11 +4,16 @@
 // Playwright's native --shard flag — one container per shard, all in
 // parallel — and uploads a report per shard.
 //
+// This recipe rides on two primitives — `sharded` (count-and-index fan-out)
+// and `workspace` (acquire + clone + cached install) — so the body is just
+// "run Playwright on this shard". See specs/03-dsl.md § Primitives.
+//
 // This is the shipped `playwright-e2e` run, reproduced here so the recipe is
 // self-contained. Spec: specs/02-runs.md § 3. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
 import { defineRun, step, sandbox, artifact } from "@flare-dispatch/core";
+import { sharded, workspace } from "@flare-dispatch/core/primitives";
 
 const Input = Schema.Struct({
   repo: Schema.String,
@@ -44,24 +49,19 @@ export const playwrightE2E = defineRun({
       const shards = input.shards ?? 4;
       const projectArg = input.project ? ["--project", input.project] : [];
 
-      // One container per shard, all in parallel. The suite's Playwright
-      // config points at CF Browser Rendering — `requiresBrowser` declares
-      // the binding so the container can reach it.
+      // One container per shard, all in parallel. `sharded` hands each shard
+      // its { index, total }; `workspace` does the per-shard checkout +
+      // cached install. The suite's Playwright config points at CF Browser
+      // Rendering — `requiresBrowser` declares the binding.
       const shardResults = yield* step("run-shards", () =>
-        Effect.forEach(
-          Array.from({ length: shards }, (_, i) => i + 1),
-          (index) =>
+        sharded({
+          count: shards,
+          body: ({ index, total }) =>
             Effect.gen(function* () {
-              const container = yield* sandbox.acquire({});
-              const dir = yield* sandbox.git.clone({
+              const { container, dir } = yield* workspace({
                 repo: input.repo,
                 sha: input.sha,
-                container,
-              });
-              yield* sandbox.exec({
-                cwd: dir,
-                container,
-                command: "pnpm install --frozen-lockfile",
+                install: true,
               });
               const exec = yield* sandbox.exec({
                 cwd: dir,
@@ -69,7 +69,7 @@ export const playwrightE2E = defineRun({
                 env: { BASE_URL: input.baseURL },
                 command: [
                   "pnpm", "exec", "playwright", "test",
-                  "--shard", `${index}/${shards}`,
+                  "--shard", `${index}/${total}`,
                   ...projectArg,
                 ],
               });
@@ -81,8 +81,7 @@ export const playwrightE2E = defineRun({
               });
               return { index, exitCode: exec.exitCode, reportUri };
             }),
-          { concurrency: shards },
-        ),
+        }),
       );
 
       const failed = shardResults.filter((r) => r.exitCode !== 0).length;
