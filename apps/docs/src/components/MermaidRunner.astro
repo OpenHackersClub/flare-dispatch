@@ -261,12 +261,20 @@
     const m = ensureModal();
     if (!stage) return;
     stage.innerHTML = "";
+    // The stage is absolutely positioned, so a clone left at
+    // width/height:auto collapses to zero size and the modal shows
+    // empty. Pin the clone to the SVG's on-page rendered size (falling
+    // back to its viewBox) so the stage has real dimensions to center.
+    const rect = svg.getBoundingClientRect();
+    const vb = svg.viewBox?.baseVal;
+    const w = Math.round(rect.width || vb?.width || 800);
+    const h = Math.round(rect.height || vb?.height || 600);
     const clone = svg.cloneNode(true) as SVGSVGElement;
     clone.removeAttribute("style");
+    clone.setAttribute("width", String(w));
+    clone.setAttribute("height", String(h));
     clone.style.maxWidth = "none";
     clone.style.maxHeight = "none";
-    clone.style.height = "auto";
-    clone.style.width = "auto";
     stage.appendChild(clone);
     if (!m.open) m.showModal();
     // Center after the modal has laid out so getBoundingClientRect is meaningful.
