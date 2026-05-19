@@ -15,10 +15,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 
-/** A booted Miniflare instance plus its D1 / R2 bindings. */
+/** A booted Miniflare instance plus its D1 / R2 / KV bindings. */
 export type TestBindings = {
   readonly db: D1Database;
   readonly bucket: R2Bucket;
+  readonly kv: KVNamespace;
   /** Tear the Miniflare instance down — call in `afterAll`/`afterEach`. */
   readonly dispose: () => Promise<void>;
 };
@@ -30,9 +31,10 @@ const D1_SCHEMA = readFileSync(
 );
 
 /**
- * Boot a Miniflare instance with a D1 database + R2 bucket, apply the V0 D1
- * schema, and return the live bindings. The worker script is a no-op `fetch`
- * handler — the tests drive the bindings directly, never the Worker.
+ * Boot a Miniflare instance with a D1 database + R2 bucket + KV namespace,
+ * apply the V0 D1 schema, and return the live bindings. The worker script is a
+ * no-op `fetch` handler — the tests drive the bindings directly, never the
+ * Worker.
  */
 export const makeTestBindings = async (): Promise<TestBindings> => {
   const mf = new Miniflare({
@@ -41,12 +43,16 @@ export const makeTestBindings = async (): Promise<TestBindings> => {
     compatibilityDate: "2026-05-01",
     d1Databases: { RUNS_METADATA: ":memory:" },
     r2Buckets: { RUNS_STORAGE: "runs-storage" },
+    kvNamespaces: { CONFIG_KV: "config-kv" },
   });
 
   const db = (await mf.getD1Database("RUNS_METADATA")) as unknown as D1Database;
   const bucket = (await mf.getR2Bucket(
     "RUNS_STORAGE",
   )) as unknown as R2Bucket;
+  const kv = (await mf.getKVNamespace(
+    "CONFIG_KV",
+  )) as unknown as KVNamespace;
 
   // Apply the schema. D1's `exec` runs one statement per line, so the
   // multi-line `CREATE TABLE`s are collapsed to single lines first.
@@ -63,7 +69,7 @@ export const makeTestBindings = async (): Promise<TestBindings> => {
     await db.exec(statement);
   }
 
-  return { db, bucket, dispose: () => mf.dispose() };
+  return { db, bucket, kv, dispose: () => mf.dispose() };
 };
 
 /** Count rows in a table — the D1-write-rate assertion helper (plan § 6). */

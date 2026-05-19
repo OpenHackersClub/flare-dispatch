@@ -11,9 +11,11 @@ import { Context, Effect, type Option, type Schema } from "effect";
 
 export interface ConfigService {
   readonly get: (key: string) => Effect.Effect<string | undefined>;
-  readonly getJSON: <A>(
+  // The schema's encoded type `I` is left free: the stored value is JSON
+  // parsed from a string, so it is decoded from `unknown` regardless of `I`.
+  readonly getJSON: <A, I>(
     key: string,
-    schema: Schema.Schema<A, unknown>,
+    schema: Schema.Schema<A, I>,
   ) => Effect.Effect<Option.Option<A>>;
 }
 
@@ -24,6 +26,6 @@ export class Config extends Context.Tag("@flare-dispatch/core/Config")<
 
 export const config = {
   get: (key: string) => Effect.flatMap(Config, (c) => c.get(key)),
-  getJSON: <A>(key: string, schema: Schema.Schema<A, unknown>) =>
+  getJSON: <A, I>(key: string, schema: Schema.Schema<A, I>) =>
     Effect.flatMap(Config, (c) => c.getJSON(key, schema)),
 } as const;

@@ -30,11 +30,11 @@
 import { Effect, Exit, Layer } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Executions, type RunContext } from "@flare-dispatch/core";
-import { sandboxFakeProgram } from "@flare-dispatch/core/testing";
+import { CacheFake, sandboxFakeProgram } from "@flare-dispatch/core/testing";
 import { offloadTest } from "@flare-dispatch/runs";
 import { makeR2ArtifactLive } from "./artifact-r2";
 import { makeChecksGithubLive } from "./checks-github";
-import { BrowserDeferred, CacheDeferred, ConfigDeferred } from "./deferred";
+import { BrowserDeferred, ConfigDeferred } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
 import { makeStepRunnerCloudflare } from "./step-runner-cf";
@@ -69,7 +69,9 @@ const makeRuntimeUnderTest = (
   return Layer.mergeAll(
     sandboxFakeProgram(sandboxProgram),
     BrowserDeferred,
-    CacheDeferred,
+    // `offload-test` never touches `cache`; the fake satisfies the Tag without
+    // a Containers binding the live `makeCacheR2Live` would need.
+    CacheFake,
     artifact,
     io,
     ConfigDeferred,

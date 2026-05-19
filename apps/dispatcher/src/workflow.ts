@@ -155,6 +155,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         input,
       },
       checks: resolveChecksConfig(this.env, payload.github),
+      configKv: this.env.CONFIG_KV,
     });
 
     // The execution program — the `finalize` boundary:
