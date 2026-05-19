@@ -22,6 +22,8 @@ export {
   type ExecutionContext,
 } from "./executions-d1";
 export { makeR2ArtifactLive } from "./artifact-r2";
+export { makeCacheR2Live } from "./cache-r2";
+export { makeConfigKvLive } from "./config-kv";
 export { makeSandboxCloudflareLive } from "./sandbox-cf";
 export { makeStepRunnerCloudflare } from "./step-runner-cf";
 export {
@@ -29,11 +31,7 @@ export {
   NOOP_CHECK_RUN_ID,
   type ChecksGithubConfig,
 } from "./checks-github";
-export {
-  BrowserDeferred,
-  CacheDeferred,
-  ConfigDeferred,
-} from "./deferred";
+export { BrowserDeferred, ConfigDeferred } from "./deferred";
 
 // --- The Sandbox Durable Object class ----------------------------------------
 // Re-exported so `apps/dispatcher` can `extends` it for the `RUNS_SANDBOX`

@@ -31,6 +31,15 @@ export interface Env {
   readonly RUNS_METADATA: D1Database;
 
   /**
+   * KV namespace backing the `config` capability — dynamic config + the
+   * secret store the `loadSecrets` primitive resolves credentials through.
+   * Optional: a deploy without it degrades to the dying `Config` stub (a
+   * config-reading run fails loudly). See `@flare-dispatch/runtime-cf`
+   * `makeConfigKvLive`.
+   */
+  readonly CONFIG_KV?: KVNamespace;
+
+  /**
    * GitHub App id — Worker secret, set via `wrangler secret put GITHUB_APP_ID`.
    * Numeric, carried as a string. With `GITHUB_APP_PRIVATE_KEY` it authorizes
    * the check-run callback; absent, the runtime degrades to a no-op `Checks`

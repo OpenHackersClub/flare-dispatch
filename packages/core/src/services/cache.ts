@@ -15,12 +15,21 @@ export interface CacheService {
     key: string;
     paths: readonly string[];
     container: Container;
+    /**
+     * Directory the `paths` are relative to — the checkout dir. Cached
+     * archives are packed/extracted with this as the working directory, so
+     * `paths` stay portable (`node_modules`, not `/workspace/repo/node_modules`).
+     * Optional: omit to treat `paths` as relative to the container's default cwd.
+     */
+    dir?: string;
     onMiss: () => Effect.Effect<A, E, R>;
   }) => Effect.Effect<A, E | CacheError, R>;
   readonly save: (opts: {
     key: string;
     paths: readonly string[];
     container: Container;
+    /** Directory the `paths` are relative to — see `restoreOr`. */
+    dir?: string;
   }) => Effect.Effect<void, CacheError>;
 }
 
@@ -34,8 +43,13 @@ export const cache = {
     key: string;
     paths: readonly string[];
     container: Container;
+    dir?: string;
     onMiss: () => Effect.Effect<A, E, R>;
   }) => Effect.flatMap(Cache, (c) => c.restoreOr(opts)),
-  save: (opts: { key: string; paths: readonly string[]; container: Container }) =>
-    Effect.flatMap(Cache, (c) => c.save(opts)),
+  save: (opts: {
+    key: string;
+    paths: readonly string[];
+    container: Container;
+    dir?: string;
+  }) => Effect.flatMap(Cache, (c) => c.save(opts)),
 } as const;

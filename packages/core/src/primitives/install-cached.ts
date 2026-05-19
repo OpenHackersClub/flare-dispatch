@@ -75,6 +75,7 @@ export const installCached = (opts: {
       key,
       paths,
       container: opts.container,
+      dir: opts.dir,
       onMiss: () =>
         sandbox.exec({ cwd: opts.dir, container: opts.container, command: install }),
     });

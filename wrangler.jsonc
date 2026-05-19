@@ -1,6 +1,7 @@
 {
-  // FlareDispatch V0 walking skeleton — Dispatcher Worker.
-  // V0 bindings only: Workflow, R2, D1, Container. No Queue / DO / Browser (deferred to V1+).
+  // FlareDispatch Dispatcher Worker.
+  // Bindings: Workflow, R2, D1, Container, KV (config). No Queue (deferred to
+  // V1 matrix fan-out); Browser Rendering lands in V2 (PR9).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "flare-dispatch-v0",
   "main": "apps/dispatcher/src/index.ts",
@@ -57,6 +58,16 @@
       "binding": "RUNS_METADATA",
       "database_name": "flare-dispatch-v0",
       "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+
+  // KV namespace backing the `config` capability — dynamic config + the secret
+  // store the `loadSecrets` primitive resolves run credentials through.
+  // Provision with `wrangler kv namespace create CONFIG_KV` and paste the id.
+  "kv_namespaces": [
+    {
+      "binding": "CONFIG_KV",
+      "id": "00000000000000000000000000000000"
     }
   ]
 }

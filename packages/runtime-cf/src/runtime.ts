@@ -19,15 +19,13 @@ import { type Sandbox } from "@cloudflare/sandbox";
 import { Layer } from "effect";
 import type { RunContext } from "@flare-dispatch/core";
 import { makeR2ArtifactLive } from "./artifact-r2";
+import { makeCacheR2Live } from "./cache-r2";
 import {
   type ChecksGithubConfig,
   makeChecksGithubLive,
 } from "./checks-github";
-import {
-  BrowserDeferred,
-  CacheDeferred,
-  ConfigDeferred,
-} from "./deferred";
+import { makeConfigKvLive } from "./config-kv";
+import { BrowserDeferred, ConfigDeferred } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
 import { makeSandboxCloudflareLive } from "./sandbox-cf";
@@ -59,6 +57,13 @@ export type CFRuntimeLiveOptions = {
    * the execution still runs, only the PR check-run is skipped.
    */
   readonly checks?: ChecksGithubConfig;
+  /**
+   * KV binding for the `config` capability (`env.CONFIG_KV`). `undefined` —
+   * a deploy with no `CONFIG_KV` namespace — selects the dying `Config` stub:
+   * a run that reads config fails loudly rather than silently seeing every
+   * key as unset. Present, the `loadSecrets` primitive can resolve credentials.
+   */
+  readonly configKv?: KVNamespace;
 };
 
 /**
@@ -82,14 +87,21 @@ export const makeCFRuntimeLive = (
     opts.executionId,
   );
   const checks = makeChecksGithubLive(opts.checks);
+  const cache = makeCacheR2Live(opts.bucket, opts.sandboxNs);
+  // `Config` is live when the `CONFIG_KV` binding is present; absent, the
+  // dying stub keeps a config-reading run from silently mis-behaving.
+  const config =
+    opts.configKv === undefined
+      ? ConfigDeferred
+      : makeConfigKvLive(opts.configKv);
 
   return Layer.mergeAll(
     sandbox,
     BrowserDeferred,
-    CacheDeferred,
+    cache,
     artifact,
     io,
-    ConfigDeferred,
+    config,
     checks,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.
