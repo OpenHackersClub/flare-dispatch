@@ -98,7 +98,13 @@ export const makeCFRuntimeLive = (
     opts.executionId,
   );
   const checks = makeChecksGithubLive(opts.checks);
-  const cache = makeCacheR2Live(opts.bucket, opts.sandboxNs);
+  // The cache archive key is scoped by repo so two repos with an identical
+  // lockfile hash cannot collide (cross-repo cache poisoning).
+  const cache = makeCacheR2Live(
+    opts.bucket,
+    opts.sandboxNs,
+    opts.execution.repo,
+  );
   // `Config` is live when the `CONFIG_KV` binding is present; absent, the
   // dying stub keeps a config-reading run from silently mis-behaving.
   const config =

@@ -4,10 +4,10 @@
 // bindings. `vitest-pool-workers` 0.16 requires Vitest 3, but this monorepo is
 // pinned to Vitest 2 — so the tests instead boot a Miniflare instance directly
 // (Miniflare is the same local Workers runtime `vitest-pool-workers` uses under
-// the hood). `makeTestBindings` spins up Miniflare with a D1 + R2 binding,
-// applies infra/d1-schema.sql, and hands back the live `D1Database` / `R2Bucket`
-// objects. Plain Node + Vitest, no Workers pool — the "or an equivalent" path
-// the PR4 acceptance allows.
+// the hood). `makeTestBindings` spins up Miniflare with D1 + R2 + KV bindings,
+// applies infra/d1-schema.sql, and hands back the live `D1Database` /
+// `R2Bucket` / `KVNamespace` objects. Plain Node + Vitest, no Workers pool —
+// the "or an equivalent" path the PR4 acceptance allows.
 //
 // Spec: specs/pm/plan.md § PR4 acceptance.
 

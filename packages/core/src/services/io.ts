@@ -29,9 +29,11 @@ export interface IOService {
     msg: string,
     attrs?: Record<string, unknown>,
   ) => Effect.Effect<void>;
-  readonly priorExecution: <O>(opts: {
+  // The schema's encoded type `I` is left free — the prior output is decoded
+  // from stored JSON (`unknown`), so `I` is irrelevant to the caller.
+  readonly priorExecution: <O, I>(opts: {
     family: string;
-    outputSchema: Schema.Schema<O, unknown>;
+    outputSchema: Schema.Schema<O, I>;
   }) => Effect.Effect<Option.Option<PriorExecution<O>>>;
 }
 
@@ -44,8 +46,8 @@ export const io = {
   sleep: (d: Duration.Duration | string) => Effect.flatMap(IO, (s) => s.sleep(d)),
   log: (level: LogLevel, msg: string, attrs?: Record<string, unknown>) =>
     Effect.flatMap(IO, (s) => s.log(level, msg, attrs)),
-  priorExecution: <O>(opts: {
+  priorExecution: <O, I>(opts: {
     family: string;
-    outputSchema: Schema.Schema<O, unknown>;
+    outputSchema: Schema.Schema<O, I>;
   }) => Effect.flatMap(IO, (s) => s.priorExecution(opts)),
 } as const;

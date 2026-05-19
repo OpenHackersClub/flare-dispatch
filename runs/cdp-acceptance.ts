@@ -14,14 +14,18 @@
 //
 // --- Three design decisions, documented inline ------------------------------
 //
-// 1. Secrets are injected via `loadSecrets`, not the dispatch body.
+// 1. Secrets are injected via `loadSecrets`, called INLINE (not in a `step`).
 //    The migration target (numu's acceptance-cf job) needs `CLERK_*` /
 //    `CLOUDFLARE_*` credentials to boot its dev servers. Rather than thread
 //    them through GHA repo secrets and the dispatch payload, the operator
 //    stores them in the FlareDispatch config store (KV); the run names the
 //    keys in `inputs.secrets` and `loadSecrets` resolves them into the env
-//    handed to BOTH the app boot and the test command. A key that is unset is
-//    omitted + logged at `warn` — never a hard failure (see load-secrets.ts).
+//    handed to BOTH the app boot and the test command. `loadSecrets` is called
+//    inline, NOT wrapped in `step(...)`: a step return value is persisted to
+//    the CF Workflow's durable checkpoint, and plaintext credentials must not
+//    sit in Workflow state at rest. The config read is cheap + idempotent to
+//    re-run on replay. `required: true` makes a missing key fail the run with
+//    `SecretsMissing` rather than booting a credential-less container.
 //
 // 2. No `finalize` step — same boundary as `offload-test`.
 //    The D1 `executions`-row status write and the GitHub check-run callback
@@ -97,10 +101,12 @@ export const cdpAcceptance = defineRun({
       );
 
       // load-secrets — resolve the named credentials from the config store
-      // into the env injected below. A checkpointed step so replay is stable.
-      const secretEnv = yield* step("load-secrets", () =>
-        loadSecrets(input.secrets, { prefix: input.secretPrefix }),
-      );
+      // into the env injected below. Called INLINE, not in a `step`: secrets
+      // must not land in a durable Workflow checkpoint (see header note 1).
+      const secretEnv = yield* loadSecrets(input.secrets, {
+        prefix: input.secretPrefix,
+        required: true,
+      });
 
       // boot-app — start the app in a detached container with the injected
       // secrets and block until its port opens.

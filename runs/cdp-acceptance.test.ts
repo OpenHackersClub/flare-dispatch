@@ -36,7 +36,7 @@ const baseInput = {
 } as const;
 
 describe("cdp-acceptance", () => {
-  it.effect("green path — test command exits 0, seven steps, CDP attached", () => {
+  it.effect("green path — test command exits 0, six steps, CDP attached", () => {
     const { layer, handles } = makeCFRuntimeTest({
       sandboxProgram: { "pnpm test:acceptance": { exitCode: 0 } },
       browser: { wsEndpoint: "wss://test-cdp/abc" },
@@ -49,11 +49,11 @@ describe("cdp-acceptance", () => {
       expect(result.reportUri.length).toBeGreaterThan(0);
       expect(result.screenshotsUri.length).toBeGreaterThan(0);
 
-      // checkout → load-secrets → boot-app → attach-cdp → run-tests →
-      // upload-report → upload-screenshots, each recorded once, all successful.
+      // checkout → boot-app → attach-cdp → run-tests → upload-report →
+      // upload-screenshots, each recorded once, all successful. `loadSecrets`
+      // is called inline (not a step) so credentials never hit a checkpoint.
       expect(handles.executions.steps.map((s) => s.name)).toEqual([
         "checkout",
-        "load-secrets",
         "boot-app",
         "attach-cdp",
         "run-tests",
@@ -144,6 +144,33 @@ describe("cdp-acceptance", () => {
           CLERK_SECRET_KEY: "sk_live_x",
           CDP_WS_URL: "wss://test-cdp/abc",
         });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "secrets — a named-but-unset secret fails the run with SecretsMissing",
+    () => {
+      // No `config` seed — the named secret resolves to nothing. `loadSecrets`
+      // runs with `required: true`, so the run fails fast instead of booting
+      // the app without the credential.
+      const { layer } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test:acceptance": { exitCode: 0 } },
+        browser: { wsEndpoint: "wss://test-cdp/abc" },
+      });
+      const input = { ...baseInput, secrets: ["CLERK_SECRET_KEY"] };
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(cdpAcceptance.run(input));
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        const tag = Exit.isFailure(exit)
+          ? Option.match(Cause.failureOption(exit.cause), {
+              onSome: (f) => (f as { _tag?: string })._tag,
+              onNone: () => undefined,
+            })
+          : undefined;
+        expect(tag).toBe("SecretsMissing");
       }).pipe(Effect.provide(layer));
     },
   );

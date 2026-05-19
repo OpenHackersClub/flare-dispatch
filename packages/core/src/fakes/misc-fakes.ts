@@ -55,7 +55,7 @@ export const BrowserFake: Layer.Layer<Browser> = makeBrowserFake().layer;
 export const CacheFake: Layer.Layer<Cache> = Layer.succeed(
   Cache,
   ((): CacheService => ({
-    restoreOr: (opts) => opts.onMiss(),
+    restoreOr: (opts) => Effect.asVoid(opts.onMiss()),
     save: () => Effect.void,
   }))(),
 );
