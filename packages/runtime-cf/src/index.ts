@@ -22,6 +22,11 @@ export {
   type ExecutionContext,
 } from "./executions-d1";
 export { makeR2ArtifactLive } from "./artifact-r2";
+export {
+  type BrowserRenderingConfig,
+  composeCdpEndpoint,
+  makeBrowserRenderingLive,
+} from "./browser-cf";
 export { makeCacheR2Live } from "./cache-r2";
 export { makeConfigKvLive } from "./config-kv";
 export { makeSandboxCloudflareLive } from "./sandbox-cf";

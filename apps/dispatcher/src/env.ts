@@ -53,4 +53,19 @@ export interface Env {
    * `GITHUB_APP_ID` to mint short-lived installation tokens (no PATs).
    */
   readonly GITHUB_APP_PRIVATE_KEY?: string;
+
+  /**
+   * Browser Rendering CDP `/connect` WebSocket URL — Worker secret. The
+   * `cdp-acceptance` run hands this (with `BROWSER_CDP_API_TOKEN` appended) to
+   * the container's Playwright process. Absent, the runtime degrades to the
+   * dying `Browser` stub — a browser run fails loudly, non-browser runs are
+   * unaffected.
+   */
+  readonly BROWSER_CDP_CONNECT_URL?: string;
+
+  /**
+   * Cloudflare API token authorizing the Browser Rendering connect — Worker
+   * secret, paired with `BROWSER_CDP_CONNECT_URL`.
+   */
+  readonly BROWSER_CDP_API_TOKEN?: string;
 }

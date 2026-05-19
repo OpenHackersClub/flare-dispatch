@@ -31,7 +31,12 @@ export type CannedProgram = Record<string, CannedExec>;
 export type SandboxFakeState = {
   readonly acquired: { image?: string }[];
   readonly clones: { repo: string; sha: string }[];
-  readonly execs: { command: string; cwd?: string }[];
+  /** every `exec` / `runDetached` call — `env` lets tests assert injection. */
+  readonly execs: {
+    command: string;
+    cwd?: string;
+    env?: Record<string, string>;
+  }[];
 };
 
 const normalizeCommand = (command: string | readonly string[]): string =>
@@ -86,7 +91,7 @@ export const makeSandboxFake = (
 
     exec: (opts: ExecOpts) => {
       const command = normalizeCommand(opts.command);
-      state.execs.push({ command, cwd: opts.cwd });
+      state.execs.push({ command, cwd: opts.cwd, env: opts.env });
       const canned = resolve(command);
       if (canned && "fail" in canned) {
         return canned.fail === "ExecTimeout"
@@ -109,7 +114,7 @@ export const makeSandboxFake = (
     runDetached: (opts: ExecOpts) =>
       Effect.sync(() => {
         const command = normalizeCommand(opts.command);
-        state.execs.push({ command, cwd: opts.cwd });
+        state.execs.push({ command, cwd: opts.cwd, env: opts.env });
         containerSeq += 1;
         return {
           id: `fake-detached-${containerSeq}`,

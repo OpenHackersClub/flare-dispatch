@@ -48,19 +48,22 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { Effect, Exit, Schema } from "effect";
 import { Checks, Executions, type Run } from "@flare-dispatch/core";
 import {
+  type BrowserRenderingConfig,
   type ChecksGithubConfig,
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
-import { offloadTest } from "@flare-dispatch/runs";
+import { cdpAcceptance, offloadTest } from "@flare-dispatch/runs";
 import type { Env } from "./env";
 
 /**
- * The V0 run registry — a one-entry map from run name to its `Run` value.
- * `RunWorkflow` looks a dispatched run up here; an unknown name fails the
- * execution. Each new run added in V1+ slots in as another entry.
+ * The run registry — a map from run name to its `Run` value. `RunWorkflow`
+ * looks a dispatched run up here; an unknown name fails the execution. Each
+ * new run slots in as another entry — `offload-test` (V0), `cdp-acceptance`
+ * (V2 browser acceptance, PR9).
  */
 const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
+  [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
 };
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */
@@ -118,6 +121,19 @@ const resolveChecksConfig = (
   };
 };
 
+/**
+ * Resolve the `Browser` Layer config from `env`, or `undefined` when Browser
+ * Rendering is not configured — `undefined` selects the dying `Browser` stub.
+ * Only browser runs (`cdp-acceptance`) touch the Tag; others are unaffected.
+ */
+const resolveBrowserConfig = (env: Env): BrowserRenderingConfig | undefined =>
+  env.BROWSER_CDP_CONNECT_URL === undefined
+    ? undefined
+    : {
+        connectUrl: env.BROWSER_CDP_CONNECT_URL,
+        apiToken: env.BROWSER_CDP_API_TOKEN,
+      };
+
 export class RunWorkflow extends WorkflowEntrypoint<Env> {
   override async run(
     event: WorkflowEvent<unknown>,
@@ -156,6 +172,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       },
       checks: resolveChecksConfig(this.env, payload.github),
       configKv: this.env.CONFIG_KV,
+      browser: resolveBrowserConfig(this.env),
     });
 
     // The execution program — the `finalize` boundary:

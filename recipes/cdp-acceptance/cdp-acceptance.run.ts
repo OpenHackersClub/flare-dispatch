@@ -9,8 +9,10 @@
 // cached install) and `bootApp` (detached run + wait-for-port) — so the file
 // carries only the CDP-specific logic. See specs/03-dsl.md § Primitives.
 //
-// This is the shipped `cdp-acceptance` run, reproduced here so the recipe is
-// self-contained. Spec: specs/02-runs.md § 4. DSL: specs/03-dsl.md.
+// This recipe is the minimal illustration of the run shape. The shipped run is
+// `runs/cdp-acceptance.ts` — it additionally injects credentials from the
+// config store via the `loadSecrets` primitive (see its header). Recipe scope:
+// specs/02-runs.md § 4. DSL: specs/03-dsl.md.
 
 import { Effect, Schema } from "effect";
 import { defineRun, step, sandbox, browser, artifact, io } from "@flare-dispatch/core";
