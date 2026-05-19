@@ -34,6 +34,7 @@ flowchart TB
 
   GHA -->|HMAC POST| DSP
   APP -->|App-signed webhook| DSP
+  CRON[Cron Trigger<br/>wall-clock cadence] -->|scheduled| DSP
   Admin[Operator<br/>via CF Access] -->|admin POST| DSP
   DSP --> WF
   WF -->|aggregate shard results| CO
@@ -51,18 +52,19 @@ flowchart TB
 
 ### Dispatcher Worker
 
-The single public entry point. Its responsibilities are deliberately narrow — **authenticate, route, deduplicate, instantiate a Workflow** — and nothing else. No business logic and no long-running calls run on this path, so each invocation stays well within the Worker CPU budget. LLM calls, Octokit fetches, and container starts all happen later, inside the Workflow.
+The single entry point. Its responsibilities are deliberately narrow — **authenticate, route, deduplicate, instantiate a Workflow** — and nothing else. No business logic and no long-running calls run on this path, so each invocation stays well within the Worker CPU budget. LLM calls, Octokit fetches, container starts, and target enumeration all happen later, inside a Workflow.
 
-It exposes four kinds of endpoint:
+It is invoked two ways — the Worker's `fetch()` handler serves the HTTP surfaces; its `scheduled()` handler is the Cron Trigger entry point:
 
-| Surface | Responsibility |
-|---|---|
-| **Dispatch** | Start an execution from an HMAC-signed POST (Action mode). |
-| **Webhook** | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). |
-| **Inspection** | Return execution metadata; redirect to signed artifact / log URLs. |
-| **Admin** | Operator surface — execution list, force-cancel, replay, signalling a paused Workflow. Gated by Cloudflare Access. |
+| Surface | Handler | Responsibility |
+|---|---|---|
+| **Dispatch** | `fetch()` | Start an execution from an HMAC-signed POST (Action mode). |
+| **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). |
+| **Schedule** | `scheduled()` | A Cloudflare Cron Trigger fires on a wall-clock cadence; the handler instantiates a scheduling Workflow (Schedule mode). See [§ Schedule-mode dispatch](#schedule-mode-dispatch). |
+| **Inspection** | `fetch()` | Return execution metadata; redirect to signed artifact / log URLs. |
+| **Admin** | `fetch()` | Operator surface — execution list, force-cancel, replay, signalling a paused Workflow. Gated by Cloudflare Access. |
 
-Trigger modes, the request/response contracts, and the literal route paths are in [04-gha-integration](04-gha-integration.md).
+Only the `fetch()` surfaces are publicly reachable. `scheduled()` has no HTTP route — Cloudflare invokes it internally from the Cron Trigger, which is why Schedule mode authenticates nothing inbound (see [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). Trigger modes, the request/response contracts, and the literal route paths are in [04-gha-integration](04-gha-integration.md).
 
 ### Workflow Engine
 
@@ -170,12 +172,33 @@ If a child shard fails:
 - The parent's overall conclusion becomes `failure` once any shard fails — or once all complete, depending on `failureBehavior`.
 - Each shard's logs and reports are independent R2 paths, linked from the summary.
 
+## Schedule-mode dispatch
+
+The Action and Webhook modes both start with an inbound HTTP request that *names a target* — a repo, a SHA, a PR. Schedule mode starts with a [Cloudflare Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/): a wall-clock tick that names nothing. Turning a bare tick into useful work is a small orchestration of its own, and the architecture handles it the same way it handles everything else — **as a durable Workflow**.
+
+```mermaid
+flowchart TB
+  CRON[Cron Trigger] -->|scheduled| DSP[Dispatcher · scheduled handler]
+  DSP -->|create, keyed by cron window| SW[Scheduling Workflow]
+  SW -->|step: enumerate, App JWT| GH[GitHub API]
+  SW -->|step: createBatch| C1[Child execution · run pr-review]
+  SW -->|step: createBatch| C2[Child execution · run pr-review]
+  SW -->|step: createBatch| Cn[Child execution · run pr-review]
+```
+
+Two design points:
+
+- **The `scheduled()` handler stays thin.** It does no enumeration and no fan-out — it instantiates one **scheduling Workflow** and returns, exactly as `fetch()` instantiates an execution Workflow for the other modes. `scheduled()` shares the Worker CPU budget; "list every open PR across N installed repos" is a multi-call, retryable, must-survive-eviction job, so it belongs *inside* a Workflow, not on the handler path.
+- **The scheduling Workflow is a parent Workflow.** Its first `step` enumerates targets (App JWT → installations → open PRs, filtered by the run's scope); subsequent steps fan out child execution Workflows with the same `createBatch` primitive matrix runs use ([§ Fan-out model](#fan-out-model)). It can use the Coordinator DO to aggregate child outcomes into a single digest, or leave each child to report its own check-run independently. A scheduled `pr-review` sweep takes the latter shape: one check-run per PR, no parent check-run.
+
+This keeps the core invariant intact — *every unit of real work is a durable Workflow instance*, checkpointed and resumable — and adds no new component. A scheduling Workflow is an ordinary Workflow whose body happens to be "enumerate, then fan out." The recurring cadence lives in `wrangler.jsonc` (`triggers.crons`); a *one-off* deferred action lives in a run via `step.sleepUntil` ([03-dsl § Deferred scheduling](03-dsl.md#deferred-scheduling-with-stepsleepuntil)) and needs no Cron Trigger at all.
+
 ## Durability and dedup
 
 Two design disciplines keep executions correct under retries and redeliveries:
 
 - **Durability** — every `step` is a Workflow checkpoint. Non-determinism (time, UUIDs, env reads) flows through the `io.*` DSL primitives (see [03-dsl](03-dsl.md)) so checkpoint replay stays consistent.
-- **Two-layer dedup** — a *receiver-level* idempotency key collapses redelivery storms before any Workflow is touched; a *Workflow-level* semantic instance id collapses two distinct deliveries naming the same logical work (same repo + head SHA) onto one execution. Full discipline in [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-both-modes).
+- **Two-layer dedup** — a *receiver-level* idempotency key collapses redelivery storms (and duplicate cron deliveries) before any Workflow is touched; a *Workflow-level* semantic instance id collapses two distinct deliveries naming the same logical work (same repo + head SHA, or same cron window) onto one execution. Full discipline in [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-all-modes).
 
 ## Long-running test handling
 
@@ -197,6 +220,8 @@ The architecture is shaped by Cloudflare platform limits. The ones that matter, 
 | Workflow steps per instance | 10,000 default, configurable to 25,000 | Parent workflows for >25k-shard matrices use child-of-child nesting; sleeps don't count against the quota. |
 | Workflow concurrent instances | 50,000 per account; creation rate 100/s per workflow, 300/s per account | The fan-out Queue paces creation only when shard count × dispatch rate exceeds the per-workflow rate. |
 | Workflow step result size | 1 MiB per non-stream step result; larger payloads stream | Logs / artifacts go to R2; steps return pointers, not blobs. |
+| Workflow durable sleep | `step.sleep` / `step.sleepUntil` have no upper bound and do not count toward the per-instance step quota | Deferred follow-ups and staggered fan-out hibernate the Workflow for free (see [03-dsl § Deferred scheduling](03-dsl.md#deferred-scheduling-with-stepsleepuntil)). |
+| Cron Triggers | Multiple `triggers.crons` entries per Worker, minute granularity; a tick may be delivered more than once and is not guaranteed exactly-once | One deploy hosts every run's schedule; `scheduled()` routes `controller.cron` to the matching run(s). Duplicate ticks collapse via the receiver-level idempotency key and the cron-window `instanceId` (see [§ Durability and dedup](#durability-and-dedup)). |
 | Browser Rendering: session duration | No fixed max while active; 60 s idle timeout (extendable) | Runs rotate sessions per test file rather than holding one open for a whole suite. |
 | Browser Rendering: concurrent sessions | 120 per account (higher on request) | Shard cap derived from this number minus headroom for other runs. |
 | Browser Rendering: free included | 10 browser-hours/month; 10 concurrent browsers | Runs prefer managed Browser Rendering for short tests; in-container Playwright for sessions that would blow the free tier. |
@@ -206,9 +231,9 @@ The architecture is shaped by Cloudflare platform limits. The ones that matter, 
 | D1 database size | 10 GB per database; 1 TB account storage | Logs and artifacts live in R2; D1 stores only execution metadata and pointers. |
 | R2 lifecycle | Per-prefix expiration rules | Cache / artifact / log retention set by lifecycle policy; see [05-byoc § Retention](05-byoc.md#retention-and-cleanup). |
 | Queues | 5,000 msg/s per queue; batched sends | Fan-out shards published in batched sends when the Queue path is taken at all. |
-| GitHub API rate limit | 5,000 req/h per installation token | Check-run updates throttled to ~1/sec per execution via the Coordinator. |
+| GitHub API rate limit | 5,000 req/h per installation token | Check-run updates throttled to ~1/sec per execution via the Coordinator. A Schedule-mode enumeration paginates `pulls` per installed repo — large-org sweeps page within the per-installation budget and back off on `403`. |
 
-*Source:* [Workflows limits](https://developers.cloudflare.com/workflows/reference/limits/), [Browser Rendering limits](https://developers.cloudflare.com/browser-rendering/platform/limits/), [Containers limits](https://developers.cloudflare.com/containers/platform-details/limits/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [Queues limits](https://developers.cloudflare.com/queues/platform/limits/). Values current as of 2026-05.
+*Source:* [Workflows limits](https://developers.cloudflare.com/workflows/reference/limits/), [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/), [Browser Rendering limits](https://developers.cloudflare.com/browser-rendering/platform/limits/), [Containers limits](https://developers.cloudflare.com/containers/platform-details/limits/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [Queues limits](https://developers.cloudflare.com/queues/platform/limits/). Values current as of 2026-05.
 
 ## Observability
 

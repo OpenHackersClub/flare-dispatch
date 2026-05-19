@@ -13,7 +13,7 @@ flowchart LR
   CAP -.->|escape hatch| REC
 ```
 
-- **Capabilities** — `sandbox`, `browser`, `cache`, `artifact`, `io`, `config`. One `Context.Tag` service per namespace ([`src/services/`](src/services/)), each backed by a swappable Layer (real CF / local dev / in-memory test). A capability does one atomic thing.
+- **Capabilities** — `sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github`. One `Context.Tag` service per namespace ([`src/services/`](src/services/)), each backed by a swappable Layer (real CF / local dev / in-memory test). A capability does one atomic thing.
 - **Primitives** — reusable Effect-TS compositions built on the capabilities ([`src/primitives/`](src/primitives/)). Every recipe was re-deriving the same `acquire → clone → install` checkout dance, the indexed fan-out, the boot-and-wait preamble; a primitive is that shape, named once, typed once, tested once. A primitive adds **no new runtime** — only a smaller surface to write recipes against.
 - **Recipes** — `defineRun` programs that ride on primitives and carry only the logic unique to one CI use case. The starter library is [recipes/](../../recipes/).
 

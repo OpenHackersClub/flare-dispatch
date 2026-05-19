@@ -21,11 +21,12 @@ Every shipped run exports:
     requiresBrowser?: boolean;               // declares Browser Rendering binding
   };
   triggers?: TriggerSpec<I>[];                // Webhook-mode trigger config
+  schedules?: ScheduleSpec<I>[];              // Schedule-mode trigger config (cron)
   run: (input: I) => Effect.Effect<O, RunError, RunContext>;
 }
 ```
 
-A user-defined run in their own repo has the same shape. The shipped runs below are the starter library.
+A user-defined run in their own repo has the same shape. The shipped runs below are the starter library. `triggers` / `schedules` are both optional and select the run's trigger mode — see [03-dsl § `defineRun`](03-dsl.md#definerun).
 
 ---
 

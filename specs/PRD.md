@@ -19,7 +19,7 @@ Teams work around this with self-hosted runners (which they must operate and sec
 | **Small / mid eng team with a heavy test suite** | A Playwright or integration suite that dominates their GHA bill and wall-clock time | Heavy compute moves to CF Containers + Workflows fan-out; GHA keeps the trigger and the cheap jobs. See [06-cost](06-cost.md). |
 | **Team already on Cloudflare (Workers Paid)** | Wants to consolidate infra; doesn't want a second vendor or a runner fleet to operate | One `wrangler deploy` into the account they already pay for. See [05-byoc](05-byoc.md). |
 | **Platform / DevEx engineer** | Owns CI tooling for an org; needs something auditable, typed, and forkable — not opaque YAML | Runs are typed Effect-TS programs the team owns and vendor-edits. See [03-dsl](03-dsl.md). |
-| **OSS maintainer / autonomous-CI user** | Wants PR review, smoke, or scheduled jobs on *every* push without burning GHA minutes or adding workflow files | Webhook mode: the GitHub App fires runs directly, zero GHA minutes, no `.github/workflows/` edits. See [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode). |
+| **OSS maintainer / autonomous-CI user** | Wants PR review and smoke on every push, plus nightly sweeps and weekly release notes — without burning GHA minutes or adding workflow files | Webhook mode fires runs on every push; Schedule mode fires them on a cron cadence. Both run directly off the GitHub App — zero GHA minutes, no `.github/workflows/` edits. See [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode) and [§ Schedule mode](04-gha-integration.md#schedule-mode). |
 
 Not for: teams whose CI is already cheap and fast (lint + unit only) — there is nothing to offload.
 
@@ -29,8 +29,8 @@ Not for: teams whose CI is already cheap and fast (lint + unit only) — there i
 2. **No platform ceilings.** Multi-step Workflows have no 6-hour limit; R2 cache and artifacts have no 10 GB cap and user-controlled retention. See [01-architecture § Platform limits](01-architecture.md#platform-limits--design-constraints).
 3. **Cheap, wide fan-out.** Workflows `createBatch` spawns up to 100 children per call, 50,000 concurrent instances per account, scale-to-zero between runs. See [01-architecture § Fan-out model](01-architecture.md#fan-out-model).
 4. **You own the runs.** Runs are typed Effect programs — composable steps, tagged errors, exhaustive matching, retry/Schedule combinators — not stringly-typed YAML. Fork them, vendor-edit them, unit-test them without booting a container. See [02-runs](02-runs.md) and [03-dsl](03-dsl.md).
-5. **BYOC, no new dashboard.** Every code path assumes "deployed into the user's own Cloudflare account" — bring-your-own-Cloud, no operator runs it for you. Status reports back as a GitHub Check Run — the existing PR UI is the UI. See [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-both-modes).
-6. **Two trigger modes, one Dispatcher.** Action mode interleaves with existing GHA jobs; Webhook mode runs autonomously with zero GHA minutes. See [04-gha-integration](04-gha-integration.md).
+5. **BYOC, no new dashboard.** Every code path assumes "deployed into the user's own Cloudflare account" — bring-your-own-Cloud, no operator runs it for you. Status reports back as a GitHub Check Run — the existing PR UI is the UI. See [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes).
+6. **Three trigger modes, one Dispatcher.** Action mode interleaves with existing GHA jobs; Webhook mode runs autonomously on GitHub events with zero GHA minutes; Schedule mode fires runs on a wall-clock cadence via Cloudflare Cron Triggers — nightly PR-review sweeps, weekly release notes, scheduled dependency scans. See [04-gha-integration](04-gha-integration.md).
 
 ## What a run is
 
@@ -39,7 +39,7 @@ A **run** is a typed, named Effect-TS program with:
 - A `Schema`-defined input contract (what the caller sends).
 - A `Schema`-defined output contract (what gets posted back).
 - A sequence of `step`s, each mapped to a CF Workflow step, composed via `Effect.gen`.
-- Access to a fixed set of **capabilities** — `sandbox`, `browser`, `cache`, `artifact`, `io`, `config` — and the **primitives** built on them (`workspace`, `installCached`, `sharded`, …) so the run carries only its own logic, not the boilerplate.
+- Access to a fixed set of **capabilities** — `sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github` — and the **primitives** built on them (`workspace`, `installCached`, `sharded`, …) so the run carries only its own logic, not the boilerplate.
 
 Runs are not opaque — they are TypeScript files in the user's repo. The shipped runs are the starter library; the DSL is the contract. The DSL is layered: capabilities → primitives → runs (recipes), so common CI shapes are written once and reused. Full catalog in [02-runs](02-runs.md); DSL surface and the layering in [03-dsl](03-dsl.md).
 
@@ -49,6 +49,7 @@ Runs are not opaque — they are TypeScript files in the user's repo. The shippe
 flowchart LR
   GHA[GitHub Actions<br/>trigger + cheap jobs] -->|HMAC POST<br/>/v1/dispatch| W[Run Worker<br/>in your CF account]
   APP[GitHub App webhook<br/>autonomous trigger] -->|App-signed<br/>/v1/webhooks/github| W
+  CRON[Cloudflare Cron Trigger<br/>scheduled cadence] -->|scheduled handler| W
   W --> WF[CF Workflow<br/>durable orchestration]
   WF --> SB[Sandbox / Container<br/>test execution]
   WF --> BR[Browser Rendering<br/>Playwright]
@@ -108,7 +109,7 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 | [01-architecture](01-architecture.md) | Components, per-execution lifecycle, storage, fan-out, platform limits |
 | [02-runs](02-runs.md) | Run catalog with inputs/outputs/primitives |
 | [03-dsl](03-dsl.md) | Effect-TS DSL surface — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
-| [04-gha-integration](04-gha-integration.md) | Two trigger modes (Action / Webhook), HMAC auth, check-runs callback |
+| [04-gha-integration](04-gha-integration.md) | Three trigger modes (Action / Webhook / Schedule), HMAC auth, Cron Triggers, check-runs callback |
 | [05-byoc](05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
 | [06-cost](06-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
 | [pm/plan](pm/plan.md) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |

@@ -1,23 +1,25 @@
 # 04 — GitHub Integration
 
-GitHub talks to FlareDispatch through **two trigger modes**. Pick whichever fits — most teams end up running both, side by side, against the same Dispatcher.
+GitHub talks to FlareDispatch through **three trigger modes**. Pick whichever fits — most teams end up running more than one, side by side, against the same Dispatcher.
 
 | Mode | How a run is triggered | GHA workflow file? | GHA minutes per execution | Shared secret to rotate? |
 |---|---|---|---|---|
 | **Action mode** | A GHA workflow calls `openhackersclub/flare-dispatch-action`; or any external caller HMAC-signs and POSTs the dispatch endpoint | yes (or none, for direct POST) | ~10 s per dispatch | yes — `FLAREDISPATCH_HMAC` |
 | **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret |
+| **Schedule mode** | A Cloudflare [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/) fires the Dispatcher's `scheduled()` handler on a wall-clock cadence; the handler instantiates a durable scheduling Workflow | no | 0 | no — no GitHub-facing secret at all |
 
-Both modes hit the same Dispatcher, share the same dedup discipline, and report results through the same check-run callback. The rest of this doc is **one section per mode**, then the parts they share (check-runs callback, dedup, secrets, failure handling).
+All three modes hit the same Dispatcher, share the same dedup discipline, and report results through the same check-run callback. The rest of this doc is **one section per mode**, then the parts they share (check-runs callback, dedup, secrets, failure handling).
 
 ## Pieces
 
 | Piece | Role | Used by |
 |---|---|---|
-| **Dispatcher Worker** | Single receiver for both modes. See [01-architecture § Dispatcher Worker](01-architecture.md#control-plane). | both |
-| **`FlareDispatch` GitHub App** | Owns the check-runs API token (writes results back). In Webhook mode, also the trigger source. | both for callback; Webhook mode for trigger |
+| **Dispatcher Worker** | Single receiver for all three modes — `fetch()` for Action / Webhook, `scheduled()` for Schedule. See [01-architecture § Dispatcher Worker](01-architecture.md#control-plane). | all |
+| **`FlareDispatch` GitHub App** | Owns the check-runs API token (writes results back). In Webhook mode, also the trigger source. In Schedule mode, the JWT that enumerates targets. | all for callback; Webhook mode for trigger; Schedule mode for enumeration |
 | **`openhackersclub/flare-dispatch-action`** | Composite Action — HMAC-signs the body, POSTs the dispatch, then exits or polls. | Action mode only |
+| **Cron Trigger** | A `triggers.crons` entry in `wrangler.jsonc` — Cloudflare's wall-clock heartbeat into the Worker's `scheduled()` handler. | Schedule mode only |
 
-Installing only the GHA Action still requires the App (for check-run writes). Running only Webhook mode does not require the Action.
+Installing only the GHA Action still requires the App (for check-run writes). Webhook mode and Schedule mode do not require the Action. Schedule mode requires the App for both the check-run callback **and** target enumeration, but no webhook delivery — so it needs neither `HMAC_SECRET` nor `GITHUB_WEBHOOK_SECRET`.
 
 ---
 
@@ -125,9 +127,11 @@ The `FlareDispatch` GitHub App webhook fires the Dispatcher's `/v1/webhooks/gith
 ### When to use
 
 - The run should execute on **every** push without burning GHA minutes (PR review, smoke).
-- The trigger isn't a code push — `deployment_status.success` for E2E gating, `check_run.rerequested` for re-runs, Cron Triggers for scheduled runs (release notes, dependency scans).
+- The trigger is a GitHub *event* that isn't a code push — `deployment_status.success` for E2E gating, `check_run.rerequested` for re-runs.
 - You want one less shared secret to rotate.
 - Users shouldn't have to touch `.github/workflows/` to onboard the run.
+
+For runs whose trigger is a **wall-clock cadence** rather than a GitHub event — nightly dependency scans, weekly release notes, a scheduled sweep of open PRs — use **Schedule mode** below, not Webhook mode. A cron tick carries no webhook payload, so it cannot drive a `triggers` entry.
 
 ### Trigger config lives in the run
 
@@ -164,7 +168,80 @@ On each delivery the receiver verifies the App webhook signature (`X-Hub-Signatu
 
 ---
 
-## Check-runs callback (shared by both modes)
+## Schedule mode
+
+Some runs aren't triggered by anything GitHub does — they're triggered by **the clock**: review every open PR each night, scan dependencies every morning, draft release notes every Monday. Neither Action mode (a GHA workflow ran) nor Webhook mode (a GitHub event arrived) fits, because there is no run, no push, no payload. Schedule mode is the third trigger: a wall-clock cadence.
+
+### When to use
+
+- The trigger is a **recurring time**, not a GitHub event — nightly, hourly, weekly.
+- The run has **no single target** at trigger time. It must *discover* its targets — every open PR, every installed repo, every dependency manifest — rather than receive one in a payload.
+- You want autonomous, zero-GHA-minute runs with **no GitHub-facing secret at all**: Schedule mode needs neither `HMAC_SECRET` (no inbound POST) nor `GITHUB_WEBHOOK_SECRET` (no inbound webhook). The only credential it touches is the App private key it already needs for the check-run callback.
+
+### Cron Trigger as the heartbeat, Workflow as the durable dispatch
+
+Schedule mode deliberately splits the *timer* from the *work*:
+
+- **The timer is a Cloudflare Cron Trigger.** A `triggers.crons` entry in `wrangler.jsonc` invokes the Dispatcher Worker's `scheduled(controller, env, ctx)` handler at each cadence. Cron Triggers are Cloudflare's purpose-built scheduling primitive — the cadence is deploy-time config, visible in the dashboard, with no step-budget to manage.
+- **The work is a durable Workflow.** The `scheduled()` handler does *no* enumeration and *no* fan-out inline — it instantiates a **scheduling Workflow** and returns, exactly as `fetch()` does for the other two modes. The handler shares the Worker CPU budget, and "list every open PR across N installed repos, then spawn a child execution for each" is precisely the multi-step, retryable, must-survive-eviction orchestration Workflows exist for. This keeps the architecture invariant intact: *every unit of real work is a durable Workflow instance* (see [01-architecture § Schedule-mode dispatch](01-architecture.md#schedule-mode-dispatch)).
+
+> **Why not a long-lived `sleepUntil` loop instead of a Cron Trigger?** A Workflow *can* schedule itself — `step.sleepUntil(next)` then loop. We don't, for recurring schedules: a Workflow instance has a step-count ceiling (10k default, 25k max — [01-architecture § Platform limits](01-architecture.md#platform-limits--design-constraints)), so an hourly loop would need `continueAsNew` plumbing to outlive ~1–3 years, and the cadence would be buried in run code instead of declared in `wrangler.jsonc`. The Cron Trigger is the right primitive for the *heartbeat*. `step.sleepUntil` is still the right primitive for a *one-off deferred* execution — see [§ Deferred follow-ups](#deferred-follow-ups).
+
+### Schedule config lives in the run
+
+Where Webhook mode runs declare `triggers`, Schedule mode runs declare `schedules`. A schedule entry binds a cron expression to the run and supplies the *coarse* input — the run body does the actual target discovery (full type in [03-dsl § `ScheduleSpec`](03-dsl.md#schedules--schedule-mode-trigger-config)):
+
+```ts
+// runs/pr-review-sweep.ts
+export const prReviewSweep = defineRun({
+  name: "pr-review-sweep",
+  schedules: [
+    {
+      cron: "0 3 * * *",                       // 03:00 UTC daily — must also appear in wrangler triggers.crons
+      idempotencyKey: ({ firedAt }) =>
+        `pr-review-sweep:${new Date(firedAt).toISOString().slice(0, 10)}`,
+      gate: ({ firedAt }) => !isHoliday(firedAt),   // optional: skip a freeze window
+      inputs: ({ firedAt }) => ({
+        scope: "open-prs" as const,
+        staleAfterHours: 24,
+        firedAt,
+      }),
+    },
+  ],
+  // ...inputs, outputs, run as usual
+});
+```
+
+A cron tick carries no repo, no SHA, no PR number — only the expression that fired and `firedAt` (the scheduled time). So `inputs` cannot name a target; it produces a *scope*. **Enumeration is the run's first step**: the run uses the App JWT to list installations, lists the repos and open PRs each cadence cares about, and fans out one child execution per target with the platform's `createBatch` primitive — the same fan-out matrix runs use ([01-architecture § Fan-out model](01-architecture.md#fan-out-model)).
+
+### Flow
+
+```mermaid
+flowchart LR
+  CRON[Cron Trigger<br/>0 3 * * *] -->|scheduled| DSP[Dispatcher<br/>scheduled handler]
+  DSP -->|instantiate| SW[Scheduling Workflow]
+  SW -->|App JWT| ENUM[enumerate<br/>installations → open PRs]
+  ENUM -->|createBatch| C1[child: pr-review PR #41]
+  ENUM -->|createBatch| C2[child: pr-review PR #58]
+  ENUM -->|createBatch| Cn[child: pr-review PR #N]
+  C1 --> CHK[Check Run per PR]
+  C2 --> CHK
+  Cn --> CHK
+```
+
+The cron expression in the run's `schedules` and the one in `wrangler.jsonc`'s `triggers.crons` must match — `wrangler.jsonc` is what Cloudflare actually subscribes to; the run's `schedules` is how the `scheduled()` handler routes `controller.cron` to the right run(s). The `init` CLI ([pm/plan](pm/plan.md)) reconciles the two; until then it is a deploy-time check. Multiple runs may share one cron expression, exactly as multiple runs may subscribe to one webhook event.
+
+### Free dedup against the other modes
+
+A scheduled sweep does not waste compute re-doing work the other modes already did. The child executions it spawns keep their **semantic** `instanceId` — `pr-review:{repo}:{pr}:{head_sha}` — and CF Workflows treats a duplicate `create({ id })` as a no-op (see [§ Receiver dedup](#receiver-dedup-shared-by-all-modes)). So a PR already reviewed at its current head SHA by Webhook mode is silently skipped by the nightly sweep; the sweep only spends tokens on PRs that changed since their last review, or that Webhook mode never saw. Schedule mode is a *backstop*, not a duplicate channel.
+
+### Deferred follow-ups
+
+Schedule mode's heartbeat is recurring, but a run sometimes needs a **one-off** future execution: "re-check this PR in 24 hours if it's still open," "poll this deployment until it settles." That does not need a Cron Trigger — it is a single durable sleep inside a Workflow, expressed with `step.sleepUntil` ([03-dsl § Deferred scheduling](03-dsl.md#deferred-scheduling-with-stepsleepuntil)). The Workflow hibernates (consuming no CPU, surviving eviction) until the wakeup time, then resumes. Use the Cron Trigger for *every night*; use `step.sleepUntil` for *once, later*.
+
+---
+
+## Check-runs callback (shared by all modes)
 
 Whatever triggered the execution, the Dispatcher reports the result through the `FlareDispatch` App's check-runs API. App credentials are exchanged for short-lived installation tokens (1-hour TTL), cached in `INSTALL_TOKEN_KV` with a 55-minute TTL so the token survives Worker recycles mid-execution.
 
@@ -235,25 +312,25 @@ The App listens for `check_run.rerequested` and `check_run.created`. Clicking "R
 
 ---
 
-## Receiver dedup (shared by both modes)
+## Receiver dedup (shared by all modes)
 
-Both modes share the same two-layer dedup discipline so a redelivery storm, a double-click on "Re-run failed checks," or a GHA retry doesn't produce parallel work or duplicate check-runs.
+All three modes share the same two-layer dedup discipline so a redelivery storm, a double-click on "Re-run failed checks," a GHA retry, or a duplicate cron delivery doesn't produce parallel work or duplicate check-runs.
 
-1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, or the caller-supplied `Idempotency-Key` for direct dispatch. A repeat returns `202` immediately — Workflows is never touched.
-2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo}:{pr}:{head_sha}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same head SHA collapse onto one execution.
+1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, the caller-supplied `Idempotency-Key` for direct dispatch, or the `schedules[].idempotencyKey` value for a cron tick (Cloudflare may deliver a Cron Trigger more than once). A repeat returns `202` immediately — Workflows is never touched.
+2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo}:{pr}:{head_sha}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`, and for a scheduling Workflow the cron-window key `pr-review-sweep:{iso_date}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same logical work collapse onto one execution. A scheduling Workflow's fan-out children are themselves keyed semantically, so a sweep is idempotent against both itself and the other modes.
 
 ---
 
 ## Secrets the user needs to configure
 
-| Secret | Where | Action mode | Webhook mode |
-|---|---|---|---|
-| `FLAREDISPATCH_ENDPOINT` (a URL, not a secret) | Repo/org variable | required | required |
-| `FLAREDISPATCH_HMAC` | Repo/org secret + Worker secret `HMAC_SECRET` | required | not used |
-| GitHub App ID + private key | Worker secrets (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) | required (for the check-run callback) | required |
-| App webhook secret | Worker secret (`GITHUB_WEBHOOK_SECRET`) | not used | required |
+| Secret | Where | Action mode | Webhook mode | Schedule mode |
+|---|---|---|---|---|
+| `FLAREDISPATCH_ENDPOINT` (a URL, not a secret) | Repo/org variable | required | required | not used |
+| `FLAREDISPATCH_HMAC` | Repo/org secret + Worker secret `HMAC_SECRET` | required | not used | not used |
+| GitHub App ID + private key | Worker secrets (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) | required (for the check-run callback) | required | required (callback **and** target enumeration) |
+| App webhook secret | Worker secret (`GITHUB_WEBHOOK_SECRET`) | not used | required | not used |
 
-Users running **only** Webhook mode never provision or rotate `FLAREDISPATCH_HMAC` — one less long-lived shared secret. Users running both rotate it on the cadence in [05-byoc § Security posture](05-byoc.md#security-posture); the App webhook secret rotates independently from the App settings page.
+Users running **only** Webhook mode never provision or rotate `FLAREDISPATCH_HMAC` — one less long-lived shared secret. Users running both rotate it on the cadence in [05-byoc § Security posture](05-byoc.md#security-posture); the App webhook secret rotates independently from the App settings page. Schedule mode is the leanest of the three on secrets: the cron tick is internal to Cloudflare, so the only credential in play is the App private key — there is no inbound request to authenticate, hence no `HMAC_SECRET` and no `GITHUB_WEBHOOK_SECRET`.
 
 ---
 

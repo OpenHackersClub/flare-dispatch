@@ -53,6 +53,31 @@ Each step shells out to a `review-agent` CLI baked into the container image (`fl
 
 Swapping the model or the agent framework is a change to the image (or a `config` key), not to this run.
 
+## Scheduled sweep — [`pr-review-sweep.run.ts`](pr-review-sweep.run.ts)
+
+`pr-review` fires on every PR push (Webhook mode). That misses three cases: a PR opened *before* the App was installed, a webhook delivery GitHub dropped, and a PR whose review you want re-run on a cadence regardless of pushes. [`pr-review-sweep.run.ts`](pr-review-sweep.run.ts) closes them — a **Schedule-mode** run ([04-gha-integration § Schedule mode](../../specs/04-gha-integration.md#schedule-mode)) that fires on a Cloudflare Cron Trigger instead of a GitHub event.
+
+```mermaid
+flowchart LR
+  CRON[Cron Trigger<br/>0 3 * * *] -->|scheduled| SW[pr-review-sweep<br/>scheduling Workflow]
+  SW --> ENUM[enumerate<br/>github.openPullRequests]
+  ENUM --> FAN[fan out · staggered<br/>one child per PR]
+  FAN --> R1[pr-review · PR #41]
+  FAN --> R2[pr-review · PR #58]
+  FAN --> Rn[pr-review · PR #N]
+```
+
+The sweep contains **no review logic** — it reuses the `pr-review` run above, unchanged. It only decides *what* to review and *when*:
+
+| Concern | How the sweep handles it |
+|---|---|
+| A cron tick names no target | The `enumerate` step calls `github.openPullRequests` ([03-dsl § `github`](../../specs/03-dsl.md#github)) — the App-token-backed read surface — to discover every open PR across the App's installations. |
+| Don't re-review unchanged PRs | Each child is created with the semantic instanceId `pr-review:{repo}:{pr}:{headSha}`. CF Workflows treats a duplicate `create({ id })` as a no-op, so a PR already reviewed at its current head SHA — by Webhook mode or an earlier sweep — is skipped for free. The sweep is a **backstop, not a duplicate channel**. |
+| Don't burst the API / model provider | The fan-out is staggered with `step.sleepUntil` ([03-dsl § Deferred scheduling](../../specs/03-dsl.md#deferred-scheduling-with-stepsleepuntil)) — children are spread evenly across a 45-minute window. The scheduling Workflow hibernates between slots, consuming no CPU. |
+| Skip weekends / freeze windows | The `schedules[].gate` receiver-side check skips the tick before any Workflow is created. |
+
+The cadence (`0 3 * * *`) lives in the run's `schedules` **and** in `wrangler.jsonc` `triggers.crons` — the latter is what Cloudflare subscribes to ([05-byoc § Wrangler config](../../specs/05-byoc.md#wrangler-config)). The sweep posts no check-run of its own; each child `pr-review` posts its own per-PR check exactly as in Webhook mode.
+
 ## Install
 
 1. Deploy FlareDispatch and install the GitHub App — [specs/05-byoc.md](../../specs/05-byoc.md).
@@ -60,3 +85,9 @@ Swapping the model or the agent framework is a change to the image (or a `config
 3. Push. The Dispatcher auto-discovers the run; the next PR gets a `flare-dispatch/pr-review` check, with inline annotations on the Files-changed tab.
 
 Opt a PR out with the `skip-ai-review` label; force review on a draft with `request-ai-review`.
+
+### Add the scheduled sweep (optional)
+
+4. Copy [`pr-review-sweep.run.ts`](pr-review-sweep.run.ts) into `runs/` as well.
+5. Add its cron to `wrangler.jsonc` — `"triggers": { "crons": ["0 3 * * *"] }` — and `wrangler deploy`. The expression must match the run's `schedules[].cron`.
+6. At 03:00 UTC the Dispatcher's `scheduled()` handler instantiates the sweep; every open PR not already reviewed at its head SHA gets a `flare-dispatch/pr-review` check.
