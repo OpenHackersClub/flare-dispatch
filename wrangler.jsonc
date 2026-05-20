@@ -78,10 +78,11 @@
   // `schedulesByCron`). See specs/04-gha-integration.md § Schedule mode.
   //
   //   "0 14 * * *"  — 14:00 UTC daily, the `product-demo` stakeholder demo
-  //                   (runs/product-demo.ts). Attaches Browser Rendering over
-  //                   CDP against the deployed URL, drives the agent through
-  //                   the operator's story list, uploads master video.webm +
-  //                   key screenshots + summary.md as signed R2 artifacts.
+  //                   (runs/product-demo.ts). Attaches Browser Run over CDP
+  //                   with native rrweb session recording, drives the agent
+  //                   through the operator's story list, uploads replay.json
+  //                   (rrweb events) + key screenshots + summary.md as
+  //                   signed R2 artifacts.
   "triggers": {
     "crons": [
       "0 14 * * *"
