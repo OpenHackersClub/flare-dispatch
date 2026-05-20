@@ -4,8 +4,17 @@ Hand a list of user stories in prose and a deployed URL; get back one master wal
 
 ## Files
 
-- [`product-demo.run.ts`](product-demo.run.ts) — the typed Run: attach CDP → start recording → for each story drive the agent → stop recording → upload to R2 → write the holistic summary.
+- [`product-demo.run.ts`](product-demo.run.ts) — the typed Run: attach CDP → start recording → for each story drive the agent → stop recording → upload to R2 → write the holistic summary. The canonical, registered copy lives at [`runs/product-demo.ts`](../../runs/product-demo.ts) (this file is the teaching illustration the doc site renders).
 - [`ci.yml`](ci.yml) — the GitHub Actions workflow that dispatches the run (Action mode, fire-and-forget). Triggers on `pull_request` against `apps/**` and on manual `workflow_dispatch` with a custom story list.
+
+## Modes
+
+The recipe runs in either of two trigger modes — pick the one that fits your use case, or wire up both:
+
+- **Action mode (per-PR).** `ci.yml` POSTs to the Dispatcher when a PR opens/updates against `apps/**`, handing it the deployed preview URL + story list. The reviewer gets a video on every PR. This is the default the recipe is tuned for.
+- **Schedule mode (daily stakeholder demo).** [`runs/product-demo.ts`](../../runs/product-demo.ts) carries a `schedules: [{ cron: "0 14 * * *", inputs: () => ({ … }) }]` block. The Dispatcher's `scheduled()` handler fires the same run once a day against a pre-baked deployed URL + story list (no PR trigger required). Edit the `inputs` placeholders (`OWNER/REPO`, `https://staging.example.com`, the default story array) to point at your staging tier.
+
+Use both at once if you want per-PR demos AND a daily stakeholder-facing run against staging — they share the same run code and Browser Rendering pool. The Schedule-mode firing is independent of `ci.yml`; the Action-mode dispatches inherit their inputs from the `workflow_dispatch` payload and ignore the `schedules[].inputs` defaults.
 
 ## How it works
 

@@ -7,16 +7,16 @@
 // instantiating the Workflow. `/health` lists `runNames()`.
 //
 // Each run slots in as another entry: `offload-test` (V0), `cdp-acceptance`
-// (V2 browser acceptance, PR9), `daily-demo` (V3 first Schedule-mode run).
+// (V2 browser acceptance, PR9), `product-demo` (V3 — Action + Schedule mode).
 
 import type { Run, ScheduleSpec } from "@flare-dispatch/core";
-import { cdpAcceptance, dailyDemo, offloadTest } from "@flare-dispatch/runs";
+import { cdpAcceptance, productDemo, offloadTest } from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
 export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
-  [dailyDemo.name]: dailyDemo as Run<unknown, unknown>,
+  [productDemo.name]: productDemo as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

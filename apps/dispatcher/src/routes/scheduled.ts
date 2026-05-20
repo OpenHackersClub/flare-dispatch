@@ -102,7 +102,7 @@ const fireOne = async (
 
   // The Workflow `params` shape `RunWorkflow.run` decodes — same as dispatch.ts.
   // Schedule mode has no GitHub event; the run's own `inputs` carries the
-  // target repo/ref/sha (e.g. `daily-demo` clones a fixed repo at `main`).
+  // target repo/ref/sha (e.g. `product-demo` records against a deployed URL).
   // `payload.github` here is just executions-row metadata + the optional
   // check-run hint — installation_id is omitted, so `Checks` falls through to
   // the no-op Layer (the run still records its rows, only the PR check-run is

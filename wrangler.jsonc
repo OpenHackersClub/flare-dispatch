@@ -77,10 +77,11 @@
   // firing `controller.cron` to whichever runs match (registry helper
   // `schedulesByCron`). See specs/04-gha-integration.md § Schedule mode.
   //
-  //   "0 14 * * *"  — 14:00 UTC daily, the `daily-demo` stakeholder demo
-  //                   (runs/daily-demo.ts). Drives `playwright.demo.config.ts`
-  //                   against the deployed staging tier and uploads
-  //                   video.webm + summary.md as signed R2 artifacts.
+  //   "0 14 * * *"  — 14:00 UTC daily, the `product-demo` stakeholder demo
+  //                   (runs/product-demo.ts). Attaches Browser Rendering over
+  //                   CDP against the deployed URL, drives the agent through
+  //                   the operator's story list, uploads master video.webm +
+  //                   key screenshots + summary.md as signed R2 artifacts.
   "triggers": {
     "crons": [
       "0 14 * * *"

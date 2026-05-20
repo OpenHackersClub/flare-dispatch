@@ -85,7 +85,7 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       status: "ok",
-      runs: ["cdp-acceptance", "daily-demo", "offload-test"],
+      runs: ["cdp-acceptance", "offload-test", "product-demo"],
     });
   });
 
