@@ -28,6 +28,31 @@ export type TriggerSpec<I> = {
   readonly inputs: (ctx: { payload: WebhookPayload }) => I;
 };
 
+/**
+ * The context a cron tick provides — there is no GitHub payload.
+ * See specs/03-dsl.md § `ScheduleContext`.
+ */
+export type ScheduleContext = {
+  readonly cron: string;
+  readonly firedAt: number;
+};
+
+/**
+ * A single Schedule-mode trigger binding — see specs/04-gha-integration.md
+ * § Schedule mode. Mirrors `TriggerSpec` but the callbacks receive a
+ * `ScheduleContext` (no webhook payload). `inputs` produces a *scope*, not a
+ * concrete target — for single-target runs (e.g. nightly-e2e against a fixed
+ * env), the input is the full body; for sweeps, it's coarse and the run
+ * enumerates targets in its first step.
+ */
+export type ScheduleSpec<I> = {
+  /** CF cron expression; MUST also be in wrangler `triggers.crons`. */
+  readonly cron: string;
+  readonly idempotencyKey: (ctx: ScheduleContext) => string;
+  readonly gate?: (ctx: ScheduleContext) => boolean;
+  readonly inputs: (ctx: ScheduleContext) => I;
+};
+
 export type RunSpec<I, O, IEnc, OEnc> = {
   readonly name: string;
   readonly version: string;
@@ -36,6 +61,7 @@ export type RunSpec<I, O, IEnc, OEnc> = {
   readonly outputs: Schema.Schema<O, OEnc>;
   readonly limits: RunLimits;
   readonly triggers?: readonly TriggerSpec<I>[];
+  readonly schedules?: readonly ScheduleSpec<I>[];
   readonly run: (input: I) => Effect.Effect<O, RunError, RunContext>;
 };
 

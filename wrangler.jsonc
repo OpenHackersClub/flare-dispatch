@@ -69,5 +69,21 @@
       "binding": "CONFIG_KV",
       "id": "00000000000000000000000000000000"
     }
-  ]
+  ],
+
+  // Cron Triggers — the wall-clock heartbeat Schedule-mode runs subscribe to.
+  // Each entry MUST also appear in some run's `schedules[].cron` in `runs/`;
+  // the `scheduled()` handler in `apps/dispatcher/src/index.ts` routes the
+  // firing `controller.cron` to whichever runs match (registry helper
+  // `schedulesByCron`). See specs/04-gha-integration.md § Schedule mode.
+  //
+  //   "0 14 * * *"  — 14:00 UTC daily, the `numu-daily-demo` stakeholder demo
+  //                   (runs/numu-daily-demo.ts). Drives `playwright.demo.config.ts`
+  //                   against the deployed numu staging tier and uploads
+  //                   video.webm + summary.md as signed R2 artifacts.
+  "triggers": {
+    "crons": [
+      "0 14 * * *"
+    ]
+  }
 }
