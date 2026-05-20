@@ -1,10 +1,10 @@
-# Recipe: numu daily stakeholder demo
+# Recipe: daily stakeholder demo
 
-A [Schedule-mode](../../specs/04-gha-integration.md#schedule-mode) run that records a narrated end-to-end demo of the Numu onboarding → creative workflow once a day, against the deployed staging tier — for investor updates and post-deploy stakeholder smoke checks.
+A [Schedule-mode](../../specs/04-gha-integration.md#schedule-mode) run that records a narrated end-to-end demo of the target webapp's onboarding → creative workflow once a day, against the deployed staging tier — for investor updates and post-deploy stakeholder smoke checks.
 
-> **Source of truth**: the shipped run lives at [`runs/numu-daily-demo.ts`](../../runs/numu-daily-demo.ts). This recipe page is the operator-facing documentation; there is no separate "illustration" run file (unlike `recipes/cdp-acceptance/`) because the shipped run IS the recipe — there's nothing to simplify away for teaching.
+> **Source of truth**: the shipped run lives at [`runs/daily-demo.ts`](../../runs/daily-demo.ts). This recipe page is the operator-facing documentation; there is no separate "illustration" run file (unlike `recipes/cdp-acceptance/`) because the shipped run IS the recipe — there's nothing to simplify away for teaching.
 
-The local equivalent lives in the numu repo as the `/demo-e2e` skill (`.claude/skills/demo-e2e/SKILL.md`). This recipe takes the same Playwright spec, drives it inside a Cloudflare Sandbox container on a daily cron, and uploads the resulting `video.webm` + `summary.md` + `trace.zip` to R2 as signed URLs. **Zero GitHub Actions involvement** — the trigger is the clock.
+The recipe takes a Playwright spec that already lives in the target webapp repo (typically maintained as a local `/demo-e2e` skill), drives it inside a Cloudflare Sandbox container on a daily cron, and uploads the resulting `video.webm` + `summary.md` + `trace.zip` to R2 as signed URLs. **Zero GitHub Actions involvement** — the trigger is the clock.
 
 ## Why Schedule mode for this
 
@@ -12,15 +12,15 @@ A daily demo has no PR, no SHA, no webhook to attach to. It's a wall-clock oblig
 
 Two consequences that shape the recipe:
 
-1. **The input is fully synthesized** from the cron tick. There is no GHA workflow file, no `--repo` flag, no `--sha` flag. The run's `schedules[].inputs(ctx)` produces the whole body — `repo: "Numu-AI/numu-monorepo"`, `ref: "main"`, `stagingBaseUrl: "https://numu-webapp-staging.pages.dev"`.
+1. **The input is fully synthesized** from the cron tick. There is no GHA workflow file, no `--repo` flag, no `--sha` flag. The run's `schedules[].inputs(ctx)` produces the whole body — `repo`, `ref`, `stagingBaseUrl` — from operator-supplied defaults.
 2. **The shape is static-targets**, not enumerated. One repo, one staging URL, one demo spec — the run body is straight-line Playwright, not a fan-out matrix. (Contrast with `pr-review-sweep`, which has to *discover* its targets at run time.)
 
 ## Flow
 
 ```mermaid
 flowchart LR
-  CRON[Cron Trigger<br/>0 14 * * *] -->|scheduled| RW[numu-daily-demo<br/>RunWorkflow]
-  RW --> CO[checkout · clone numu @ main]
+  CRON[Cron Trigger<br/>0 14 * * *] -->|scheduled| RW[daily-demo<br/>RunWorkflow]
+  RW --> CO[checkout · clone repo @ main]
   CO --> SEC[loadSecrets · staging/]
   SEC --> PW[install playwright + chromium]
   PW --> RUN[run-demo · playwright.demo.config.ts]
@@ -30,7 +30,7 @@ flowchart LR
 
 ## What the demo covers
 
-(Same scripted journey as `qa/acceptance/tests/demo-onboarding-creative.spec.ts` in the numu repo.)
+(Same scripted journey as `qa/acceptance/tests/demo-onboarding-creative.spec.ts` in the target webapp repo.)
 
 1. Signed-in alpha user lands on `/onboard`.
 2. Pastes a Play Store URL → backend seeds product + persona, vertical = gaming.
@@ -46,6 +46,14 @@ Each step is a Playwright `test.step()` so the video has natural narration ancho
 ## Operator setup
 
 One-time, on the FlareDispatch Dispatcher side. The run shares the existing Dispatcher infra (R2, D1, KV) — no new Worker is deployed.
+
+### 0. Point the run at your webapp
+
+Edit `runs/daily-demo.ts` `schedules[].inputs` and replace the placeholder defaults:
+
+- `repo: "OWNER/REPO"` → your webapp repo (`"owner/name"`).
+- `stagingBaseUrl: "https://staging.example.com"` → your deployed Pages/Worker URL.
+- `DEMO_PNPM_FILTER` (top of the file) → your QA package filter (e.g. `@your-org/qa`).
 
 ### 1. Populate the staging credentials in `CONFIG_KV`
 
@@ -63,7 +71,7 @@ Where the values come from:
 
 | Key | Source |
 |---|---|
-| `STAGING_WEB_BASE` | The deployed Pages URL, e.g. `https://numu-webapp-staging.pages.dev`. |
+| `STAGING_WEB_BASE` | The deployed Pages/Worker URL. |
 | `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Service-token pair from CF Zero Trust → Access → Service Auth. Bypasses the staging Access gate from outside the tailnet. |
 | `VITE_CLERK_PUBLISHABLE_KEY` | The **staging** Clerk instance's publishable key. The demo spec signs in as the alpha test user via `+clerk_test@…` (frontend-only, no `CLERK_SECRET_KEY` needed). |
 
@@ -74,7 +82,7 @@ Any missing key fails the run loudly with `SecretsMissing` rather than booting a
 The cron expression `0 14 * * *` is already declared both in:
 
 - `wrangler.jsonc` `triggers.crons` — what Cloudflare actually subscribes to.
-- `runs/numu-daily-demo.ts` `schedules[].cron` — what the `scheduled()` handler routes the firing tick to.
+- `runs/daily-demo.ts` `schedules[].cron` — what the `scheduled()` handler routes the firing tick to.
 
 The two MUST match exactly. After deploying the Dispatcher, confirm via the Cloudflare dashboard (Workers & Pages → flare-dispatch-v0 → Triggers) that the cron is registered.
 
@@ -87,8 +95,8 @@ wrangler deploy
 At 14:00 UTC the next day:
 
 - The Dispatcher's `scheduled()` handler fires.
-- `schedulesByCron("0 14 * * *")` resolves to `numu-daily-demo`.
-- A `RunWorkflow` instance is created with id `numu-daily-demo:<YYYY-MM-DD>` (UTC date).
+- `schedulesByCron("0 14 * * *")` resolves to `daily-demo`.
+- A `RunWorkflow` instance is created with id `daily-demo:<YYYY-MM-DD>` (UTC date).
 - The execution lands in the D1 `executions` table; tail with `wrangler tail` for live logs.
 
 If the run fails, the most common causes are the same as the local `/demo-e2e` skill:
@@ -102,7 +110,7 @@ The uploaded `trace.zip` opens locally with `playwright show-trace <path>`.
 
 Today the demo's artifact URIs sit on the FlareDispatch check-run summary. Forthcoming follow-ups (out of scope for this PR):
 
-- **Slack incoming-webhook** — post the video URL + summary line to a `#numu-daily-demo` channel on success.
+- **Slack incoming-webhook** — post the video URL + summary line to a `#daily-demo` channel on success.
 - **Public domain front** — proxy the R2 bucket behind `demo.openhackers.club` so the URLs are permanent rather than 30-day signed.
 
 Until those land, an operator can drop the video URL into the relevant Slack/email manually each morning.

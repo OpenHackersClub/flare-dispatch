@@ -32,25 +32,25 @@ describe("handleScheduled", () => {
     const workflow = makeFakeWorkflow();
     const env = makeEnv(workflow);
 
-    // The registered `numu-daily-demo` run subscribes to "0 14 * * *".
+    // The registered `daily-demo` run subscribes to "0 14 * * *".
     await handleScheduled(env, "0 14 * * *", FIRED_AT);
 
     expect(workflow.calls).toHaveLength(1);
     const call = workflow.calls[0]!;
-    // idempotencyKey = `numu-daily-demo:${isoDate(firedAt)}`
-    expect(call.id).toBe("numu-daily-demo:2026-05-20");
+    // idempotencyKey = `daily-demo:${isoDate(firedAt)}`
+    expect(call.id).toBe("daily-demo:2026-05-20");
     const params = call.params as {
       run: string;
       executionId: string;
       github: { repo: string; ref: string; sha: string };
       inputs: { repo: string; ref: string; stagingBaseUrl: string };
     };
-    expect(params.run).toBe("numu-daily-demo");
-    expect(params.executionId).toBe("numu-daily-demo:2026-05-20");
+    expect(params.run).toBe("daily-demo");
+    expect(params.executionId).toBe("daily-demo:2026-05-20");
     // GitHub block synthesized from the run's input.
-    expect(params.github.repo).toBe("Numu-AI/numu-monorepo");
+    expect(params.github.repo).toBe("OWNER/REPO");
     expect(params.inputs.stagingBaseUrl).toBe(
-      "https://numu-webapp-staging.pages.dev",
+      "https://staging.example.com",
     );
   });
 
