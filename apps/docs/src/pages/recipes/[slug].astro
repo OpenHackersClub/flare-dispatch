@@ -41,64 +41,13 @@ const baselineCode = recipe.baseline
   ? readRecipeFile(recipe.slug, recipe.baseline.name)
   : undefined;
 
-/**
- * Count "code lines" — strip blank lines and pure-comment lines so the
- * comparison reflects actual logic, not how heavily a file is annotated.
- * The recipe runs are intentionally well-commented (they map onto specs and
- * external blog posts); a raw line count misleads against them.
- *
- * Heuristic, not a parser:
- *  - YAML: drop lines that are blank or start with `#` after trimming.
- *  - TS/JS: drop blank lines, `// ...` lines, and block-comment ranges.
- */
-function countCodeLines(code: string, lang: "ts" | "yaml"): number {
-  const lines = code.split("\n");
-  if (lang === "yaml") {
-    return lines.filter((l) => {
-      const t = l.trim();
-      return t.length > 0 && !t.startsWith("#");
-    }).length;
-  }
-  let inBlock = false;
-  let n = 0;
-  for (const raw of lines) {
-    let l = raw.trim();
-    if (l.length === 0) continue;
-    if (inBlock) {
-      const end = l.indexOf("*/");
-      if (end >= 0) {
-        inBlock = false;
-        l = l.slice(end + 2).trim();
-        if (l.length === 0) continue;
-      } else continue;
-    }
-    // strip leading block-comment opener(s) on this line
-    while (l.startsWith("/*")) {
-      const end = l.indexOf("*/", 2);
-      if (end < 0) {
-        inBlock = true;
-        l = "";
-        break;
-      }
-      l = l.slice(end + 2).trim();
-    }
-    if (l.length === 0) continue;
-    if (l.startsWith("//")) continue;
-    n++;
-  }
-  return n;
-}
-
-const flareLines = flareFiles.reduce(
-  (n, { file, code }) => n + countCodeLines(code, file.lang),
-  0,
-);
-const baselineLines =
-  baselineCode && recipe.baseline
-    ? countCodeLines(baselineCode, recipe.baseline.lang)
-    : 0;
-
 const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
+
+const modeOneLiner: Record<typeof recipe.mode, string> = {
+  Action: "triggered by a GitHub Actions workflow that calls the shipped run.",
+  Webhook: "triggered directly by the FlareDispatch GitHub App webhook — zero GHA minutes.",
+  Schedule: "triggered by a Cloudflare Cron Trigger on a wall-clock cadence — no GitHub event needed.",
+};
 
 // Tab group id — scoped per recipe so multiple recipe pages don't collide.
 const tabGroup = `compare-${recipe.slug}`;
@@ -164,7 +113,7 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
         )
       }
 
-      {recipe.baseline && baselineCode && recipe.baselinePains && (
+      {recipe.baseline && baselineCode && (
       <section class="recipe-compare">
         <header class="recipe-compare__header">
           <h2>Source</h2>
@@ -193,7 +142,6 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
             >
               <span class="recipe-compare__tab-mark">●</span>
               With FlareDispatch
-              <span class="recipe-compare__tab-meta">{flareLines} LOC</span>
             </button>
             <button
               type="button"
@@ -207,9 +155,7 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
             >
               <span class="recipe-compare__tab-mark">○</span>
               Without FlareDispatch
-              <span class="recipe-compare__tab-meta">
-                {baselineLines} LOC · plain GHA
-              </span>
+              <span class="recipe-compare__tab-meta">plain GHA</span>
             </button>
           </div>
 
@@ -222,10 +168,7 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
             data-panel={tabGroup}
           >
             <div class="recipe-compare__blurb">
-              <span>
-                A typed Effect-TS run plus a thin dispatch workflow.
-                <em>Recommended: {recipe.mode} mode.</em>
-              </span>
+              <span><em>{recipe.mode} mode</em> — {modeOneLiner[recipe.mode]}</span>
             </div>
 
             <div
@@ -286,12 +229,6 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
                 maintains to do this job without FlareDispatch.
               </span>
             </div>
-
-            <ul class="recipe-compare__pains">
-              {recipe.baselinePains.map((p) => (
-                <li>{p}</li>
-              ))}
-            </ul>
 
             <figure class="recipe-compare__file recipe-compare__file--baseline">
               <figcaption>recipes/{recipe.slug}/{recipe.baseline.name}</figcaption>
