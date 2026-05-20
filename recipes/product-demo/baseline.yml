@@ -1,0 +1,227 @@
+# Recipe: AI-driven product demo — BASELINE (without FlareDispatch)
+#
+# This is what you'd maintain on plain GitHub Actions to produce a
+# walkthrough video + per-story narrative of a deployed URL. Shown here
+# ONLY as a comparison — see ./product-demo.run.ts for the FlareDispatch
+# version (typed Effect-TS, one CDP attach, one master video, one signed
+# R2 URL).
+#
+# Notable costs of the GHA-only path:
+#   - Runner cold-start tax: every PR pays ~30–45 s of `actions/checkout`
+#     + `setup-node` + `pnpm install` + `playwright install --with-deps
+#     chromium` (the chromium install alone is ~60–90 s on a cold cache)
+#     before the first frame of video is recorded. FlareDispatch ships
+#     `flare-dispatch-demo:latest` with chromium + the agent baked in,
+#     served from a warm container pool that scales to zero between
+#     deploys.
+#   - No master video: Playwright's `recordVideo` only records ONE
+#     BrowserContext, and you can't reliably stitch contexts together
+#     across stories. If you want a single continuous video with
+#     chapter markers you have to install ffmpeg + drive an OS-level
+#     screen recorder, which fights GHA's headless runner. The
+#     practical workaround — one .webm per story — produces N small
+#     files the reviewer has to download, watch in order, and re-host.
+#   - `ANTHROPIC_API_KEY` lives in `secrets.*` and is exposed to every
+#     job step that touches it: the runner can `printenv`, any npm
+#     postinstall can read it, and any third-party action in the
+#     workflow inherits it. FlareDispatch's `demo-agent` baked into the
+#     container image means the key is a Worker Secret on the Dispatcher,
+#     never on the runner.
+#   - Stories run sequentially because the browser is shared, and the
+#     LLM round-trip per story BURNS RUNNER MINUTES at $0.008/min on
+#     ubuntu-latest while the model thinks. FlareDispatch's container is
+#     scale-to-zero — you pay only for CPU actually used.
+#   - GitHub PR comments cannot embed video. You upload .webms via
+#     `actions/upload-artifact`, then post a comment with LINKS to the
+#     Artifacts UI; the reviewer has to click → download → unzip → open
+#     locally. There is no signed-URL story. FlareDispatch hands a 30-day
+#     signed R2 URL that drops straight into the PR description.
+#   - The artifact retention is 90 days max on the GHA free tier (and you
+#     pay for storage). 30-day signed R2 URLs cost a fraction of that.
+#   - A redeploy of the same SHA re-fires the workflow with no
+#     idempotency — you'd burn the same model spend twice.
+#
+# Everything below is real, runnable YAML. The placeholders `${{ ... }}`
+# and `# CONFIGURE:` markers are the parts you'd actually have to fill in.
+
+name: product-demo-baseline
+on:
+  pull_request:
+    paths: ["apps/**"]
+  workflow_dispatch:
+    inputs:
+      deployed_url:
+        description: "URL to drive"
+        required: true
+      stories_json:
+        description: "JSON array of {name, prose}"
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  product-demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # CONFIGURE: the deployed URL. On `workflow_dispatch` use the input;
+      # on `pull_request` derive from your preview-deploy convention.
+      DEPLOYED_URL: >-
+        ${{ github.event.inputs.deployed_url
+            || format('https://pr-{0}.preview.example.com', github.event.pull_request.number) }}
+      # CONFIGURE: the story list. Inline default mirrors ci.yml.
+      STORIES_JSON: >-
+        ${{ github.event.inputs.stories_json
+            || '[
+              {"name":"sign-in","prose":"Open the site, click Sign in, log in with the demo account, and land on the dashboard."},
+              {"name":"create-project","prose":"From the dashboard, create a new project called Demo, confirm the empty-state CTA appears."},
+              {"name":"invite-member","prose":"Open the new project, invite a teammate by email, confirm the pending-invite chip shows."}
+            ]' }}
+      # CONFIGURE: the model client key — exposed to EVERY step below.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Chromium install is ~60–90 s on a cold cache; the cache key has to
+      # invalidate on lockfile change or you ship a stale chromium.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright + Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      # The actual demo driver — Playwright + the Anthropic SDK, run
+      # in-process on the runner. One .webm per story (one context per
+      # story) because Playwright's `recordVideo` is per-context.
+      - name: Run AI-driven walkthrough
+        id: demo
+        run: |
+          mkdir -p ./demo-out/screenshots ./demo-out/videos
+          # CONFIGURE: this file is the per-team driver — Playwright loop
+          # + Anthropic SDK call per story. Sketch below; you maintain it.
+          node ./scripts/demo-runner.mjs \
+            --url "$DEPLOYED_URL" \
+            --stories "$STORIES_JSON" \
+            --out ./demo-out
+
+      # No single master video — one .webm per BrowserContext. Bundle them
+      # all so the reviewer can at least download them in one click.
+      - name: Upload per-story videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-videos
+          path: ./demo-out/videos/
+          retention-days: 30
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-screenshots
+          path: ./demo-out/screenshots/
+          retention-days: 30
+
+      - name: Upload narrative summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-summary
+          path: ./demo-out/summary.md
+          retention-days: 30
+
+      # Post a PR comment with LINKS to the artifacts. GitHub does not
+      # support embedding video in comments — the reviewer has to follow
+      # the link, download the bundle, unzip, then watch locally.
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        env:
+          RUN_ID: ${{ github.run_id }}
+        with:
+          script: |
+            const fs = require("fs");
+            const summary = fs.existsSync("./demo-out/summary.md")
+              ? fs.readFileSync("./demo-out/summary.md", "utf8")
+              : "_(no summary written)_";
+            const artifactsUrl =
+              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+              `/actions/runs/${process.env.RUN_ID}#artifacts`;
+            const body = [
+              "## Product demo (baseline)",
+              "",
+              summary,
+              "",
+              `**Videos and screenshots**: ${artifactsUrl}`,
+              "",
+              "_GitHub does not embed video in comments — download the",
+              "`demo-videos` artifact to watch._",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
+# ./scripts/demo-runner.mjs (sketched separately, you maintain it):
+#
+#   import { chromium } from "playwright";
+#   import Anthropic from "@anthropic-ai/sdk";
+#
+#   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+#   const stories = JSON.parse(process.argv[/* --stories */]);
+#   const browser = await chromium.launch();
+#   const results = [];
+#   for (const story of stories) {
+#     // recordVideo is per-context — one .webm per story, no master video.
+#     const ctx = await browser.newContext({
+#       recordVideo: { dir: `./demo-out/videos/${story.name}` },
+#       viewport: { width: 1280, height: 800 },
+#     });
+#     const page = await ctx.newPage();
+#     await page.goto(process.argv[/* --url */]);
+#     // The model loop: ask Claude what to do given the prose + a screenshot,
+#     // apply the action, repeat until "done". Per-story conversation; you
+#     // maintain the prompt, the screenshot cadence, the stop condition.
+#     for (let turn = 0; turn < 20; turn++) {
+#       const shot = await page.screenshot();
+#       const msg = await anthropic.messages.create({
+#         model: "claude-opus-4-7",
+#         max_tokens: 1024,
+#         messages: [
+#           { role: "user", content: [
+#             { type: "text", text: `Story: ${story.prose}\nReply with the next action as JSON.` },
+#             { type: "image", source: { type: "base64", media_type: "image/png", data: shot.toString("base64") } },
+#           ]},
+#         ],
+#       });
+#       // Apply the action — click, type, navigate — or break if "done".
+#       // ...
+#     }
+#     await ctx.close();
+#     results.push({ name: story.name, /* narrative, status, etc. */ });
+#   }
+#   await browser.close();
+#   // Write narrative summary; you maintain the second Anthropic call.
+#   // ./demo-out/summary.md ← await anthropic.messages.create({ ... })

@@ -1,0 +1,65 @@
+# Recipe: AI-driven product demo on Cloudflare
+#
+# Use case: produce a walkthrough video + per-story narrative of a deployed
+# site (preview, staging, or prod) so a reviewer can SEE the change work
+# without checking anything out locally. Offload to the `product-demo` run,
+# which attaches Browser Rendering over CDP, records ONE master video while
+# driving the site through each story, and writes a holistic summary.
+#
+# Mode: Action mode, fire-and-forget. The run posts the result through the
+#       `flare-dispatch/product-demo` check-run — the video link + the
+#       summary land in the check-run summary, which reviewers paste into
+#       the PR. See specs/04-gha-integration.md.
+# Run:  product-demo — see ./product-demo.run.ts.
+
+name: product-demo
+on:
+  # On every PR touching the app, drive a fixed default story set against
+  # the PR's preview deployment URL (a `vars.PREVIEW_URL_TEMPLATE` or a
+  # deploy-env URL — configure per repo).
+  pull_request:
+    paths: ["apps/**"]
+  # On-demand against any URL (preview, staging, prod) with a custom story
+  # list. Useful for QA, release sign-off, marketing screenshots.
+  workflow_dispatch:
+    inputs:
+      deployed_url:
+        description: "URL to drive (preview / staging / prod)"
+        required: true
+      stories_json:
+        description: 'JSON array of {name, prose}'
+        required: false
+        default: |
+          [
+            {"name":"sign-in",        "prose":"Open the site, click Sign in, log in with the demo account, and land on the dashboard."},
+            {"name":"create-project", "prose":"From the dashboard, create a new project called Demo, confirm the empty-state CTA appears."},
+            {"name":"invite-member",  "prose":"Open the new project, invite a teammate by email, confirm the pending-invite chip shows."}
+          ]
+
+jobs:
+  product-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flare-dispatch-action@v1
+        with:
+          run: product-demo
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.event.pull_request.head.sha || github.sha }}",
+              "deployedUrl": ${{ toJSON(github.event.inputs.deployed_url || vars.PREVIEW_URL) }},
+              "stories": ${{ github.event.inputs.stories_json || '[
+                {"name":"sign-in",        "prose":"Open the site, click Sign in, log in with the demo account, and land on the dashboard."},
+                {"name":"create-project", "prose":"From the dashboard, create a new project called Demo, confirm the empty-state CTA appears."},
+                {"name":"invite-member",  "prose":"Open the new project, invite a teammate by email, confirm the pending-invite chip shows."}
+              ]' }},
+              "viewportPreset": "desktop"
+            }
+
+# Fire-and-forget: this GHA step succeeds as soon as the dispatch is
+# accepted; the actual demo runs on Cloudflare and reports back through the
+# `flare-dispatch/product-demo` check-run on the PR head SHA. Require that
+# check (not this GHA job) in branch protection. The check-run summary
+# embeds the signed video URL — reviewers drop it into the PR description.
