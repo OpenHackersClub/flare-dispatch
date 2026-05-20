@@ -5,7 +5,7 @@
 // `warn`, and the optional prefix namespaces the config lookup without
 // leaking into the env var name.
 
-import { Effect, Layer, Option } from "effect";
+import { Cause, Effect, Exit, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import { Config, type ConfigService } from "../services/config";
 import { makeIOFake } from "../testing";
@@ -68,5 +68,41 @@ describe("loadSecrets", () => {
     const { env, logs } = await runLoad([], {});
     expect(env).toEqual({});
     expect(logs).toHaveLength(0);
+  });
+
+  it("treats an empty-string value as missing", async () => {
+    const { env, logs } = await runLoad(["EMPTY"], { EMPTY: "" });
+    expect(env).toEqual({});
+    expect(logs).toHaveLength(1);
+    expect(logs[0]?.level).toBe("warn");
+  });
+
+  it("required: true fails with SecretsMissing listing the absent keys", async () => {
+    const io = makeIOFake();
+    const exit = await Effect.runPromiseExit(
+      loadSecrets(["PRESENT", "ABSENT"], { required: true }).pipe(
+        Effect.provide(Layer.merge(configLayer({ PRESENT: "v" }), io.layer)),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const err = Exit.isFailure(exit)
+      ? Option.getOrUndefined(Cause.failureOption(exit.cause))
+      : undefined;
+    expect((err as { _tag?: string } | undefined)?._tag).toBe("SecretsMissing");
+    expect((err as { keys?: readonly string[] } | undefined)?.keys).toEqual([
+      "ABSENT",
+    ]);
+  });
+
+  it("required: true succeeds when every key is present", async () => {
+    const io = makeIOFake();
+    const env = await Effect.runPromise(
+      loadSecrets(["A", "B"], { required: true }).pipe(
+        Effect.provide(
+          Layer.merge(configLayer({ A: "1", B: "2" }), io.layer),
+        ),
+      ),
+    );
+    expect(env).toEqual({ A: "1", B: "2" });
   });
 });

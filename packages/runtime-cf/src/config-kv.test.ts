@@ -70,4 +70,29 @@ describe("ConfigKvLive", () => {
     );
     expect(Option.isNone(value)).toBe(true);
   });
+
+  // --- KV-read-error degradation -------------------------------------------
+  // A KV binding whose `.get` rejects — exercises the `orElseSucceed` branch
+  // both `get` and `getJSON` carry. No Miniflare needed for these.
+  const brokenKv = {
+    get: () => Promise.reject(new Error("KV unavailable")),
+  } as unknown as KVNamespace;
+
+  it("get degrades a KV read error to undefined", async () => {
+    const value = await Effect.runPromise(
+      Effect.flatMap(Config, (c) => c.get("model")).pipe(
+        Effect.provide(makeConfigKvLive(brokenKv)),
+      ),
+    );
+    expect(value).toBeUndefined();
+  });
+
+  it("getJSON degrades a KV read error to none", async () => {
+    const value = await Effect.runPromise(
+      Effect.flatMap(Config, (c) => c.getJSON("flags", Flags)).pipe(
+        Effect.provide(makeConfigKvLive(brokenKv)),
+      ),
+    );
+    expect(Option.isNone(value)).toBe(true);
+  });
 });

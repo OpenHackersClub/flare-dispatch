@@ -14,8 +14,10 @@ import { io } from "../services/io";
 import { sandbox, type Container } from "../services/sandbox";
 
 // Per-tool: the lockfile that keys the cache, the install command, and the
-// directories worth caching. R2 keys are content-addressed by lockfile hash +
-// image digest, so cross-environment cache poisoning is impossible.
+// directories worth caching. The cache key here is the lockfile hash; the
+// runtime `cache` Layer additionally namespaces the R2 archive key per repo,
+// so two repos with an identical lockfile cannot collide (cross-repo
+// poisoning) — see @flare-dispatch/runtime-cf cache-r2.ts.
 const TOOLS = {
   pnpm: {
     lockfile: "pnpm-lock.yaml",

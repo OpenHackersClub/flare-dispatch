@@ -27,18 +27,16 @@
 //     the first `exec`/`gitCheckout`. The V0 model is one container per
 //     execution (`id = executionId`), so `acquire` just returns that handle.
 //
-//   * `runDetached` / `waitForExit` / `waitForPort` are NOT on the V0 path
-//     (no V0 run uses detached mode — `offload-test` is clone→exec→upload).
-//     They are left as `TODO(PR4-risk)` `Effect.die` stubs: the SDK *does*
-//     expose `startProcess` / `Process.waitForExit` / `exposePort`, but wiring
-//     and testing detached execution belongs with the first run that needs it
-//     (cdp-acceptance, V2). Implementing them now would be untested surface.
+//   * `runDetached` / `waitForExit` / `waitForPort` — the detached-mode
+//     surface `bootApp` rides on — landed in PR9, mapped onto the SDK's
+//     `startProcess` / `Process.waitForExit` / `Process.waitForPort`. The V0
+//     `Effect.die` stubs are gone: `cdp-acceptance` (V2) needs them.
 //
 // Container boot itself cannot be exercised in `vitest-pool-workers` (Miniflare
-// has no container runtime without Docker), so the PR4 integration tests cover
-// D1 / R2 / Workflow wiring; this Layer's `exec`/`clone` mapping is verified by
-// typecheck + `wrangler deploy --dry-run`. The end-to-end container smoke is
-// PR5's `wrangler dev` acceptance.
+// has no container runtime without Docker), so the integration tests cover
+// D1 / R2 / Workflow wiring; this Layer's `exec` / `clone` / detached mapping
+// is verified by typecheck + `wrangler deploy --dry-run`. The end-to-end
+// container smoke is a `wrangler dev` acceptance.
 //
 // Spec: specs/01-architecture.md § Sandbox, specs/03-dsl.md § sandbox.
 
@@ -47,8 +45,12 @@ import { Effect, Layer } from "effect";
 import {
   CheckoutFailed,
   type Container,
+  ContainerLaunchFailed,
+  type DetachedHandle,
   ExecFailed,
+  type ExecResult,
   ExecTimeout,
+  PortNeverOpened,
   Sandbox as SandboxTag,
   type SandboxService,
 } from "@flare-dispatch/core";
@@ -178,22 +180,78 @@ export const makeSandboxCloudflareLive = (
       });
     },
 
-    // TODO(PR4-risk): detached execution. The `@cloudflare/sandbox` SDK exposes
-    // `startProcess` / `Process` polling / `exposePort`, but no V0 run uses
-    // detached mode (`offload-test` is clone→exec→upload). Wiring + testing
-    // these belongs with the first detached-mode run (cdp-acceptance, V2).
-    runDetached: () =>
-      Effect.die(
-        "sandbox.runDetached: not implemented in V0 (TODO(PR4-risk) — see sandbox-cf.ts header)",
-      ),
-    waitForExit: () =>
-      Effect.die(
-        "sandbox.waitForExit: not implemented in V0 (TODO(PR4-risk) — see sandbox-cf.ts header)",
-      ),
-    waitForPort: () =>
-      Effect.die(
-        "sandbox.waitForPort: not implemented in V0 (TODO(PR4-risk) — see sandbox-cf.ts header)",
-      ),
+    // Detached execution (PR9) — `bootApp`'s "start the app, return at once"
+    // path. `startProcess` launches a long-running process; the run later
+    // recovers it by id via `getProcess` to wait on its port / its exit.
+    runDetached: ({ command, cwd, env, timeoutSec }) => {
+      const cmd = asCommand(command);
+      return Effect.tryPromise({
+        try: async () => {
+          const proc = await box.startProcess(cmd, {
+            cwd,
+            env,
+            timeout: timeoutSec === undefined ? undefined : timeoutSec * 1000,
+          });
+          return {
+            id: proc.id,
+            container: { id: executionId },
+          } satisfies DetachedHandle;
+        },
+        // No container image in scope here — the failure is a process-launch
+        // failure, the closest tag the `SandboxService` contract offers.
+        catch: (cause) => new ContainerLaunchFailed({ image: "", cause }),
+      });
+    },
+
+    waitForExit: ({ handle }) =>
+      Effect.tryPromise({
+        try: async (): Promise<ExecResult> => {
+          const startedAt = Date.now();
+          const proc = await box.getProcess(handle.id);
+          if (proc === null) {
+            throw new Error(`detached process ${handle.id} not found`);
+          }
+          const exit = await proc.waitForExit();
+          const logs = await proc.getLogs();
+          const logPath = nextLogKey();
+          await writeLog(logPath, proc.command, logs.stdout, logs.stderr);
+          return {
+            exitCode: exit.exitCode,
+            durationMs: Date.now() - startedAt,
+            logPath,
+            stdout: logs.stdout,
+            stderr: logs.stderr,
+          };
+        },
+        // `waitForExit` only fails its Effect on a timeout / a vanished
+        // process — a non-zero exit is a normal `ExecResult` above.
+        catch: (cause): ExecTimeout =>
+          new ExecTimeout({
+            timeoutSec: 0,
+            command: `detached:${handle.id} — ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          }),
+      }),
+
+    waitForPort: ({ handle, port, timeoutSec }) =>
+      Effect.tryPromise({
+        try: async () => {
+          const proc = await box.getProcess(handle.id);
+          if (proc === null) {
+            throw new Error(`detached process ${handle.id} not found`);
+          }
+          // TCP mode: the app is "up" once the port accepts connections — it
+          // need not yet answer 2xx at `/`.
+          await proc.waitForPort(port, {
+            mode: "tcp",
+            timeout:
+              timeoutSec === undefined ? undefined : timeoutSec * 1000,
+          });
+        },
+        catch: (): PortNeverOpened =>
+          new PortNeverOpened({ port, timeoutSec: timeoutSec ?? 0 }),
+      }),
   };
 
   return Layer.succeed(SandboxTag, service);

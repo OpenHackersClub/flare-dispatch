@@ -6,14 +6,16 @@
 // Schema-validate `inputs` against the named run's `inputs` schema *before*
 // instantiating the Workflow. `/health` lists `runNames()`.
 //
-// V0 ships one run (`offload-test`); each new run slots in as another entry.
+// Each run slots in as another entry: `offload-test` (V0) and `cdp-acceptance`
+// (V2 browser acceptance, PR9).
 
 import type { Run } from "@flare-dispatch/core";
-import { offloadTest } from "@flare-dispatch/runs";
+import { cdpAcceptance, offloadTest } from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
 export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
+  [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

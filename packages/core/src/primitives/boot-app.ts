@@ -16,12 +16,14 @@ export const bootApp = (opts: {
   command: string | readonly string[];
   port: number;
   timeoutSec?: number; // wait-for-port ceiling, default 120
+  env?: Record<string, string>; // env for the detached process — e.g. injected secrets
 }) =>
   Effect.gen(function* () {
     const handle = yield* sandbox.runDetached({
       cwd: opts.dir,
       container: opts.container,
       command: opts.command,
+      env: opts.env,
     });
     yield* sandbox.waitForPort({
       handle,

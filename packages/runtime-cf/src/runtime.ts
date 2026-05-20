@@ -19,6 +19,10 @@ import { type Sandbox } from "@cloudflare/sandbox";
 import { Layer } from "effect";
 import type { RunContext } from "@flare-dispatch/core";
 import { makeR2ArtifactLive } from "./artifact-r2";
+import {
+  type BrowserRenderingConfig,
+  makeBrowserRenderingLive,
+} from "./browser-cf";
 import { makeCacheR2Live } from "./cache-r2";
 import {
   type ChecksGithubConfig,
@@ -64,6 +68,13 @@ export type CFRuntimeLiveOptions = {
    * key as unset. Present, the `loadSecrets` primitive can resolve credentials.
    */
   readonly configKv?: KVNamespace;
+  /**
+   * Browser Rendering connect config for the `browser` capability
+   * (`BROWSER_CDP_*` Worker secrets). `undefined` — a deploy with no Browser
+   * Rendering configured — selects the dying `Browser` stub: a browser run
+   * (`cdp-acceptance`) fails loudly. Non-browser runs never touch the Tag.
+   */
+  readonly browser?: BrowserRenderingConfig;
 };
 
 /**
@@ -87,17 +98,29 @@ export const makeCFRuntimeLive = (
     opts.executionId,
   );
   const checks = makeChecksGithubLive(opts.checks);
-  const cache = makeCacheR2Live(opts.bucket, opts.sandboxNs);
+  // The cache archive key is scoped by repo so two repos with an identical
+  // lockfile hash cannot collide (cross-repo cache poisoning).
+  const cache = makeCacheR2Live(
+    opts.bucket,
+    opts.sandboxNs,
+    opts.execution.repo,
+  );
   // `Config` is live when the `CONFIG_KV` binding is present; absent, the
   // dying stub keeps a config-reading run from silently mis-behaving.
   const config =
     opts.configKv === undefined
       ? ConfigDeferred
       : makeConfigKvLive(opts.configKv);
+  // `Browser` is live when Browser Rendering is configured; absent, the dying
+  // stub keeps a browser run from silently mis-behaving.
+  const browser =
+    opts.browser === undefined
+      ? BrowserDeferred
+      : makeBrowserRenderingLive(opts.browser);
 
   return Layer.mergeAll(
     sandbox,
-    BrowserDeferred,
+    browser,
     cache,
     artifact,
     io,

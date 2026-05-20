@@ -4,6 +4,11 @@
 // key; on a miss run `onMiss` (which populates the paths), then save.
 // Idempotent across step replay. The `installCached` primitive wraps it.
 //
+// `restoreOr` resolves to `void`, not the `onMiss` value: on a cache HIT
+// `onMiss` never runs, so there is genuinely no `A` to hand back. The work
+// `restoreOr` does — files restored into the container, or `onMiss` populating
+// them — is a side effect; callers do not consume a return value.
+//
 // Spec: specs/03-dsl.md § cache.
 
 import { Context, Effect } from "effect";
@@ -23,7 +28,7 @@ export interface CacheService {
      */
     dir?: string;
     onMiss: () => Effect.Effect<A, E, R>;
-  }) => Effect.Effect<A, E | CacheError, R>;
+  }) => Effect.Effect<void, E | CacheError, R>;
   readonly save: (opts: {
     key: string;
     paths: readonly string[];

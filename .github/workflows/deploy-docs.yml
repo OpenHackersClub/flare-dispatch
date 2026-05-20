@@ -35,9 +35,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up pnpm
-        # No `version:` — action-setup reads it from package.json
-        # `packageManager`, matching ci.yml. Pinning it here conflicted
-        # (version 10 vs. packageManager pnpm@9.15.0) and failed setup.
+        # No `version:` — pnpm/action-setup reads `packageManager` from the
+        # root package.json (matching ci.yml). Pinning a version here as well
+        # makes action-setup error on "multiple versions specified".
         uses: pnpm/action-setup@v4
 
       - name: Set up Node
@@ -49,11 +49,13 @@ jobs:
 
       - name: Install dependencies
         working-directory: apps/docs
-        # --ignore-workspace: apps/docs is a standalone project with its own
-        # lockfile and is NOT a member of the root pnpm-workspace.yaml. Without
-        # this flag, pnpm walks up, finds the root workspace, and installs that
-        # instead — leaving apps/docs/node_modules empty (astro: not found).
-        run: pnpm install --frozen-lockfile --ignore-workspace
+        # apps/docs is a standalone project with its own lockfile, NOT a member
+        # of the root pnpm-workspace.yaml. apps/docs/pnpm-workspace.yaml makes
+        # pnpm treat it as its own single-project root (so it does not climb to
+        # the root workspace) AND carries the `allowBuilds` allowlist pnpm 11
+        # needs. `--ignore-workspace` is NOT used: it would also make pnpm
+        # ignore that file's settings, re-triggering ERR_PNPM_IGNORED_BUILDS.
+        run: pnpm install --frozen-lockfile
 
       - name: Type-check
         working-directory: apps/docs

@@ -30,7 +30,14 @@ import {
   makeExecutionsFake,
 } from "./fakes/executions-fake";
 import { IOFake, type IOFakeState, makeIOFake } from "./fakes/io-fake";
-import { BrowserFake, CacheFake, ConfigFake } from "./fakes/misc-fakes";
+import {
+  BrowserFake,
+  type BrowserFakeState,
+  CacheFake,
+  ConfigFake,
+  makeBrowserFake,
+  makeConfigFake,
+} from "./fakes/misc-fakes";
 import {
   makeSandboxFake,
   SandboxFake,
@@ -69,7 +76,14 @@ export {
   type IOFakeOptions,
   type LogEntry,
 } from "./fakes/io-fake";
-export { BrowserFake, CacheFake, ConfigFake } from "./fakes/misc-fakes";
+export {
+  BrowserFake,
+  type BrowserFakeState,
+  CacheFake,
+  ConfigFake,
+  makeBrowserFake,
+  makeConfigFake,
+} from "./fakes/misc-fakes";
 export {
   SandboxFake,
   makeSandboxFake,
@@ -109,6 +123,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
 /** Inspectable handles to every fake in a `makeCFRuntimeTest` runtime. */
 export type CFRuntimeTestHandles = {
   readonly sandbox: SandboxFakeState;
+  readonly browser: BrowserFakeState;
   readonly artifact: ArtifactFakeState;
   readonly io: IOFakeState;
   readonly checks: ChecksFakeState;
@@ -118,6 +133,10 @@ export type CFRuntimeTestHandles = {
 export type CFRuntimeTestOptions = {
   /** canned command→result program for the sandbox fake. */
   readonly sandboxProgram?: Parameters<typeof makeSandboxFake>[0];
+  /** Browser fake options — e.g. the canned CDP `wsEndpoint`. */
+  readonly browser?: Parameters<typeof makeBrowserFake>[0];
+  /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
+  readonly config?: Record<string, string>;
   /** the execution id `StepRunnerInline` records steps under. */
   readonly executionId?: string;
   /** IO fake clock options. */
@@ -133,6 +152,7 @@ export const makeCFRuntimeTest = (
   opts: CFRuntimeTestOptions = {},
 ): { layer: Layer.Layer<RunContext>; handles: CFRuntimeTestHandles } => {
   const sandbox = makeSandboxFake(opts.sandboxProgram);
+  const browser = makeBrowserFake(opts.browser);
   const artifact = makeArtifactFake();
   const io = makeIOFake(opts.io);
   const checks = makeChecksFake();
@@ -141,11 +161,11 @@ export const makeCFRuntimeTest = (
 
   const layer = Layer.mergeAll(
     sandbox.layer,
-    BrowserFake,
+    browser.layer,
     CacheFake,
     artifact.layer,
     io.layer,
-    ConfigFake,
+    makeConfigFake(opts.config),
     checks.layer,
     executions.layer,
     Layer.provide(stepRunner, Layer.merge(executions.layer, io.layer)),
@@ -155,6 +175,7 @@ export const makeCFRuntimeTest = (
     layer,
     handles: {
       sandbox: sandbox.state,
+      browser: browser.state,
       artifact: artifact.state,
       io: io.state,
       checks: checks.state,

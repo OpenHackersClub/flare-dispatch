@@ -1,0 +1,10 @@
+# apps/docs is a nested project with its own pnpm-lock.yaml — deliberately NOT
+# a member of the repo-root pnpm workspace. This file makes pnpm treat apps/docs
+# as its own (single-project) root: without it, `pnpm install` run here climbs
+# to the root pnpm-workspace.yaml and never installs apps/docs's own deps.
+#
+# allowBuilds allowlists the dependency build scripts pnpm 10+ otherwise gates
+# (ERR_PNPM_IGNORED_BUILDS) — the ones astro's toolchain needs.
+allowBuilds:
+  esbuild: true
+  sharp: true

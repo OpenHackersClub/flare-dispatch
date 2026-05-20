@@ -2,3 +2,13 @@ packages:
   - "packages/*"
   - "apps/dispatcher"
   - "runs"
+
+# pnpm 10+ gates dependency lifecycle (build) scripts behind an explicit
+# allowlist. These are the packages whose install/postinstall scripts pnpm 9
+# ran implicitly; allowing them keeps `pnpm install` from erroring with
+# ERR_PNPM_IGNORED_BUILDS after the bump to pnpm 11.
+allowBuilds:
+  esbuild: true
+  msw: true
+  sharp: true
+  workerd: true

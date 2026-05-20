@@ -17,6 +17,7 @@ import {
   ExecTimeout,
   PortNeverOpened,
   type RunError,
+  SecretsMissing,
   StepFailed,
 } from "./errors";
 
@@ -37,6 +38,7 @@ const summarize = (e: RunError): string =>
     Match.tag("StepFailed", ({ step }) => `step ${step}`),
     Match.tag("ApprovalTimedOut", ({ eventName }) => `approval ${eventName}`),
     Match.tag("EventPayloadInvalid", ({ reason }) => `event payload ${reason}`),
+    Match.tag("SecretsMissing", ({ keys }) => `secrets missing ${keys.join(",")}`),
     Match.exhaustive,
   );
 
@@ -96,6 +98,11 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
       name: "EventPayloadInvalid",
       err: new EventPayloadInvalid({ eventName: "release", reason: "bad" }),
       expect: "event payload bad",
+    },
+    {
+      name: "SecretsMissing",
+      err: new SecretsMissing({ keys: ["CLERK_SECRET_KEY"] }),
+      expect: "secrets missing CLERK_SECRET_KEY",
     },
   ];
 

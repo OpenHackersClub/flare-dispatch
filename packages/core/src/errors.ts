@@ -71,6 +71,11 @@ export class EventPayloadInvalid extends Schema.TaggedError<EventPayloadInvalid>
   { eventName: Schema.String, reason: Schema.String },
 ) {}
 
+export class SecretsMissing extends Schema.TaggedError<SecretsMissing>()(
+  "SecretsMissing",
+  { keys: Schema.Array(Schema.String) },
+) {}
+
 /** The closed union of every error a run can fail with. */
 export type RunError =
   | CheckoutFailed
@@ -83,4 +88,5 @@ export type RunError =
   | ArtifactUploadFailed
   | StepFailed
   | ApprovalTimedOut
-  | EventPayloadInvalid;
+  | EventPayloadInvalid
+  | SecretsMissing;
