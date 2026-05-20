@@ -20,8 +20,35 @@ export type Recipe = {
   useCase: string;
   mode: "Action" | "Webhook" | "Schedule";
   blurb: string;
-  /** Source files shown as code on the recipe page. */
+  /** Source files shown as code on the recipe page (the FlareDispatch shape). */
   files: RecipeFile[];
+  /**
+   * The baseline GHA workflow shown under the "Without FlareDispatch" tab —
+   * a faithful, runnable workflow a team would actually maintain to do the
+   * same job on plain GitHub Actions. Lives at `recipes/<slug>/baseline.yml`.
+   *
+   * Optional: a recipe without a `baseline` skips the comparison widget
+   * entirely (the page renders the typed run as the single Source section).
+   * The six original recipes all ship a baseline; the Schedule-mode recipes
+   * added in PR #13 do not yet — they're a follow-up.
+   */
+  baseline?: RecipeFile;
+  /**
+   * Bullet list of the structural costs a team pays to implement this recipe
+   * on plain GHA. Only meaningful when `baseline` is set.
+   */
+  baselinePains?: string[];
+  /**
+   * Structural-shape label for the comparison meta panel. Only rendered when
+   * `baseline` is set. Honest LOC comparisons are misleading when one side
+   * carries dense doc comments, so this is a qualitative label.
+   */
+  shape?: {
+    /** "1 typed run + dispatch", "2 typed runs", … */
+    flare: string;
+    /** "1 workflow · 4 jobs + matrix", "1 workflow · cron + REST", … */
+    gha: string;
+  };
   /** Whether `recipes/<slug>/README.md` exists and should render as prose. */
   hasReadme: boolean;
 };
@@ -39,6 +66,19 @@ export const recipes: Recipe[] = [
       { name: "pr-review-sweep.run.ts", lang: "ts" },
       { name: "ci.yml", lang: "yaml" },
     ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "Three jobs chained with `needs:` (gate → prepare-diff → matrix → coordinate) because GHA has no in-job fan-out that can both read shared state AND produce per-shard artifacts.",
+      "The agent matrix is JSON-encoded into a job output and parsed by `fromJSON()` — GHA's `matrix:` block cannot read step outputs directly.",
+      "The diff round-trips through `actions/upload-artifact` so every shard can see it (GHA does not share the workspace across jobs).",
+      "Inline annotations are batched 50-per-call by hand against the GitHub REST API — there is no first-class \"check-run from JSON\" action.",
+      "Re-review continuity (prior findings) leans on `actions/cache@v4`, which can evict at any moment; FlareDispatch's `io.priorExecution` is durable.",
+      "A second cron workflow + `actions/github-script` PR-enumeration loop is required to cover webhook drops and PRs opened before the workflow existed.",
+    ],
+    shape: {
+      flare: "2 typed runs + dispatch",
+      gha: "1 workflow · 5 jobs + matrix + REST glue",
+    },
     hasReadme: true,
   },
   {
@@ -52,6 +92,17 @@ export const recipes: Recipe[] = [
       { name: "ci.yml", lang: "yaml" },
       { name: "playwright-e2e.run.ts", lang: "ts" },
     ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "Every shard pays the GHA-runner cold-start tax (~30–45 s) — for an N=4 run, ~2–3 minutes of GHA minutes burned before tests start.",
+      "Chromium is installed on every shard via `playwright install --with-deps` (~60–90 s each); FlareDispatch's `flare-dispatch-playwright` image has it baked in and the container pool is warm.",
+      "Per-shard reports upload to blob storage and a separate `merge-reports` job downloads them all and re-glues — branch protection must require the merge job, not the matrix.",
+      "`fail-fast: false` is required for independent shards, but then the matrix job is green even on partial failure — you add a manual aggregate gate.",
+    ],
+    shape: {
+      flare: "1 typed run + dispatch",
+      gha: "1 workflow · matrix + merge-reports job",
+    },
     hasReadme: false,
   },
   {
@@ -65,6 +116,17 @@ export const recipes: Recipe[] = [
       { name: "ci.yml", lang: "yaml" },
       { name: "matrix-fanout.run.ts", lang: "ts" },
     ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "Shard count is hardcoded twice (the `matrix:` list AND the `--shard $i/$N` divisor) — bump 4 to 8 and you must remember both.",
+      "Every shard pays runner cold-start + `pnpm install` cost; the warm worker pool in FlareDispatch boots in <2 s.",
+      "`fail-fast: false` is required to let independent shards run, but then a separate aggregate job has to propagate failure to the PR check.",
+      "Per-shard logs only viewable via the Artifacts UI; FlareDispatch surfaces them as signed R2 URLs in the check-run summary.",
+    ],
+    shape: {
+      flare: "1 typed run + dispatch",
+      gha: "1 workflow · matrix + aggregate job",
+    },
     hasReadme: false,
   },
   {
@@ -78,6 +140,17 @@ export const recipes: Recipe[] = [
       { name: "ci.yml", lang: "yaml" },
       { name: "cdp-acceptance.run.ts", lang: "ts" },
     ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "App boot is `nohup … &` plus a hand-rolled retry loop on the dev port; FlareDispatch's `bootApp` primitive subsumes both.",
+      "Chromium is launched on the runner with `--remote-debugging-port` because GHA can't reach Cloudflare Browser Rendering — only one acceptance suite per machine.",
+      "Screenshots and the Playwright trace live behind the Artifacts UI; the reviewer must download → unzip → re-upload to paste evidence into the PR. FlareDispatch hands them a signed R2 URL.",
+      "Background-process lifecycle (kill the app + the headless browser) is your responsibility — `if: always()` cleanup steps that have to be remembered.",
+    ],
+    shape: {
+      flare: "1 typed run + dispatch",
+      gha: "1 workflow · 1 job · 10+ steps with detach/wait/cleanup",
+    },
     hasReadme: false,
   },
   {
@@ -91,6 +164,17 @@ export const recipes: Recipe[] = [
       { name: "ci.yml", lang: "yaml" },
       { name: "security-scan.run.ts", lang: "ts" },
     ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "Each scanner is its own job because install/setup differs — Trivy needs apt repos, gitleaks needs a tarball, pnpm-audit needs `pnpm` already set up.",
+      "Every scanner has its own \"fail on high\" flag dialect (`--exit-code 1`, `--audit-level=high`, grep-the-output) — no shared FAIL_ON threshold like FlareDispatch's `scan` CLI wrapper.",
+      "The aggregate gate is a fourth job that has to download every report and call `contains(needs.*.result, 'failure')` — branch protection requires the aggregate, not the scanners.",
+      "Scheduled (weekly) and PR runs share one workflow, so any comment-back logic branches on `github.event_name`.",
+    ],
+    shape: {
+      flare: "1 typed run + dispatch",
+      gha: "1 workflow · 4 jobs (per-scanner + aggregate)",
+    },
     hasReadme: false,
   },
   {
@@ -104,6 +188,17 @@ export const recipes: Recipe[] = [
       { name: "smoke.run.ts", lang: "ts" },
       { name: "ci.yml", lang: "yaml" },
     ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "`on: deployment_status` fires on every transition (pending, in_progress, success, failure) — you gate manually on three independent conditions or the smoke fires multiple times per deploy.",
+      "The check-run on the deployed SHA must be manually created via REST (the GHA job's status anchors to the workflow SHA, not the deployment SHA).",
+      "No idempotency on `deployment.id` — a re-delivered webhook re-fires the smoke. FlareDispatch's `idempotencyKey` deduplicates in the kernel.",
+      "The probe loop is curl + exit-code classification in shell; FlareDispatch's `probeHttp` primitive subsumes it with tagged-error classification and parallel probes.",
+    ],
+    shape: {
+      flare: "1 typed run + dispatch",
+      gha: "1 workflow · 1 job + REST check-run lifecycle",
+    },
     hasReadme: false,
   },
   {

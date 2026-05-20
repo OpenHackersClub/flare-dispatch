@@ -1,0 +1,129 @@
+# Recipe: CDP acceptance tests — BASELINE (without FlareDispatch)
+#
+# This is what you'd maintain on plain GitHub Actions to boot the app under
+# test, drive it via the Chrome DevTools Protocol, and capture screenshots /
+# trace artifacts that reviewers can drop into a PR. Shown here ONLY as a
+# comparison — see ./cdp-acceptance.run.ts for the FlareDispatch version
+# (~55 lines, two primitives: `workspace` + `bootApp`).
+#
+# Notable costs of the GHA-only path:
+#   - You have to background the app boot yourself (`pnpm dev &`) and then
+#     wait for the port with a hand-rolled retry loop. There's no `wait-on`
+#     analogue baked into the runner; `wait-on` itself works but is a brittle
+#     npm dependency to keep current.
+#   - The CDP endpoint your tests connect to is local (`ws://localhost:9222`)
+#     because GHA runners can't reach into Cloudflare Browser Rendering — so
+#     you launch Chromium on the runner itself, which means you can't run
+#     more than one acceptance suite concurrently per machine.
+#   - Screenshots and the Playwright trace are uploaded as `actions/upload-artifact`
+#     and surfaced only via the GHA Artifacts UI — there is no signed URL you
+#     can paste into the PR. Drag-and-drop into the PR description requires
+#     downloading the artifact bundle, unzipping, then re-uploading the file
+#     to GitHub. FlareDispatch hands the reviewer a signed R2 URL directly.
+#   - A follow-up deploy gate must `needs:` this entire job, and your test
+#     command must `exit 1` cleanly OR the job result lies.
+
+name: cdp-acceptance-baseline
+on:
+  pull_request:
+    paths: ["apps/**"]
+
+jobs:
+  cdp-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_PORT: 4173
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright + Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Boot the app detached. nohup + & so the step can continue; logs go to
+      # a file so failures are debuggable.
+      - name: Boot app
+        run: |
+          mkdir -p ./artifacts
+          # CONFIGURE: your dev/start command.
+          nohup pnpm dev > ./artifacts/app.log 2>&1 &
+          echo $! > ./.app.pid
+
+      # Hand-rolled wait-for-port. The retry loop has to live in this YAML,
+      # because GHA has no first-class "block until TCP open" step.
+      - name: Wait for app to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null "http://localhost:${APP_PORT}/"; then
+              echo "App is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::App never came up on port ${APP_PORT}"
+          cat ./artifacts/app.log || true
+          exit 1
+
+      # Launch a long-running Chromium with the DevTools port exposed, so the
+      # acceptance suite can connect over CDP. We have to background this too.
+      - name: Launch Chromium with CDP port
+        run: |
+          nohup pnpm exec chromium \
+            --remote-debugging-port=9222 \
+            --headless=new \
+            --no-sandbox \
+            "http://localhost:${APP_PORT}/" \
+            > ./artifacts/chromium.log 2>&1 &
+          echo $! > ./.chromium.pid
+          sleep 3
+
+      - name: Run acceptance suite over CDP
+        env:
+          CDP_WS_URL: ws://localhost:9222
+        # CONFIGURE: your acceptance test command. It must `exit 1` on
+        # failure for branch protection to mean anything.
+        run: pnpm test:acceptance
+
+      - name: Stop background processes
+        if: always()
+        run: |
+          kill "$(cat ./.app.pid 2>/dev/null || echo 0)" 2>/dev/null || true
+          kill "$(cat ./.chromium.pid 2>/dev/null || echo 0)" 2>/dev/null || true
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report
+          path: playwright-report
+          retention-days: 30
+
+      - name: Upload screenshots + trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: |
+            ./artifacts
+            ./test-results
+          retention-days: 30

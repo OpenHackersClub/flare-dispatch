@@ -1,0 +1,159 @@
+# Recipe: security / dependency scan — BASELINE (without FlareDispatch)
+#
+# This is what you'd maintain on plain GitHub Actions to run multiple
+# heterogeneous scanners (pnpm-audit, Trivy, gitleaks) in parallel on every
+# PR AND on a weekly cron, with a single aggregated PR check. Shown here
+# ONLY as a comparison — see ./security-scan.run.ts for the FlareDispatch
+# version (~45 lines, one primitive: `workspace`).
+#
+# Notable costs of the GHA-only path:
+#   - Every scanner has its own install + flags. Trivy and gitleaks are
+#     pre-built binaries you have to fetch; pnpm-audit is `pnpm` you already
+#     have. There's no thin wrapper like FlareDispatch's `scan` CLI that
+#     normalizes flags and exit codes against a shared FAIL_ON threshold.
+#   - The matrix can't easily express different setup steps per scanner —
+#     so each scanner is its own JOB, repeating checkout + setup-node.
+#   - The "fail on high" semantics differ per tool. Trivy has `--exit-code`
+#     + `--severity`, pnpm has `--audit-level`, gitleaks has none — you have
+#     to grep its output. The wrapper that homogenises this is something you
+#     either build yourself or paste into every workflow.
+#   - Scheduled (weekly) run uses the same workflow but runs against the
+#     default branch — and there's no first-class PR context, so any
+#     comment-back logic you want must branch on `github.event_name`.
+#   - The aggregate job has to download every scanner's report, decide
+#     overall pass/fail, and re-upload as a merged artifact. Manual.
+
+name: security-scan-baseline
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: write # if you want SARIF uploads
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. Node/pnpm audit. Lives in its own job because the install step is
+  #    pnpm-specific; sharing with Trivy/gitleaks below would just bloat the
+  #    other jobs with unused setup-node.
+  # --------------------------------------------------------------------------
+  pnpm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm audit
+        run: |
+          pnpm audit --audit-level=high --json > pnpm-audit.json || EXIT=$?
+          # `pnpm audit` exits non-zero ONLY at the threshold — propagate.
+          test "${EXIT:-0}" = "0"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pnpm-audit-report
+          path: pnpm-audit.json
+
+  # --------------------------------------------------------------------------
+  # 2. Trivy filesystem scan — own binary fetch + own flag dialect.
+  # --------------------------------------------------------------------------
+  trivy-fs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          curl -fsSL "https://aquasecurity.github.io/trivy-repo/deb/public.key" \
+            | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+
+      - name: Trivy scan (fail on HIGH+)
+        run: |
+          trivy fs \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --format json \
+            --output trivy.json \
+            .
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy.json
+
+  # --------------------------------------------------------------------------
+  # 3. Gitleaks — secret scanning. Different flag dialect again; no native
+  #    "fail on high" because severity isn't a gitleaks concept — every find
+  #    is a fail.
+  # --------------------------------------------------------------------------
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks needs the full history
+
+      - name: Install gitleaks
+        run: |
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+
+      - name: Run gitleaks
+        run: ./gitleaks detect --redact --report-format=json --report-path=gitleaks.json --exit-code 1
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.json
+
+  # --------------------------------------------------------------------------
+  # 4. Aggregate — branch protection should require THIS, not the individual
+  #    scanners. Pulls every report, summarises, fails if any scanner failed.
+  # --------------------------------------------------------------------------
+  security-scan:
+    if: always()
+    needs: [pnpm-audit, trivy-fs, gitleaks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download reports
+        uses: actions/download-artifact@v4
+        with:
+          path: ./reports
+
+      - name: Summarise
+        run: |
+          echo "## Security scan summary" >> "$GITHUB_STEP_SUMMARY"
+          for r in pnpm-audit trivy gitleaks; do
+            status="${{ needs.pnpm-audit.result }}"
+            echo "- $r: $status" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Propagate scanner failures
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::One or more security scanners flagged findings."
+          exit 1

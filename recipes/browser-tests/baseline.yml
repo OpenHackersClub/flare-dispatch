@@ -1,0 +1,149 @@
+# Recipe: browser tests (Playwright e2e) — BASELINE (without FlareDispatch)
+#
+# This is what you'd maintain on plain GitHub Actions to shard a Playwright
+# suite across N runners with per-shard HTML reports and a merged final
+# report. Shown here ONLY as a comparison — see ./playwright-e2e.run.ts for
+# the FlareDispatch version (~50 lines of typed Effect-TS, two primitives).
+#
+# Notable costs of the GHA-only path:
+#   - Every shard pays the GHA runner cold-start tax (~30–45 s) — for an N=4
+#     shard run, that's ~2–3 minutes of GHA minutes burned before tests start.
+#   - You install the browser binary (`pnpm exec playwright install --with-deps`)
+#     on every shard, because there is no shared image like the
+#     `flare-dispatch-playwright` container that already has Chromium baked in.
+#     This alone is ~60–90 s per shard.
+#   - Reports per shard are uploaded as separate `actions/upload-artifact@v4`
+#     entries, then a merge job downloads them all and re-glues them. The
+#     blob-storage round-trip is pure overhead.
+#   - "Done" requires a third job (`merge`) with `if: always()` because
+#     Playwright's official `playwright-merge-reports` only runs after all
+#     shards complete, even failing ones.
+#   - The "branch protection" check has to be the `merge` job — NOT the
+#     dispatch — and you must remember to make it required.
+#   - Total wall-clock for a 4-shard suite: ~2–3 min overhead + test time.
+#     FlareDispatch's `playwright-e2e` run boots in <2 s per shard (warm
+#     container pool) and reports a single first-class check-run.
+
+name: e2e-baseline
+on:
+  pull_request:
+    paths: ["apps/**", "packages/**"]
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. The shard matrix. 1-based indexing because Playwright's `--shard=i/N`
+  #    is 1-based; GHA's matrix is just a literal list.
+  # --------------------------------------------------------------------------
+  e2e:
+    name: e2e (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # CONFIGURE: keep in sync with the divisor you pass to --shard.
+        shard: [1, 2, 3, 4]
+    timeout-minutes: 40
+    env:
+      BASE_URL: https://staging.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Cache the Playwright browser binaries — without this, every shard
+      # re-downloads ~150 MB of Chromium/Firefox/Webkit.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright tests (shard ${{ matrix.shard }}/4)
+        run: |
+          pnpm exec playwright test \
+            --shard=${{ matrix.shard }}/4 \
+            --reporter=blob,html
+
+      # Per-shard HTML report — uploaded so the merge job below can re-glue
+      # them. Without merging, you get 4 disconnected reports that humans have
+      # to open one by one.
+      - name: Upload blob report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report
+          retention-days: 1
+
+      - name: Upload HTML report (per shard)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.shard }}
+          path: playwright-report
+          retention-days: 14
+
+  # --------------------------------------------------------------------------
+  # 2. Merge the blob reports into one HTML report. This job is the
+  #    branch-protection check — the matrix above succeeds even on partial
+  #    pass, so you can't gate on it directly.
+  # --------------------------------------------------------------------------
+  merge-reports:
+    name: e2e
+    if: always()
+    needs: [e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download all blob reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-report-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Merge into HTML report
+        run: pnpm exec playwright merge-reports --reporter=html ./all-blob-reports
+
+      - name: Upload merged HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-merged
+          path: playwright-report
+          retention-days: 30
+
+      # Fail this job if any shard failed — the matrix uses `fail-fast: false`,
+      # so a failure in one shard does NOT propagate without this manual gate.
+      - name: Propagate shard failures
+        if: contains(needs.*.result, 'failure')
+        run: |
+          echo "::error::One or more Playwright shards failed."
+          exit 1
