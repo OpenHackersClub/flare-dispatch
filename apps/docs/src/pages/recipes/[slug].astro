@@ -28,13 +28,81 @@ const readmeEntry = readmeEntries.find(
 );
 const Readme = readmeEntry ? (await render(readmeEntry)).Content : undefined;
 
-// Source files, read from the monorepo-root recipes/ directory at build time.
-const sources = recipe.files.map((file) => ({
+// FlareDispatch source files (typed run(s) + thin dispatch workflow).
+const flareFiles = recipe.files.map((file) => ({
   file,
   code: readRecipeFile(recipe.slug, file.name),
 }));
 
+// Baseline GHA workflow — what teams write WITHOUT FlareDispatch. Recipes
+// added since the comparison widget shipped may not have a baseline yet; in
+// that case the page falls back to the single-Source layout.
+const baselineCode = recipe.baseline
+  ? readRecipeFile(recipe.slug, recipe.baseline.name)
+  : undefined;
+
+/**
+ * Count "code lines" — strip blank lines and pure-comment lines so the
+ * comparison reflects actual logic, not how heavily a file is annotated.
+ * The recipe runs are intentionally well-commented (they map onto specs and
+ * external blog posts); a raw line count misleads against them.
+ *
+ * Heuristic, not a parser:
+ *  - YAML: drop lines that are blank or start with `#` after trimming.
+ *  - TS/JS: drop blank lines, `// ...` lines, and block-comment ranges.
+ */
+function countCodeLines(code: string, lang: "ts" | "yaml"): number {
+  const lines = code.split("\n");
+  if (lang === "yaml") {
+    return lines.filter((l) => {
+      const t = l.trim();
+      return t.length > 0 && !t.startsWith("#");
+    }).length;
+  }
+  let inBlock = false;
+  let n = 0;
+  for (const raw of lines) {
+    let l = raw.trim();
+    if (l.length === 0) continue;
+    if (inBlock) {
+      const end = l.indexOf("*/");
+      if (end >= 0) {
+        inBlock = false;
+        l = l.slice(end + 2).trim();
+        if (l.length === 0) continue;
+      } else continue;
+    }
+    // strip leading block-comment opener(s) on this line
+    while (l.startsWith("/*")) {
+      const end = l.indexOf("*/", 2);
+      if (end < 0) {
+        inBlock = true;
+        l = "";
+        break;
+      }
+      l = l.slice(end + 2).trim();
+    }
+    if (l.length === 0) continue;
+    if (l.startsWith("//")) continue;
+    n++;
+  }
+  return n;
+}
+
+const flareLines = flareFiles.reduce(
+  (n, { file, code }) => n + countCodeLines(code, file.lang),
+  0,
+);
+const baselineLines =
+  baselineCode && recipe.baseline
+    ? countCodeLines(baselineCode, recipe.baseline.lang)
+    : 0;
+
 const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
+
+// Tab group id — scoped per recipe so multiple recipe pages don't collide.
+const tabGroup = `compare-${recipe.slug}`;
+const fileSubGroup = `compare-files-${recipe.slug}`;
 ---
 
 <BaseLayout
@@ -64,10 +132,28 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
           <dt>Recommended mode</dt>
           <dd>{recipe.mode}</dd>
         </div>
-        <div>
-          <dt>Files</dt>
-          <dd>{recipe.files.map((f) => f.name).join(", ")}</dd>
-        </div>
+        {
+          recipe.shape && (
+            <>
+              <div>
+                <dt>FlareDispatch shape</dt>
+                <dd>{recipe.shape.flare}</dd>
+              </div>
+              <div>
+                <dt>Plain GHA shape</dt>
+                <dd>{recipe.shape.gha}</dd>
+              </div>
+            </>
+          )
+        }
+        {
+          !recipe.shape && (
+            <div>
+              <dt>Files</dt>
+              <dd>{recipe.files.map((f) => f.name).join(", ")}</dd>
+            </div>
+          )
+        }
       </dl>
 
       {
@@ -78,29 +164,171 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
         )
       }
 
-      <section class="recipe-source">
-        <h2>Source</h2>
-        <p class="recipe-source__note">
-          This recipe ships both triggers — a typed Effect-TS run
-          (<code>*.run.ts</code>) and a GitHub Actions workflow
-          (<code>ci.yml</code>). Use whichever fits;
-          {recipe.mode} mode is the recommended default.
-        </p>
-        {
-          sources.map(({ file, code }) => (
-            <figure class="recipe-file">
-              <figcaption>recipes/{recipe.slug}/{file.name}</figcaption>
+      {recipe.baseline && baselineCode && recipe.baselinePains && (
+      <section class="recipe-compare">
+        <header class="recipe-compare__header">
+          <h2>Source</h2>
+          <p class="recipe-compare__note">
+            The recommended FlareDispatch shape is shown first. Toggle to
+            <em>Without FlareDispatch</em> to see the full GitHub Actions
+            workflow a team would maintain to do the same job without it.
+          </p>
+        </header>
+
+        <div class="recipe-compare__widget">
+          <div
+            class="recipe-compare__tabs"
+            role="tablist"
+            aria-label={`${recipe.label} — implementation comparison`}
+          >
+            <button
+              type="button"
+              class="recipe-compare__tab recipe-compare__tab--flare"
+              role="tab"
+              id={`${tabGroup}-flare-tab`}
+              aria-controls={`${tabGroup}-flare-panel`}
+              aria-selected="true"
+              data-tab={tabGroup}
+              data-target={`${tabGroup}-flare-panel`}
+            >
+              <span class="recipe-compare__tab-mark">●</span>
+              With FlareDispatch
+              <span class="recipe-compare__tab-meta">{flareLines} LOC</span>
+            </button>
+            <button
+              type="button"
+              class="recipe-compare__tab recipe-compare__tab--baseline"
+              role="tab"
+              id={`${tabGroup}-baseline-tab`}
+              aria-controls={`${tabGroup}-baseline-panel`}
+              aria-selected="false"
+              data-tab={tabGroup}
+              data-target={`${tabGroup}-baseline-panel`}
+            >
+              <span class="recipe-compare__tab-mark">○</span>
+              Without FlareDispatch
+              <span class="recipe-compare__tab-meta">
+                {baselineLines} LOC · plain GHA
+              </span>
+            </button>
+          </div>
+
+          <!-- Panel 1: WITH FlareDispatch — the recommended approach. -->
+          <div
+            class="recipe-compare__panel"
+            role="tabpanel"
+            id={`${tabGroup}-flare-panel`}
+            aria-labelledby={`${tabGroup}-flare-tab`}
+            data-panel={tabGroup}
+          >
+            <div class="recipe-compare__blurb">
+              <span>
+                A typed Effect-TS run plus a thin dispatch workflow.
+                <em>Recommended: {recipe.mode} mode.</em>
+              </span>
+            </div>
+
+            <div
+              class="recipe-compare__subtabs"
+              role="tablist"
+              aria-label={`${recipe.label} — FlareDispatch source files`}
+            >
+              {flareFiles.map(({ file }, j) => (
+                <button
+                  type="button"
+                  class="recipe-compare__subtab"
+                  role="tab"
+                  id={`${fileSubGroup}-${j}-tab`}
+                  aria-controls={`${fileSubGroup}-${j}-panel`}
+                  aria-selected={j === 0 ? "true" : "false"}
+                  data-tab={fileSubGroup}
+                  data-target={`${fileSubGroup}-${j}-panel`}
+                >
+                  <span class="recipe-compare__subtab-lang">{file.lang}</span>
+                  {file.name}
+                </button>
+              ))}
+            </div>
+
+            {flareFiles.map(({ file, code }, j) => (
+              <figure
+                class="recipe-compare__file"
+                id={`${fileSubGroup}-${j}-panel`}
+                role="tabpanel"
+                aria-labelledby={`${fileSubGroup}-${j}-tab`}
+                data-panel={fileSubGroup}
+                hidden={j !== 0}
+              >
+                <figcaption>recipes/{recipe.slug}/{file.name}</figcaption>
+                <Code
+                  code={code}
+                  lang={file.lang}
+                  themes={shikiThemes}
+                  defaultColor="light"
+                  wrap
+                />
+              </figure>
+            ))}
+          </div>
+
+          <!-- Panel 2: WITHOUT FlareDispatch — the baseline GHA workflow. -->
+          <div
+            class="recipe-compare__panel"
+            role="tabpanel"
+            id={`${tabGroup}-baseline-panel`}
+            aria-labelledby={`${tabGroup}-baseline-tab`}
+            data-panel={tabGroup}
+            hidden
+          >
+            <div class="recipe-compare__blurb recipe-compare__blurb--baseline">
+              <span>
+                A faithful, runnable GHA workflow — what a team actually
+                maintains to do this job without FlareDispatch.
+              </span>
+            </div>
+
+            <ul class="recipe-compare__pains">
+              {recipe.baselinePains.map((p) => (
+                <li>{p}</li>
+              ))}
+            </ul>
+
+            <figure class="recipe-compare__file recipe-compare__file--baseline">
+              <figcaption>recipes/{recipe.slug}/{recipe.baseline.name}</figcaption>
               <Code
-                code={code}
-                lang={file.lang}
+                code={baselineCode}
+                lang={recipe.baseline.lang}
                 themes={shikiThemes}
                 defaultColor="light"
                 wrap
               />
             </figure>
-          ))
-        }
+          </div>
+        </div>
       </section>
+      )}
+
+      {!recipe.baseline && (
+      <section class="recipe-source">
+        <h2>Source</h2>
+        <p class="recipe-source__note">
+          This recipe ships its source as a typed Effect-TS run — the
+          recommended {recipe.mode}-mode shape.
+        </p>
+        {flareFiles.map(({ file, code }) => (
+          <figure class="recipe-file">
+            <figcaption>recipes/{recipe.slug}/{file.name}</figcaption>
+            <Code
+              code={code}
+              lang={file.lang}
+              themes={shikiThemes}
+              defaultColor="light"
+              wrap
+            />
+          </figure>
+        ))}
+      </section>
+      )}
 
       <nav class="page-nav" aria-label="Adjacent recipes">
         {
@@ -127,4 +355,27 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
     </article>
   </div>
   <MermaidRunner />
+
+  <script>
+    // Generic tab controller — drives both the top-level With/Without
+    // FlareDispatch tabs and the nested per-file (yaml / ts) sub-tabs.
+    // A tab carries `data-tab="<group>"` + `data-target="<panelId>"`; panels
+    // carry `data-panel="<group>"`. Mirrors the controller on the homepage
+    // snippets widget so the visual model is consistent.
+    for (const tab of document.querySelectorAll<HTMLElement>("[data-tab]")) {
+      tab.addEventListener("click", () => {
+        const group = tab.getAttribute("data-tab");
+        const target = tab.getAttribute("data-target");
+        if (!group || !target) return;
+        for (const t of document.querySelectorAll(`[data-tab="${group}"]`)) {
+          t.setAttribute("aria-selected", String(t === tab));
+        }
+        for (const p of document.querySelectorAll<HTMLElement>(
+          `[data-panel="${group}"]`,
+        )) {
+          p.toggleAttribute("hidden", p.id !== target);
+        }
+      });
+    }
+  </script>
 </BaseLayout>

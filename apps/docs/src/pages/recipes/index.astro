@@ -38,8 +38,14 @@ const sections = [
         Each recipe is a copy-paste starting point for wiring a real CI use case
         onto FlareDispatch — adjust the inputs and drop it into your repo. Every
         recipe ships a typed Effect-TS run (<code>*.run.ts</code>); Action-mode
-        recipes also ship a GitHub Actions workflow (<code>ci.yml</code>).
+        recipes also ship a thin GitHub Actions dispatcher (<code>ci.yml</code>).
         Recipes are grouped below by their recommended trigger mode.
+      </p>
+      <p class="docs-index__compare-hint">
+        Action- and Webhook-mode recipes also surface a <em>baseline</em> on
+        their page — the full GitHub Actions workflow you'd have to maintain
+        to do the same job <em>without</em> FlareDispatch — so the contrast
+        is in plain sight.
       </p>
     </header>
 

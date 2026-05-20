@@ -1,0 +1,302 @@
+# Recipe: AI code review — BASELINE (without FlareDispatch)
+#
+# This is what you would actually maintain on plain GitHub Actions to replicate
+# the multi-agent code reviewer described at https://blog.cloudflare.com/ai-code-review/.
+# It is shown here ONLY as a comparison — see ./pr-review.run.ts for the
+# FlareDispatch version (60 lines of typed Effect-TS that subsumes all of this).
+#
+# Notable costs of the GHA-only path:
+#   - Three jobs with explicit `needs:` chains because GHA has no in-job fan-out
+#     that can both read shared state AND produce per-shard artifacts.
+#   - Diff + per-file slicing has to round-trip through `actions/upload-artifact`
+#     so each matrix shard can see it (GHA does NOT share the workspace across
+#     jobs).
+#   - The matrix is hand-encoded because GHA cannot derive `matrix.include` from
+#     a previous job's output without a separate "matrix-from-json" pattern.
+#   - The coordinator step has to pull every per-agent artifact back down and
+#     re-glue them, then call the GitHub REST API by hand to post inline
+#     annotations (no first-class "check-run from JSON" action).
+#   - GHA minutes burned per PR: ~7 jobs × runner spin-up overhead.
+#   - Re-review continuity (prior findings) requires a separate
+#     actions/cache@v4 keyed on (repo, pr) AND opt-in cache-write semantics —
+#     and even then the cache is best-effort and may evict.
+#   - Schedule-mode sweep for missed PRs needs a SECOND workflow file with its
+#     own cron + a gh-cli loop that calls workflow_dispatch per PR.
+#
+# Everything below is real, runnable YAML. The placeholders `${{ ... }}` and
+# `# CONFIGURE:` markers are the parts you'd actually have to fill in.
+
+name: ai-code-review-baseline
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  # Schedule-mode sweep — re-review every open PR daily, since webhook
+  # deliveries can drop and PRs opened before this workflow existed are
+  # otherwise never reviewed.
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. Sweep-mode fan-out. A scheduled tick has no PR context, so we have to
+  #    enumerate open PRs ourselves and re-dispatch this workflow per PR via
+  #    workflow_dispatch. (FlareDispatch handles this with one `schedules:`
+  #    block on the run — see pr-review-sweep.run.ts.)
+  # --------------------------------------------------------------------------
+  sweep-enumerate:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            for (const pr of prs) {
+              if (pr.draft) continue;
+              if (pr.user.login.endsWith("[bot]")) continue;
+              if (pr.labels.some((l) => l.name === "skip-ai-review")) continue;
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: "ai-code-review-baseline.yml",
+                ref: pr.head.ref,
+                inputs: { pr_number: String(pr.number) },
+              });
+              // Stagger to avoid bursting the model provider.
+              await new Promise((r) => setTimeout(r, 5000));
+            }
+
+  # --------------------------------------------------------------------------
+  # 2. Gate: drafts / bots / opt-out label.
+  # --------------------------------------------------------------------------
+  gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+    steps:
+      - id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const labels = pr.labels.map((l) => l.name);
+            const isBot = pr.user.login.endsWith("[bot]");
+            const optOut = labels.includes("skip-ai-review");
+            const forceOnDraft = labels.includes("request-ai-review");
+            const draftBlocked = pr.draft && !forceOnDraft;
+            const shouldRun = !isBot && !optOut && !draftBlocked;
+            core.setOutput("should_run", String(shouldRun));
+
+  # --------------------------------------------------------------------------
+  # 3. Prepare the diff and classify risk tier. Outputs are consumed by the
+  #    matrix below — note we have to JSON-encode the agent list because GHA's
+  #    matrix strategy cannot read a step output directly.
+  # --------------------------------------------------------------------------
+  prepare-diff:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.classify.outputs.tier }}
+      model: ${{ steps.classify.outputs.model }}
+      agents_json: ${{ steps.classify.outputs.agents_json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install review-agent CLI
+        # CONFIGURE: review-agent is the multi-agent CLI from the blog post —
+        # you have to package and host it yourself; GHA runners do not have it.
+        run: |
+          curl -fsSL "https://example.com/review-agent/install.sh" | bash
+
+      - name: Slice diff into per-file patches
+        run: |
+          mkdir -p ./diff
+          review-agent diff \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --exclude lockfiles,minified,generated \
+            --out ./diff
+
+      - id: classify
+        name: Classify risk tier
+        run: |
+          tier=$(review-agent risk-tier --diff ./diff)
+          case "$tier" in
+            trivial) agents='["code-quality"]' ; model="sonnet" ;;
+            lite)    agents='["security","code-quality","performance","documentation"]' ; model="sonnet" ;;
+            *)       agents='["security","performance","code-quality","documentation","release-management","compliance","agents-md"]' ; model="opus" ;;
+          esac
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "agents_json=$agents" >> "$GITHUB_OUTPUT"
+
+      - name: Upload diff artifact (shared with matrix below)
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-diff
+          path: ./diff
+          retention-days: 1
+
+      # Best-effort: load this PR's previous findings so the coordinator can
+      # auto-resolve fixed threads. actions/cache is eviction-prone — the
+      # FlareDispatch equivalent (`io.priorExecution`) is durable.
+      - name: Restore prior findings (best-effort)
+        uses: actions/cache@v4
+        with:
+          path: ./previous.json
+          key: ai-review-prior-${{ github.repository }}-${{ github.event.pull_request.number }}
+
+  # --------------------------------------------------------------------------
+  # 4. Fan out one job per agent. Each job re-clones, re-installs the agent
+  #    CLI, downloads the diff artifact, runs its slice, uploads findings.
+  #    Every shard pays the GHA-runner cold-start tax independently.
+  # --------------------------------------------------------------------------
+  review:
+    needs: prepare-diff
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        agent: ${{ fromJSON(needs.prepare-diff.outputs.agents_json) }}
+    timeout-minutes: 12 # code-quality needs 10; we widen for all (no per-agent overrides in matrix).
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install review-agent CLI
+        run: curl -fsSL "https://example.com/review-agent/install.sh" | bash
+
+      - name: Download shared diff
+        uses: actions/download-artifact@v4
+        with:
+          name: review-diff
+          path: ./diff
+
+      - name: Run ${{ matrix.agent }}
+        env:
+          # CONFIGURE: model provider key. If you have N model providers you
+          # want to fail over to, you have to wire the retry loop manually.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p ./findings
+          review-agent run "${{ matrix.agent }}" \
+            --diff ./diff \
+            --tier "${{ needs.prepare-diff.outputs.tier }}" \
+            --out "./findings/${{ matrix.agent }}.json"
+
+      - name: Upload agent findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: findings-${{ matrix.agent }}
+          path: ./findings/${{ matrix.agent }}.json
+          retention-days: 1
+
+  # --------------------------------------------------------------------------
+  # 5. Coordinator: pull every per-agent artifact, dedup, write the combined
+  #    check-run + inline annotations. The annotations call requires a manual
+  #    GitHub REST round-trip per finding (or batched, capped at 50 per call).
+  # --------------------------------------------------------------------------
+  coordinate:
+    needs: [prepare-diff, review]
+    if: always() && needs.prepare-diff.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install review-agent CLI
+        run: curl -fsSL "https://example.com/review-agent/install.sh" | bash
+
+      - name: Download all agent findings
+        uses: actions/download-artifact@v4
+        with:
+          pattern: findings-*
+          path: ./findings
+          merge-multiple: true
+
+      - name: Coordinate
+        id: coord
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          previous_arg=""
+          if [ -f ./previous.json ]; then previous_arg="--previous ./previous.json"; fi
+          review-agent coordinate \
+            --in ./findings \
+            --model "${{ needs.prepare-diff.outputs.model }}" \
+            $previous_arg \
+            --json > ./review.json
+          # Persist for the next push's re-review (best-effort cache writeback).
+          cp ./review.json ./previous.json
+
+      - name: Save findings for next push
+        uses: actions/cache/save@v4
+        with:
+          path: ./previous.json
+          key: ai-review-prior-${{ github.repository }}-${{ github.event.pull_request.number }}
+
+      - name: Post check-run summary + inline annotations
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const review = JSON.parse(fs.readFileSync("./review.json", "utf8"));
+            // The annotations API caps at 50 per request — batch.
+            const annotations = review.findings.map((f) => ({
+              path: f.path,
+              start_line: f.startLine,
+              end_line: f.endLine,
+              annotation_level: f.level === "failure" ? "failure"
+                : f.level === "warning" ? "warning" : "notice",
+              title: f.title,
+              message: f.message,
+            }));
+            const conclusion =
+              review.verdict === "request-changes" ? "failure"
+              : review.verdict === "comment" ? "neutral"
+              : "success";
+
+            // Create the check-run.
+            const { data: cr } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: "ai-code-review",
+              head_sha: context.payload.pull_request.head.sha,
+              status: "completed",
+              conclusion,
+              output: {
+                title: `Review (${review.tier})`,
+                summary: `${review.critical} critical · ${review.warnings} warnings · ${review.suggestions} suggestions`,
+                annotations: annotations.slice(0, 50),
+              },
+            });
+            // Push remaining annotations (50 at a time).
+            for (let i = 50; i < annotations.length; i += 50) {
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: cr.id,
+                output: {
+                  title: `Review (${review.tier})`,
+                  summary: `${review.critical} critical · ${review.warnings} warnings · ${review.suggestions} suggestions`,
+                  annotations: annotations.slice(i, i + 50),
+                },
+              });
+            }
