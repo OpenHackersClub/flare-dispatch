@@ -52,7 +52,7 @@ import {
   type ChecksGithubConfig,
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
-import { cdpAcceptance, offloadTest } from "@flare-dispatch/runs";
+import { cdpAcceptance, numuDailyDemo, offloadTest } from "@flare-dispatch/runs";
 import type { Env } from "./env";
 
 /**
@@ -64,6 +64,7 @@ import type { Env } from "./env";
 const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
+  [numuDailyDemo.name]: numuDailyDemo as Run<unknown, unknown>,
 };
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */

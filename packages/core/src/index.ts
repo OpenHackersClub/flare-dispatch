@@ -17,6 +17,8 @@ export {
   type RunSpec,
   type RunLimits,
   type TriggerSpec,
+  type ScheduleSpec,
+  type ScheduleContext,
   type WebhookPayload,
 } from "./define-run";
 export { step, runEffect, type StepOpts } from "./step";
