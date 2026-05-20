@@ -15,7 +15,7 @@
 // --- Three design decisions, documented inline ------------------------------
 //
 // 1. Secrets are injected via `loadSecrets`, called INLINE (not in a `step`).
-//    The migration target (numu's acceptance-cf job) needs `CLERK_*` /
+//    The migration target (a webapp's acceptance-cf job) needs `CLERK_*` /
 //    `CLOUDFLARE_*` credentials to boot its dev servers. Rather than thread
 //    them through GHA repo secrets and the dispatch payload, the operator
 //    stores them in the FlareDispatch config store (KV); the run names the

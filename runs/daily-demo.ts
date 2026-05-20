@@ -1,4 +1,4 @@
-// `numu-daily-demo` — the FlareDispatch V3 Schedule-mode run.
+// `daily-demo` — the FlareDispatch V3 Schedule-mode run.
 //
 // First fully Schedule-mode-triggered run in the catalog. A Cloudflare Cron
 // Trigger fires the Dispatcher's `scheduled()` handler at 14:00 UTC daily; the
@@ -6,13 +6,13 @@
 // a RunWorkflow with the date-stamped `idempotencyKey` as the Workflow id.
 //
 // What the run does:
-//   1. Clones Numu-AI/numu-monorepo @ main into a CF Sandbox container.
+//   1. Clones the target webapp repo @ main into a CF Sandbox container.
 //   2. Installs deps (pnpm) + Playwright Chromium with system libs.
 //   3. Pulls Cloudflare Access + Clerk staging credentials from the config
 //      store (`staging/` prefix; see § Operator setup in the recipe README).
 //   4. Runs `qa/acceptance/playwright.demo.config.ts` against the deployed
-//      numu staging tier (`https://numu-webapp-staging.pages.dev`), with the
-//      same slowMo + video recording the `/demo-e2e` skill produces locally.
+//      staging tier, with the same slowMo + video recording the local
+//      `/demo-e2e` skill produces.
 //   5. Uploads video.webm + summary.md + trace.zip as signed-R2 artifacts —
 //      30-day TTL. The check-run summary links the three.
 //
@@ -34,8 +34,7 @@
 //    Playwright reads it.
 //
 // Spec: specs/04-gha-integration.md § Schedule mode,
-//       specs/03-dsl.md § schedules,
-//       (numu) .claude/skills/demo-e2e/SKILL.md — the local equivalent.
+//       specs/03-dsl.md § schedules.
 
 import { Effect, Schema } from "effect";
 import { artifact, defineRun, io, sandbox, step } from "@flare-dispatch/core";
@@ -46,15 +45,15 @@ const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
 /**
  * Input contract. A Schedule-mode run's cron tick carries no GitHub payload,
- * so `inputs` IS the run body — there is no PR / SHA to inherit. Defaults
- * track Numu-AI/numu-monorepo @ main; an operator can override per-deploy by
- * editing `schedules[].inputs` below if they need to point at a fork or pin
- * a SHA for a frozen demo.
+ * so `inputs` IS the run body — there is no PR / SHA to inherit. The defaults
+ * in `schedules[].inputs` below are placeholders; an operator MUST override
+ * them (either by editing this file pre-deploy or by sourcing the values from
+ * `CONFIG_KV`) to point at their webapp repo and deployed staging URL.
  */
-const NumuDailyDemoInput = Schema.Struct({
+const DailyDemoInput = Schema.Struct({
   /** Epoch ms — `controller.scheduledTime`. Used in the artifact run id. */
   firedAt: Schema.Number,
-  /** `"owner/name"` — the numu repo to clone for the demo spec. */
+  /** `"owner/name"` — the webapp repo to clone for the demo spec. */
   repo: Schema.String,
   /** Branch/ref/SHA — `git.clone` resolves a branch name to its tip. */
   ref: Schema.String,
@@ -72,7 +71,7 @@ const NumuDailyDemoInput = Schema.Struct({
  * code; non-zero is a failed demo but recorded as run output, not run failure
  * — the artifacts are still uploaded and worth watching.
  */
-const NumuDailyDemoOutput = Schema.Struct({
+const DailyDemoOutput = Schema.Struct({
   exitCode: Schema.Number,
   videoUri: Schema.String,
   summaryUri: Schema.String,
@@ -83,7 +82,7 @@ const NumuDailyDemoOutput = Schema.Struct({
 /**
  * The KV keys the run reads from the FlareDispatch config store. All four
  * MUST be populated under the `staging/` prefix before the cron fires —
- * see recipes/numu-daily-demo/README.md § Operator setup.
+ * see recipes/daily-demo/README.md § Operator setup.
  */
 const DEMO_SECRETS = [
   "STAGING_WEB_BASE",
@@ -92,18 +91,24 @@ const DEMO_SECRETS = [
   "VITE_CLERK_PUBLISHABLE_KEY",
 ] as const;
 
-/** The numu repo paths the demo spec + config live at — repo-relative. */
+/** Demo spec + config paths in the target repo — repo-relative. */
 const DEMO_SPEC_RELATIVE = "qa/acceptance/tests/demo-onboarding-creative.spec.ts";
 const DEMO_CONFIG_RELATIVE = "qa/acceptance/playwright.demo.config.ts";
-/** Where numu's playwright.demo.config.ts writes its outputDir, repo-relative. */
+/** Where the playwright.demo.config.ts writes its outputDir, repo-relative. */
 const DEMO_RUNS_DIR = ".tmp/demo-runs";
+/**
+ * pnpm workspace filter for the QA package in the target repo. Adjust to
+ * match your repo's package layout (e.g. `@your-org/qa`, `qa`, or drop the
+ * `--filter` flag entirely if Playwright is installed at the repo root).
+ */
+const DEMO_PNPM_FILTER = "@example/qa";
 
-export const numuDailyDemo = defineRun({
-  name: "numu-daily-demo",
+export const dailyDemo = defineRun({
+  name: "daily-demo",
   version: "1.0.0",
 
-  inputs: NumuDailyDemoInput,
-  outputs: NumuDailyDemoOutput,
+  inputs: DailyDemoInput,
+  outputs: DailyDemoOutput,
 
   limits: {
     // Generous; the demo spec is ~8 steps with slowMo=200ms + video capture +
@@ -121,17 +126,19 @@ export const numuDailyDemo = defineRun({
     {
       cron: "0 14 * * *",
       idempotencyKey: ({ firedAt }) =>
-        `numu-daily-demo:${isoDate(firedAt)}`,
+        `daily-demo:${isoDate(firedAt)}`,
       inputs: ({ firedAt }) => ({
         firedAt,
-        repo: "Numu-AI/numu-monorepo",
+        // OPERATOR: replace with your webapp repo (`"owner/name"`).
+        repo: "OWNER/REPO",
         ref: "main",
         sha: "main",
-        // The deployed Pages project. The config store also holds this value
-        // (loadSecrets pulls it as env) so the spec can read either source —
-        // we set the input as the canonical record; loadSecrets is the override
-        // path for the operator to swap envs without editing run code.
-        stagingBaseUrl: "https://numu-webapp-staging.pages.dev",
+        // OPERATOR: replace with your deployed Pages/Worker URL. The config
+        // store also holds this value (loadSecrets pulls it as env) so the
+        // spec can read either source — we set the input as the canonical
+        // record; loadSecrets is the override path for the operator to swap
+        // envs without editing run code.
+        stagingBaseUrl: "https://staging.example.com",
         slowMoMs: 200,
       }),
     },
@@ -141,7 +148,7 @@ export const numuDailyDemo = defineRun({
     Effect.gen(function* () {
       const runId = isoDate(input.firedAt);
 
-      // 1. Acquire container, clone numu @ ref, cached pnpm install.
+      // 1. Acquire container, clone repo @ ref, cached pnpm install.
       const { container, dir } = yield* step("checkout", () =>
         workspace({ repo: input.repo, sha: input.ref, install: true }),
       );
@@ -165,7 +172,7 @@ export const numuDailyDemo = defineRun({
           cwd: dir,
           container,
           command:
-            "pnpm --filter @numu/qa exec playwright install --with-deps chromium",
+            `pnpm --filter ${DEMO_PNPM_FILTER} exec playwright install --with-deps chromium`,
         }),
       );
 
@@ -191,7 +198,7 @@ export const numuDailyDemo = defineRun({
             DEMO_RUN_ID: runId,
             DEMO_SLOW_MO_MS: String(input.slowMoMs),
           },
-          command: `pnpm --filter @numu/qa exec playwright test --config ${DEMO_CONFIG_RELATIVE}`,
+          command: `pnpm --filter ${DEMO_PNPM_FILTER} exec playwright test --config ${DEMO_CONFIG_RELATIVE}`,
         }),
       );
 
@@ -231,7 +238,7 @@ export const numuDailyDemo = defineRun({
 
       yield* io.log(
         "info",
-        `numu-daily-demo runId=${runId} exit=${exec.exitCode}`,
+        `daily-demo runId=${runId} exit=${exec.exitCode}`,
       );
 
       return {
