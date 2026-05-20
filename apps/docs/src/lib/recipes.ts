@@ -154,6 +154,32 @@ export const recipes: Recipe[] = [
     hasReadme: false,
   },
   {
+    slug: "product-demo",
+    label: "Product demo",
+    useCase:
+      "AI-driven walkthrough video of a deployed site, with a per-story summary",
+    mode: "Action",
+    blurb:
+      "Hand a deployed URL and a list of user stories in prose; the `product-demo` run attaches Browser Rendering over CDP, records ONE master video while driving the site through each story sequentially, captures key screenshots, and writes a holistic markdown summary a reviewer pastes into the PR. Fires per-PR via `ci.yml` (Action mode), and ALSO carries an optional `schedules: [{ cron, inputs }]` block for a daily stakeholder-facing run against staging — same run code, both trigger paths.",
+    files: [
+      { name: "ci.yml", lang: "yaml" },
+      { name: "product-demo.run.ts", lang: "ts" },
+    ],
+    baseline: { name: "baseline.yml", lang: "yaml" },
+    baselinePains: [
+      "Playwright's `recordVideo` is per-`BrowserContext` — one story = one .webm, and there is no clean way to stitch them into one master video with chapter markers.",
+      "Every PR pays runner cold-start + `playwright install --with-deps chromium` (~60–90 s on a cold cache) before the first frame is recorded; FlareDispatch's `flare-dispatch-demo` image is warm and pre-baked.",
+      "`ANTHROPIC_API_KEY` is a GHA secret exposed to every step, postinstall, and third-party action in the job; the FlareDispatch agent lives inside the container image so the key never touches the runner.",
+      "Stories run sequentially against a shared browser, so the LLM round-trip per story burns GHA runner minutes while the model thinks — FlareDispatch containers scale to zero between deploys.",
+      "GitHub PR comments cannot embed video — the GHA `actions/upload-artifact` flow yields a download link the reviewer has to unzip and watch locally; FlareDispatch hands them a 30-day signed R2 URL they drop straight into the PR description.",
+    ],
+    shape: {
+      flare: "1 typed run + dispatch",
+      gha: "1 workflow · 1 job · Playwright + Anthropic SDK + per-context .webms",
+    },
+    hasReadme: true,
+  },
+  {
     slug: "security-scan",
     label: "Security scan",
     useCase: "Dependency / vulnerability scan, on PR and weekly",

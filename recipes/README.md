@@ -25,6 +25,8 @@ The **Recommended mode** column is the default each recipe is tuned for. See [sp
 | [browser-tests](browser-tests/) | Playwright e2e suite, sharded across the browser pool | Action | `ci.yml`, `playwright-e2e.run.ts`, `README.md` |
 | [test-matrix](test-matrix/) | Same command fanned out across N shards | Action | `ci.yml`, `matrix-fanout.run.ts`, `README.md` |
 | [cdp-acceptance](cdp-acceptance/) | Boot an app, drive it over CDP, assert on observations | Action | `ci.yml`, `cdp-acceptance.run.ts`, `README.md` |
+| [product-demo](product-demo/) | AI-driven walkthrough video of a deployed site, with a per-story summary | Action (+ Schedule) | `ci.yml`, `product-demo.run.ts`, `README.md` |
+
 | [security-scan](security-scan/) | Dependency / vulnerability scan, on PR and weekly | Action | `ci.yml`, `security-scan.run.ts`, `README.md` |
 | [deploy-smoke](deploy-smoke/) | Hit critical URLs after a successful deploy | Webhook | `smoke.run.ts`, `ci.yml`, `README.md` |
 | [nightly-e2e](nightly-e2e/) | Nightly Playwright suite across your deployed environments | Schedule | `nightly-e2e.run.ts`, `README.md` |
