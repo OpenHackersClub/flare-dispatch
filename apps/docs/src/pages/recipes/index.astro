@@ -15,6 +15,12 @@ const sections = [
     note: "Recommended trigger: the typed run's own triggers block — the FlareDispatch GitHub App webhook fires it directly, zero GHA minutes. An Action-mode ci.yml is included as the GHA-native alternative.",
     items: recipes.filter((r) => r.mode === "Webhook"),
   },
+  {
+    number: "03",
+    title: "Schedule mode",
+    note: "Recommended trigger: the typed run's own schedules block — a Cloudflare Cron Trigger fires it on a wall-clock cadence. No GitHub event, no GHA minutes, no workflow file; the cron expression also goes in wrangler.jsonc triggers.crons.",
+    items: recipes.filter((r) => r.mode === "Schedule"),
+  },
 ];
 ---
 
@@ -31,9 +37,9 @@ const sections = [
       <p>
         Each recipe is a copy-paste starting point for wiring a real CI use case
         onto FlareDispatch — adjust the inputs and drop it into your repo. Every
-        recipe ships both pieces — a typed Effect-TS run (<code>*.run.ts</code>)
-        and a GitHub Actions workflow (<code>ci.yml</code>) — so you can trigger it
-        either way. Recipes are grouped below by their recommended trigger mode.
+        recipe ships a typed Effect-TS run (<code>*.run.ts</code>); Action-mode
+        recipes also ship a GitHub Actions workflow (<code>ci.yml</code>).
+        Recipes are grouped below by their recommended trigger mode.
       </p>
     </header>
 
