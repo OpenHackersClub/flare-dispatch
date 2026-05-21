@@ -19,6 +19,7 @@ import type { Config } from "./services/config";
 import type { Executions } from "./services/executions";
 import type { Github } from "./services/github";
 import type { IO } from "./services/io";
+import type { Oidc } from "./services/oidc";
 import type { Sandbox } from "./services/sandbox";
 import type { StepRunner } from "./services/step-runner";
 
@@ -32,5 +33,6 @@ export type RunContext =
   | Config
   | Checks
   | Github
+  | Oidc
   | Executions
   | StepRunner;

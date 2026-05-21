@@ -85,6 +85,17 @@
     }
   ],
 
+  // Worker Secrets used by V0-V3 runtime (set with `wrangler secret put`):
+  //   HMAC_SECRET                — Action-mode dispatch HMAC
+  //   GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY  — check-runs callback auth
+  //   GITHUB_WEBHOOK_SECRET      — POST /v1/webhooks/github verify
+  //   ADMIN_TOKEN                — POST /v1/admin/events/:wf_id bearer
+  //   BROWSER_CDP_CONNECT_URL,
+  //   BROWSER_CDP_API_TOKEN      — V2 Browser Rendering connect
+  //   OIDC_SIGNING_JWK,
+  //   OIDC_ISSUER_URL            — V3.5 OIDC issuer (AWS STS federation)
+  // None of these are declared here — Worker Secrets are out-of-band by design.
+
   // Cron Triggers — the wall-clock heartbeat Schedule-mode runs subscribe to.
   // Each entry MUST also appear in some run's `schedules[].cron` in `runs/`;
   // the `scheduled()` handler in `apps/dispatcher/src/index.ts` routes the

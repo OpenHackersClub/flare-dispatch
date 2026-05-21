@@ -94,6 +94,23 @@ export interface Env {
   readonly ADMIN_TOKEN?: string;
 
   /**
+   * OIDC signing key — ES256 private JWK as a JSON string. Worker secret
+   * (`wrangler secret put OIDC_SIGNING_JWK < ./oidc-signing.jwk.json`).
+   * Pairs with `OIDC_ISSUER_URL` to back the live `oidc` capability and the
+   * `/.well-known/jwks.json` endpoint. Absent → `OidcDeferred` (a run that
+   * calls `oidc.sign` fails with `OidcSigningFailed`). Spec: 03-dsl § oidc.
+   */
+  readonly OIDC_SIGNING_JWK?: string;
+
+  /**
+   * OIDC issuer URL — the Worker's stable origin (e.g.
+   * `https://flare-dispatch.<account>.workers.dev`). Pinned by AWS / GCP
+   * trust policies, so it must match exactly what's registered as the
+   * OIDC provider. Worker secret (or var; semantics are the same).
+   */
+  readonly OIDC_ISSUER_URL?: string;
+
+  /**
    * Browser Rendering CDP `/connect` WebSocket URL — Worker secret. The
    * `cdp-acceptance` run hands this (with `BROWSER_CDP_API_TOKEN` appended) to
    * the container's Playwright process. Absent, the runtime degrades to the

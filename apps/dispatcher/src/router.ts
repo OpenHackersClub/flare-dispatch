@@ -25,6 +25,7 @@ import { handleArtifact } from "./routes/artifacts";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
 import { handleInstallNew, handleInstalled } from "./routes/github";
+import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
 import { handleGithubWebhook } from "./routes/webhook";
 
 const json = (body: unknown, status: number): Response =>
@@ -48,6 +49,30 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleHealth();
+  }
+
+  // OIDC issuer endpoints — public, unauthenticated (IdPs fetch them).
+  // GET /.well-known/openid-configuration
+  if (
+    segments.length === 2 &&
+    segments[0] === ".well-known" &&
+    segments[1] === "openid-configuration"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleOidcDiscovery(env);
+  }
+  // GET /.well-known/jwks.json
+  if (
+    segments.length === 2 &&
+    segments[0] === ".well-known" &&
+    segments[1] === "jwks.json"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleOidcJwks(env);
   }
 
   // POST /v1/dispatch/:run

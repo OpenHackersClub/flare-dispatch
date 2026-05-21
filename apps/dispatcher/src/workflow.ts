@@ -184,6 +184,19 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       checks: resolveChecksConfig(this.env, payload.github),
       configKv: this.env.CONFIG_KV,
       browser: resolveBrowserConfig(this.env),
+      // Wire the live OIDC signing Layer when both the JWK + issuer URL are
+      // configured. Subject defaults to `<run>:<execution-id>` so an IAM
+      // trust policy can scope a role to a single run+execution.
+      ...(this.env.OIDC_SIGNING_JWK !== undefined &&
+      this.env.OIDC_ISSUER_URL !== undefined
+        ? {
+            oidc: {
+              signingJwkJson: this.env.OIDC_SIGNING_JWK,
+              issuerUrl: this.env.OIDC_ISSUER_URL,
+              defaultSubject: `${payload.run}:${payload.executionId}`,
+            },
+          }
+        : {}),
     });
 
     // The execution program — the `finalize` boundary:

@@ -20,6 +20,9 @@ import {
   type ConfigService,
   Github,
   type GithubService,
+  Oidc,
+  OidcSigningFailed,
+  type OidcService,
 } from "@flare-dispatch/core";
 
 /** Browser — Browser Rendering binding deferred to V2 (PR9). */
@@ -65,6 +68,29 @@ export const GithubDeferred: Layer.Layer<Github> = Layer.succeed(
       Effect.die(
         "github.openPullRequests: not implemented in this deploy — V3 capability",
       ),
+  }))(),
+);
+
+/**
+ * Oidc — the fallback when a deploy has no `OIDC_SIGNING_JWK` secret. The
+ * Tag is always supplied so a run can be tested against the
+ * `OidcFake`; a live deploy without the signing key fails the run with a
+ * typed `OidcSigningFailed` rather than silently signing with a missing key.
+ * Wire `makeOidcRenderingLive(jwk, issuer)` when the secret is present.
+ */
+export const OidcDeferred: Layer.Layer<Oidc> = Layer.succeed(
+  Oidc,
+  ((): OidcService => ({
+    sign: () =>
+      Effect.fail(
+        new OidcSigningFailed({
+          reason: "key-load",
+          cause: "OIDC_SIGNING_JWK Worker secret not set on this deploy",
+        }),
+      ),
+    // `issuer()` returns the configured issuer URL even on a no-key deploy
+    // — the URL is operational metadata, not gated on key presence.
+    issuer: () => Effect.succeed("https://oidc-not-configured.local"),
   }))(),
 );
 
