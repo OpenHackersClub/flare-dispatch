@@ -41,30 +41,40 @@ export interface DispatchBody {
   };
 }
 
-/** Env-var sources the body is built from. Lifted so tests can inject. */
-export interface DispatchEnv {
-  readonly INPUT_RUN?: string;
-  readonly INPUT_ENDPOINT?: string;
-  readonly INPUT_HMAC_SECRET?: string;
-  readonly INPUT_INPUTS?: string;
-  readonly INPUT_INSTALLATION_ID?: string;
-  // `INPUT_MODE` defaults to `fire-and-forget` in action.yml. The CLI also
-  // treats absent/empty as `fire-and-forget` so non-Action callers don't have
-  // to set it explicitly.
-  readonly INPUT_MODE?: string;
-  readonly GITHUB_REPOSITORY?: string;
-  readonly GITHUB_REF?: string;
-  readonly GITHUB_SHA?: string;
-  readonly GITHUB_ACTOR?: string;
-  readonly GITHUB_RUN_ID?: string;
-  readonly GITHUB_JOB?: string;
-  readonly GITHUB_OUTPUT?: string;
-  readonly FLARE_RETRY_BACKOFF_MS?: string;
-}
+/**
+ * Env-var sources. A plain string-keyed map so tests can inject either the
+ * `INPUT_*` convention GitHub Actions uses, or any of the alternate names
+ * we accept for the same input (see `readInput`).
+ */
+export type DispatchEnv = Readonly<Record<string, string | undefined>>;
 
 /**
- * Assemble the dispatch body from `INPUT_*` + `GITHUB_*` env vars. Mirrors
- * the inline `node -e` script in `dispatch.sh` exactly — in particular:
+ * Resolve a GHA Action input name to the env-var name the runner sets.
+ *
+ * GitHub Actions exposes inputs as `INPUT_<NAME>` where `<NAME>` is the
+ * input name uppercased with **spaces** replaced by underscores — hyphens
+ * stay literal. So `hmac-secret` becomes `INPUT_HMAC-SECRET`, not
+ * `INPUT_HMAC_SECRET`. (This matches `@actions/core`'s `getInput` source.)
+ *
+ * For developer ergonomics (and to keep the unit tests readable) we ALSO
+ * accept the all-underscore form `INPUT_HMAC_SECRET` — whichever is set
+ * first wins. The old composite Action mapped its inputs explicitly via
+ * `env: INPUT_HMAC_SECRET: ${{ inputs.hmac-secret }}`, so that form is
+ * what the bash CLI used to see; we keep accepting it for forward-compat.
+ */
+const readInput = (env: DispatchEnv, name: string): string | undefined => {
+  const ghaCanonical = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
+  const underscored = `INPUT_${name.replace(/ /g, "_").replace(/-/g, "_").toUpperCase()}`;
+  const a = env[ghaCanonical];
+  if (a !== undefined && a !== "") return a;
+  const b = env[underscored];
+  if (b !== undefined && b !== "") return b;
+  return undefined;
+};
+
+/**
+ * Assemble the dispatch body from input + `GITHUB_*` env vars. Mirrors the
+ * inline `node -e` script the old `dispatch.sh` ran:
  *
  *   * `installation_id` defaults to `0` (not `undefined`).
  *   * `actor` is `undefined` when unset (and therefore omitted from the JSON).
@@ -74,15 +84,15 @@ export interface DispatchEnv {
 export const buildBody = (env: DispatchEnv): DispatchBody => {
   const runId = Number(env.GITHUB_RUN_ID ?? 0);
   return {
-    run: env.INPUT_RUN ?? "",
+    run: readInput(env, "run") ?? "",
     github: {
       repo: env.GITHUB_REPOSITORY ?? "",
       ref: env.GITHUB_REF ?? "refs/heads/main",
       sha: env.GITHUB_SHA ?? "",
       actor: env.GITHUB_ACTOR ? env.GITHUB_ACTOR : undefined,
-      installation_id: Number(env.INPUT_INSTALLATION_ID ?? 0),
+      installation_id: Number(readInput(env, "installation-id") ?? 0),
     },
-    inputs: JSON.parse(env.INPUT_INPUTS ?? "{}") as unknown,
+    inputs: JSON.parse(readInput(env, "inputs") ?? "{}") as unknown,
     trigger: {
       workflow_run_id: runId || undefined,
       job_id: env.GITHUB_JOB ? env.GITHUB_JOB : undefined,
@@ -111,16 +121,15 @@ export const signBytes = (secret: string, body: Uint8Array): string => {
 export const secretFingerprint = (secret: string): string =>
   createHash("sha256").update(secret).digest("hex").slice(0, 8);
 
-/** Read a required INPUT_* var; fail with a tagged error if missing. */
+/** Read a required Action input; fail with a tagged error if missing. */
 const requireInput = (
   env: DispatchEnv,
-  key: keyof DispatchEnv,
-  human: string,
+  name: string,
 ): Effect.Effect<string, MissingInput> => {
-  const value = env[key];
-  return value && value.length > 0
+  const value = readInput(env, name);
+  return value !== undefined
     ? Effect.succeed(value)
-    : Effect.fail(new MissingInput({ name: human }));
+    : Effect.fail(new MissingInput({ name }));
 };
 
 /** Strip a single trailing `/` from the endpoint, matching `${VAR%/}` in bash. */
@@ -276,16 +285,14 @@ export const runDispatch = (
     // V0 only supports fire-and-forget mode. Reject anything else before
     // touching the network — same message the composite "Validate mode" step
     // emitted, now folded into the JS-Action entry.
-    const mode = env.INPUT_MODE && env.INPUT_MODE.length > 0
-      ? env.INPUT_MODE
-      : "fire-and-forget";
+    const mode = readInput(env, "mode") ?? "fire-and-forget";
     if (mode !== "fire-and-forget") {
       return yield* Effect.fail(new BadMode({ mode }));
     }
 
-    const run = yield* requireInput(env, "INPUT_RUN", "run");
-    const endpointRaw = yield* requireInput(env, "INPUT_ENDPOINT", "endpoint");
-    const secret = yield* requireInput(env, "INPUT_HMAC_SECRET", "hmac-secret");
+    const run = yield* requireInput(env, "run");
+    const endpointRaw = yield* requireInput(env, "endpoint");
+    const secret = yield* requireInput(env, "hmac-secret");
 
     const endpoint = stripTrailingSlash(endpointRaw);
     const url = `${endpoint}/v1/dispatch/${run}`;

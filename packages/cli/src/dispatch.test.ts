@@ -397,4 +397,38 @@ describe("runDispatch", () => {
     const result = await Effect.runPromise(runDispatch({ env, fetch }));
     expect(result.executionId).toBe("01DEF");
   });
+
+  it("reads inputs via the GHA-canonical INPUT_HMAC-SECRET form (hyphen preserved)", async () => {
+    // GitHub Actions sets env vars for JS Action inputs as
+    // `INPUT_<UPPER(name.replace(' ','_'))>` — hyphens stay literal. The
+    // CLI must accept `INPUT_HMAC-SECRET` / `INPUT_INSTALLATION-ID` (the
+    // form the runner ACTUALLY sets) in addition to the all-underscore
+    // form the unit tests use.
+    const { fetch, calls } = mockFetch([
+      { status: 202, body: '{"executionId":"01GHA"}' },
+    ]);
+    // Build env using ONLY the hyphenated form for the inputs that have
+    // hyphens. Keep the no-hyphen inputs as-is.
+    const env: DispatchEnv = {
+      INPUT_RUN: "offload-test",
+      INPUT_ENDPOINT: "https://dispatcher.example.com",
+      "INPUT_HMAC-SECRET": SECRET,
+      INPUT_INPUTS: "{}",
+      "INPUT_INSTALLATION-ID": "999",
+      INPUT_MODE: "fire-and-forget",
+      GITHUB_REPOSITORY: "owner/test-repo",
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_SHA: "abc123",
+      FLARE_RETRY_BACKOFF_MS: "1",
+    };
+
+    const result = await Effect.runPromise(runDispatch({ env, fetch }));
+
+    expect(result.executionId).toBe("01GHA");
+    // The body the dispatcher saw should carry the hyphenated installation-id.
+    const body = JSON.parse(calls[0]?.body ?? "{}") as {
+      github: { installation_id: number };
+    };
+    expect(body.github.installation_id).toBe(999);
+  });
 });

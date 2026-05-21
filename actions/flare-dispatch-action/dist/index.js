@@ -28451,18 +28451,27 @@ var BadResponse = class extends Schema_exports.TaggedError()(
 };
 
 // src/dispatch.ts
+var readInput = (env, name) => {
+  const ghaCanonical = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
+  const underscored = `INPUT_${name.replace(/ /g, "_").replace(/-/g, "_").toUpperCase()}`;
+  const a = env[ghaCanonical];
+  if (a !== void 0 && a !== "") return a;
+  const b = env[underscored];
+  if (b !== void 0 && b !== "") return b;
+  return void 0;
+};
 var buildBody = (env) => {
   const runId = Number(env.GITHUB_RUN_ID ?? 0);
   return {
-    run: env.INPUT_RUN ?? "",
+    run: readInput(env, "run") ?? "",
     github: {
       repo: env.GITHUB_REPOSITORY ?? "",
       ref: env.GITHUB_REF ?? "refs/heads/main",
       sha: env.GITHUB_SHA ?? "",
       actor: env.GITHUB_ACTOR ? env.GITHUB_ACTOR : void 0,
-      installation_id: Number(env.INPUT_INSTALLATION_ID ?? 0)
+      installation_id: Number(readInput(env, "installation-id") ?? 0)
     },
-    inputs: JSON.parse(env.INPUT_INPUTS ?? "{}"),
+    inputs: JSON.parse(readInput(env, "inputs") ?? "{}"),
     trigger: {
       workflow_run_id: runId || void 0,
       job_id: env.GITHUB_JOB ? env.GITHUB_JOB : void 0
@@ -28474,9 +28483,9 @@ var signBytes = (secret2, body) => {
   return `sha256=${hex}`;
 };
 var secretFingerprint = (secret2) => (0, import_node_crypto.createHash)("sha256").update(secret2).digest("hex").slice(0, 8);
-var requireInput = (env, key, human) => {
-  const value5 = env[key];
-  return value5 && value5.length > 0 ? Effect_exports.succeed(value5) : Effect_exports.fail(new MissingInput({ name: human }));
+var requireInput = (env, name) => {
+  const value5 = readInput(env, name);
+  return value5 !== void 0 ? Effect_exports.succeed(value5) : Effect_exports.fail(new MissingInput({ name }));
 };
 var stripTrailingSlash = (s) => s.endsWith("/") ? s.slice(0, -1) : s;
 var backoffMs = (env) => {
@@ -28547,13 +28556,13 @@ var postOnce = (url2, body, signature, attempt, fetchImpl, localFingerprint) => 
 var runDispatch = (deps) => Effect_exports.gen(function* () {
   const env = deps.env;
   const fetchImpl = deps.fetch ?? defaultFetch;
-  const mode = env.INPUT_MODE && env.INPUT_MODE.length > 0 ? env.INPUT_MODE : "fire-and-forget";
+  const mode = readInput(env, "mode") ?? "fire-and-forget";
   if (mode !== "fire-and-forget") {
     return yield* Effect_exports.fail(new BadMode({ mode }));
   }
-  const run3 = yield* requireInput(env, "INPUT_RUN", "run");
-  const endpointRaw = yield* requireInput(env, "INPUT_ENDPOINT", "endpoint");
-  const secret2 = yield* requireInput(env, "INPUT_HMAC_SECRET", "hmac-secret");
+  const run3 = yield* requireInput(env, "run");
+  const endpointRaw = yield* requireInput(env, "endpoint");
+  const secret2 = yield* requireInput(env, "hmac-secret");
   const endpoint = stripTrailingSlash(endpointRaw);
   const url2 = `${endpoint}/v1/dispatch/${run3}`;
   const body = buildBody(env);
