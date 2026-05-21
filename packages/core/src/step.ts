@@ -75,15 +75,16 @@ type StepFn = {
 
   /**
    * Hibernate the Workflow until an external event arrives, or time out.
-   * Not implemented in V0 — the Dispatcher signalling route lands with the
-   * first human-in-the-loop run (specs/pm/plan.md § 2).
+   * Delegates to the ambient `StepRunner.waitForEvent` — the inline runner
+   * reads from a test-supplied event queue; `StepRunnerCloudflare` wraps the
+   * CF `WorkflowStep.waitForEvent` API.
    */
-  readonly waitForEvent: <P>(
+  readonly waitForEvent: <P, I = unknown>(
     name: string,
     opts: {
       type: string;
       timeout: Duration.Duration | string;
-      payloadSchema: Schema.Schema<P, unknown>;
+      payloadSchema: Schema.Schema<P, I>;
     },
   ) => Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext>;
 };
@@ -95,12 +96,12 @@ const stepImpl = <A, E>(
 ): Effect.Effect<A, E | StepFailed, RunContext> =>
   Effect.flatMap(StepRunner, (runner) => runner.run(name, body, opts));
 
-const waitForEvent = <P>(
+const waitForEvent = <P, I>(
   name: string,
   opts: {
     type: string;
     timeout: Duration.Duration | string;
-    payloadSchema: Schema.Schema<P, unknown>;
+    payloadSchema: Schema.Schema<P, I>;
   },
 ): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext> =>
   Effect.flatMap(StepRunner, (runner) => runner.waitForEvent(name, opts));

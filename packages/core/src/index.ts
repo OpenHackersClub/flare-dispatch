@@ -57,6 +57,13 @@ export {
 } from "./services/io";
 export { config, Config, type ConfigService } from "./services/config";
 export {
+  github,
+  Github,
+  type GithubService,
+  type RepoRef,
+  type PullRequestRef,
+} from "./services/github";
+export {
   checks,
   Checks,
   type ChecksService,

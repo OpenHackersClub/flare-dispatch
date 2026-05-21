@@ -39,6 +39,11 @@ import {
   makeConfigFake,
 } from "./fakes/misc-fakes";
 import {
+  GithubFake,
+  type GithubFakeState,
+  makeGithubFake,
+} from "./fakes/github-fake";
+import {
   makeSandboxFake,
   SandboxFake,
   type SandboxFakeState,
@@ -85,6 +90,11 @@ export {
   makeConfigFake,
 } from "./fakes/misc-fakes";
 export {
+  GithubFake,
+  makeGithubFake,
+  type GithubFakeState,
+} from "./fakes/github-fake";
+export {
   SandboxFake,
   makeSandboxFake,
   sandboxFakeProgram,
@@ -117,6 +127,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   IOFake,
   ConfigFake,
   ChecksFake,
+  GithubFake,
   ExecutionsFake,
   // StepRunnerInline needs Executions + IO — supply them from the merge above.
   Layer.provide(StepRunnerInline, Layer.merge(ExecutionsFake, IOFake)),
@@ -130,6 +141,7 @@ export type CFRuntimeTestHandles = {
   readonly io: IOFakeState;
   readonly checks: ChecksFakeState;
   readonly executions: ExecutionsFakeState;
+  readonly github: GithubFakeState;
   /** The inline runner's event queue — feed `step.waitForEvent` from tests. */
   readonly eventQueue: import("./fakes/step-runner-inline").InlineEventQueue;
 };
@@ -141,6 +153,8 @@ export type CFRuntimeTestOptions = {
   readonly browser?: Parameters<typeof makeBrowserFake>[0];
   /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
   readonly config?: Record<string, string>;
+  /** Github fake seed — repos + PRs returned by `github.*`. */
+  readonly github?: Parameters<typeof makeGithubFake>[0];
   /** the execution id `StepRunnerInline` records steps under. */
   readonly executionId?: string;
   /** IO fake clock options. */
@@ -168,6 +182,7 @@ export const makeCFRuntimeTest = (
   const artifact = makeArtifactFake();
   const io = makeIOFake(opts.io);
   const checks = makeChecksFake();
+  const github = makeGithubFake(opts.github);
   const executions = makeExecutionsFake();
   const eventQueue = opts.eventQueue ?? new Map<string, unknown[]>();
   const stepRunner = makeStepRunnerInline({
@@ -183,6 +198,7 @@ export const makeCFRuntimeTest = (
     io.layer,
     makeConfigFake(opts.config),
     checks.layer,
+    github.layer,
     executions.layer,
     Layer.provide(stepRunner, Layer.merge(executions.layer, io.layer)),
   );
@@ -195,6 +211,7 @@ export const makeCFRuntimeTest = (
       artifact: artifact.state,
       io: io.state,
       checks: checks.state,
+      github: github.state,
       executions: executions.state,
       eventQueue,
     },

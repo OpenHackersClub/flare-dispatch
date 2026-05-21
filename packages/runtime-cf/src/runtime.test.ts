@@ -34,7 +34,7 @@ import { CacheFake, sandboxFakeProgram } from "@flare-dispatch/core/testing";
 import { offloadTest } from "@flare-dispatch/runs";
 import { makeR2ArtifactLive } from "./artifact-r2";
 import { makeChecksGithubLive } from "./checks-github";
-import { BrowserDeferred, ConfigDeferred } from "./deferred";
+import { BrowserDeferred, ConfigDeferred, GithubDeferred } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
 import { makeStepRunnerCloudflare } from "./step-runner-cf";
@@ -75,6 +75,7 @@ const makeRuntimeUnderTest = (
     artifact,
     io,
     ConfigDeferred,
+    GithubDeferred,
     // No App credentials in this Miniflare suite → the no-op `Checks` Layer.
     makeChecksGithubLive(undefined),
     executions,

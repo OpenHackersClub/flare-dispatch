@@ -29,7 +29,7 @@ import {
   makeChecksGithubLive,
 } from "./checks-github";
 import { makeConfigKvLive } from "./config-kv";
-import { BrowserDeferred, ConfigDeferred } from "./deferred";
+import { BrowserDeferred, ConfigDeferred, GithubDeferred } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
 import { makeSandboxCloudflareLive } from "./sandbox-cf";
@@ -129,6 +129,7 @@ export const makeCFRuntimeLive = (
     io,
     config,
     checks,
+    GithubDeferred,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.
     Layer.provide(stepRunner, Layer.merge(executions, io)),

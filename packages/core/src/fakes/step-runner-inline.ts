@@ -117,7 +117,7 @@ export const makeStepRunnerInline = (
         // present payload → decode + return; empty queue → `ApprovalTimedOut`
         // immediately. The fake never sleeps; tests that want to assert the
         // timeout path call `waitForEvent` with no queued event.
-        waitForEvent: <P>(
+        waitForEvent: <P, I>(
           _name: string,
           {
             type,
@@ -126,7 +126,7 @@ export const makeStepRunnerInline = (
           }: {
             type: string;
             timeout: Duration.Duration | string;
-            payloadSchema: Schema.Schema<P, unknown>;
+            payloadSchema: Schema.Schema<P, I>;
           },
         ): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid> =>
           Effect.suspend((): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid> => {

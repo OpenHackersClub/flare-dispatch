@@ -17,6 +17,7 @@ import type { Cache } from "./services/cache";
 import type { Checks } from "./services/checks";
 import type { Config } from "./services/config";
 import type { Executions } from "./services/executions";
+import type { Github } from "./services/github";
 import type { IO } from "./services/io";
 import type { Sandbox } from "./services/sandbox";
 import type { StepRunner } from "./services/step-runner";
@@ -30,5 +31,6 @@ export type RunContext =
   | IO
   | Config
   | Checks
+  | Github
   | Executions
   | StepRunner;

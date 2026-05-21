@@ -36,7 +36,7 @@ export {
   NOOP_CHECK_RUN_ID,
   type ChecksGithubConfig,
 } from "./checks-github";
-export { BrowserDeferred, ConfigDeferred } from "./deferred";
+export { BrowserDeferred, ConfigDeferred, GithubDeferred } from "./deferred";
 
 // --- The Sandbox Durable Object class ----------------------------------------
 // Re-exported so `apps/dispatcher` can `extends` it for the `RUNS_SANDBOX`

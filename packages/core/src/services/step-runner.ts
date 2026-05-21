@@ -52,12 +52,12 @@ export interface StepRunnerService {
     opts?: StepOpts,
   ) => Effect.Effect<A, E | StepFailed, RunContext>;
 
-  readonly waitForEvent: <P>(
+  readonly waitForEvent: <P, I = unknown>(
     name: string,
     opts: {
       type: string;
       timeout: Duration.Duration | string;
-      payloadSchema: Schema.Schema<P, unknown>;
+      payloadSchema: Schema.Schema<P, I>;
     },
   ) => Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext>;
 }

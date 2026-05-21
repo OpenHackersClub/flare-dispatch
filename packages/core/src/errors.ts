@@ -76,6 +76,44 @@ export class SecretsMissing extends Schema.TaggedError<SecretsMissing>()(
   { keys: Schema.Array(Schema.String) },
 ) {}
 
+export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
+  "GitHubApiError",
+  {
+    status: Schema.Number,
+    reason: Schema.Literal(
+      "rate-limited",
+      "unauthorized",
+      "transient",
+      "other",
+    ),
+    retryAfterMs: Schema.optional(Schema.Number),
+  },
+) {}
+
+export class OidcSigningFailed extends Schema.TaggedError<OidcSigningFailed>()(
+  "OidcSigningFailed",
+  {
+    // "key-load" — signing key absent or malformed;
+    // "subtle-sign" — WebCrypto SubtleCrypto.sign rejected.
+    reason: Schema.Literal("key-load", "subtle-sign"),
+    cause: Schema.Unknown,
+  },
+) {}
+
+export class StsAssumeRoleFailed extends Schema.TaggedError<StsAssumeRoleFailed>()(
+  "StsAssumeRoleFailed",
+  {
+    provider: Schema.Literal("aws", "gcp", "azure", "other"),
+    status: Schema.Number,
+    reason: Schema.Literal(
+      "mistrusted-issuer",
+      "role-mismatch",
+      "audience-mismatch",
+      "other",
+    ),
+  },
+) {}
+
 /** The closed union of every error a run can fail with. */
 export type RunError =
   | CheckoutFailed
@@ -89,4 +127,7 @@ export type RunError =
   | StepFailed
   | ApprovalTimedOut
   | EventPayloadInvalid
-  | SecretsMissing;
+  | SecretsMissing
+  | GitHubApiError
+  | OidcSigningFailed
+  | StsAssumeRoleFailed;
