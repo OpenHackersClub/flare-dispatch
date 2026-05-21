@@ -223,13 +223,27 @@ A manifest ships in `infra/github-app-manifest.json`:
 }
 ```
 
+### Manifest-exchange flow (implemented)
+
+The Dispatcher hosts the two endpoints the manifest flow needs:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/github/start[?org=<slug>]` | Renders an HTML page that POSTs `infra/github-app-manifest.json` to GitHub's `/settings/apps/new` (org-scoped if `?org=` is set). Carries a signed `state` token in the action URL. |
+| `GET` | `/v1/github/installed` | GitHub's callback. Verifies `state` against `HMAC_SECRET`, exchanges `code` via `POST https://api.github.com/app-manifests/{code}/conversions`, and renders App ID + webhook secret + PEM with copy-ready `wrangler secret put` snippets. |
+
+`state` is HMAC-signed under the Dispatcher's existing `HMAC_SECRET` (input-prefix-namespaced as `github-state.v1.<ts>.<nonce>` so the same key can't be confused with a dispatch MAC). 5-minute TTL; truncated to 128 bits.
+
 Setup:
 
-1. POST the manifest to `https://github.com/settings/apps/new?state=<random>` (or use GitHub's "Create from manifest" flow).
-2. GitHub redirects to your endpoint with a code; the Dispatcher exchanges it for the App credentials and prints them.
-3. Stash `app_id`, `webhook_secret`, and `private_key` into Worker Secrets.
-4. Install the App on the org or specific repos you want to use it with.
-5. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually.
+1. `pnpm cli github-app create --endpoint https://<your-dispatcher> [--org <slug>]` prints a URL.
+2. Open it. The page shows the manifest about to be submitted; click **Continue to GitHub**.
+3. GitHub creates the App and redirects to `/v1/github/installed?code=...&state=...`.
+4. The Dispatcher exchanges the code and renders the credentials with `wrangler secret put GITHUB_APP_ID / GITHUB_WEBHOOK_SECRET / GITHUB_APP_PRIVATE_KEY` commands. Paste them into a terminal.
+5. Click the **Install on org** link at the bottom of the same page. Choose all repos or specific ones.
+6. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually.
+
+The single-use manifest code expires one hour after issue. The credentials page renders only on the first load — if you navigate away before pasting the PEM into `wrangler secret put`, regenerate the private key from the App's GitHub settings page (App ID + webhook secret remain visible there).
 
 ## First deploy walkthrough
 

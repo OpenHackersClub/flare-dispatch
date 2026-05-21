@@ -8,6 +8,7 @@ packages:
 # ran implicitly; allowing them keeps `pnpm install` from erroring with
 # ERR_PNPM_IGNORED_BUILDS after the bump to pnpm 11.
 allowBuilds:
+  '@parcel/watcher': true
   esbuild: true
   msw: true
   sharp: true

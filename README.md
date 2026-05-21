@@ -43,11 +43,9 @@ wrangler r2 bucket create flare-dispatch-v0
 wrangler d1 create flare-dispatch-v0
 wrangler d1 execute flare-dispatch-v0 --remote --file infra/d1-schema.sql
 
-# Set secrets
+# Set the one secret you need up front. The App credentials are minted in the
+# next step and stashed afterwards.
 wrangler secret put HMAC_SECRET                          # openssl rand -base64 32
-wrangler secret put GITHUB_APP_ID                        # numeric App id
-wrangler secret put GITHUB_APP_PRIVATE_KEY < ./app.pem   # piped from the PEM
-wrangler secret put GITHUB_WEBHOOK_SECRET                # not used in V0, but expected
 
 wrangler deploy
 # Note the deployed URL, e.g. https://flare-dispatch-v0.<account>.workers.dev
@@ -56,7 +54,18 @@ curl -fsS https://flare-dispatch-v0.<account>.workers.dev/health
 # {"status":"ok","runs":["offload-test"]}
 ```
 
-Install the `FlareDispatch` GitHub App on the repos you want to use it with (manifest in [`infra/github-app-manifest.json`](infra/github-app-manifest.json)). Full walkthrough: [`specs/05-byoc.md`](specs/05-byoc.md).
+Create and install the `FlareDispatch` GitHub App on your org via the manifest-exchange flow ([`infra/github-app-manifest.json`](infra/github-app-manifest.json) is the manifest GitHub receives):
+
+```sh
+pnpm cli github-app create \
+  --endpoint https://flare-dispatch-v0.<account>.workers.dev \
+  --org OpenHackersClub
+# prints: https://flare-dispatch-v0.<account>.workers.dev/v1/github/start?org=OpenHackersClub
+```
+
+Open the URL, click **Continue to GitHub**, approve the manifest. The Dispatcher redirects the browser back to its own `/v1/github/installed` callback, which shows the App ID, webhook secret, and PEM along with pre-built `wrangler secret put GITHUB_APP_ID / GITHUB_WEBHOOK_SECRET / GITHUB_APP_PRIVATE_KEY` commands. Paste those into a terminal. Then click the **Install on org** link on the same page.
+
+Full walkthrough: [`specs/05-byoc.md`](specs/05-byoc.md).
 
 ### 2. Wire the GHA Action into a repo
 
@@ -88,7 +97,7 @@ The Action HMAC-signs the dispatch and POSTs it; the run's result lands on the P
 ```
 flare-dispatch/
 ├── apps/dispatcher/         Dispatcher Worker — HMAC verify, routes, RunWorkflow
-├── packages/                @flare-dispatch/{core,runtime-cf,github-app}
+├── packages/                @flare-dispatch/{core,runtime-cf,github-app,cli}
 ├── runs/                    offload-test (the V0 run)
 ├── actions/                 flare-dispatch-action — composite GHA Action
 ├── infra/                   D1 schema, container Dockerfile, App manifest

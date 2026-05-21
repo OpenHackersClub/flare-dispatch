@@ -16,6 +16,9 @@ import { describe, expect, it } from "vitest";
 import { handleRequest } from "./router";
 import { sign } from "./hmac";
 import { makeFakeEnv, makeFakeR2, makeFakeWorkflow } from "./test-helpers";
+import { handleGithubStart } from "./routes/github-start";
+import { handleGithubInstalled } from "./routes/github-installed";
+import { signState } from "./github-state";
 
 const HMAC_SECRET = "acceptance-test-secret-please-rotate";
 
@@ -301,5 +304,242 @@ describe("unmatched routes", () => {
       env,
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// GitHub App manifest-exchange routes (specs/05-byoc.md § GitHub App setup).
+// These tests drive the router with hand-built Requests; the
+// /v1/github/installed handler talks to api.github.com, so the per-handler
+// tests stub `fetch` via the `opts.fetchImpl` seam. Router-level tests here
+// only confirm the routes are wired and basic param handling works.
+
+describe("GET /v1/github/start (router wiring)", () => {
+  it("router → handleGithubStart → 200 HTML containing a form to github.com", async () => {
+    const { env } = fixture();
+    const res = await handleRequest(
+      new Request("https://dispatcher.example/v1/github/start"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/text\/html/);
+    const body = await res.text();
+    expect(body).toContain('action="https://github.com/settings/apps/new?state=');
+    expect(body).toContain('name="manifest"');
+  });
+
+  it("405s a non-GET on /v1/github/start", async () => {
+    const { env } = fixture();
+    const res = await handleRequest(
+      new Request("https://dispatcher.example/v1/github/start", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+});
+
+describe("GET /v1/github/start (handler)", () => {
+  it("org=<slug> targets the org-scoped GitHub URL", async () => {
+    const { env } = fixture();
+    const res = await handleGithubStart(
+      new Request(
+        "https://dispatcher.example/v1/github/start?org=OpenHackersClub",
+      ),
+      env,
+      { now: 1_700_000_000, nonce: "0123456789abcdef" },
+    );
+    const body = await res.text();
+    expect(body).toContain(
+      'action="https://github.com/organizations/OpenHackersClub/settings/apps/new?state=',
+    );
+  });
+
+  it("rejects an org slug that doesn't match GitHub's slug charset", async () => {
+    const { env } = fixture();
+    const res = await handleGithubStart(
+      new Request(
+        "https://dispatcher.example/v1/github/start?org=bad%20slug",
+      ),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toBe("invalid_org");
+  });
+
+  it("rewrites the manifest URLs to the inbound request's origin", async () => {
+    // The manifest the operator clicks through to GitHub must point hook +
+    // redirect at THIS Dispatcher, not the placeholder runs.example.com. The
+    // builder learns the base URL from the request, so a Worker accessed via
+    // a custom domain ends up with that domain in the manifest automatically.
+    const { env } = fixture();
+    const res = await handleGithubStart(
+      new Request(
+        "https://flare-dispatch-v0.acme.workers.dev/v1/github/start",
+      ),
+      env,
+      { now: 1_700_000_000, nonce: "0123456789abcdef" },
+    );
+    const body = await res.text();
+    expect(body).toContain(
+      "https://flare-dispatch-v0.acme.workers.dev/v1/webhooks/github",
+    );
+    expect(body).toContain(
+      "https://flare-dispatch-v0.acme.workers.dev/v1/github/installed",
+    );
+  });
+});
+
+describe("GET /v1/github/installed", () => {
+  /** Mint a `state` that verifies under the test fixture's HMAC_SECRET. */
+  const issueState = (ts: number): Promise<string> =>
+    signState(HMAC_SECRET, ts, "0123456789abcdef");
+
+  /** A successful manifest-conversion response from api.github.com. */
+  const goodConversion = () => ({
+    id: 123456,
+    slug: "flaredispatch-ohc",
+    name: "FlareDispatch",
+    html_url: "https://github.com/apps/flaredispatch-ohc",
+    pem: "-----BEGIN RSA PRIVATE KEY-----\nMIIE...fake...\n-----END RSA PRIVATE KEY-----\n",
+    webhook_secret: "dGVzdC13ZWJob29rLXNlY3JldA==",
+    owner: { login: "OpenHackersClub" },
+  });
+
+  /** Fake `fetch` that returns a 200 JSON body. */
+  const fakeFetch = (body: unknown, status = 200): typeof fetch =>
+    (async () =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+
+  it("400s when `code` or `state` is missing", async () => {
+    const { env } = fixture();
+    const res = await handleGithubInstalled(
+      new Request("https://dispatcher.example/v1/github/installed?code=abc"),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("Missing");
+  });
+
+  it("400s when `state` does not verify", async () => {
+    const { env } = fixture();
+    const res = await handleGithubInstalled(
+      new Request(
+        "https://dispatcher.example/v1/github/installed?code=abc&state=bogus",
+      ),
+      env,
+      { now: 1_700_000_000 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/state did not verify/i);
+  });
+
+  it("400s when `state` has expired", async () => {
+    const { env } = fixture();
+    const ts = 1_700_000_000;
+    const state = await issueState(ts);
+    // Verify 10 minutes later — past the 5-min TTL.
+    const res = await handleGithubInstalled(
+      new Request(
+        `https://dispatcher.example/v1/github/installed?code=abc&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+      { now: ts + 600 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/expired/i);
+  });
+
+  it("calls GitHub with the documented endpoint + version header", async () => {
+    const { env } = fixture();
+    const ts = 1_700_000_000;
+    const state = await issueState(ts);
+
+    let seenUrl = "";
+    let seenHeaders: Headers | undefined;
+    const recordingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seenUrl = typeof input === "string" ? input : input.toString();
+      seenHeaders = new Headers(init?.headers);
+      return new Response(JSON.stringify(goodConversion()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    await handleGithubInstalled(
+      new Request(
+        `https://dispatcher.example/v1/github/installed?code=mfst-code-xyz&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+      { now: ts, fetchImpl: recordingFetch },
+    );
+
+    expect(seenUrl).toBe(
+      "https://api.github.com/app-manifests/mfst-code-xyz/conversions",
+    );
+    expect(seenHeaders?.get("x-github-api-version")).toBe("2022-11-28");
+    expect(seenHeaders?.get("accept")).toBe("application/vnd.github+json");
+  });
+
+  it("renders App ID + webhook secret + PEM + install link on success", async () => {
+    const { env } = fixture();
+    const ts = 1_700_000_000;
+    const state = await issueState(ts);
+    const creds = goodConversion();
+
+    const res = await handleGithubInstalled(
+      new Request(
+        `https://dispatcher.example/v1/github/installed?code=mfst-code-xyz&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+      { now: ts, fetchImpl: fakeFetch(creds) },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("✓ App created");
+    expect(body).toContain(String(creds.id));
+    expect(body).toContain(creds.webhook_secret);
+    expect(body).toContain("-----BEGIN RSA PRIVATE KEY-----");
+    expect(body).toContain(`${creds.html_url}/installations/new`);
+    expect(body).toContain("wrangler secret put GITHUB_APP_ID");
+  });
+
+  it("does NOT cache + does NOT leak referrer on the success page", async () => {
+    const { env } = fixture();
+    const ts = 1_700_000_000;
+    const state = await issueState(ts);
+    const res = await handleGithubInstalled(
+      new Request(
+        `https://dispatcher.example/v1/github/installed?code=c&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+      { now: ts, fetchImpl: fakeFetch(goodConversion()) },
+    );
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
+  it("surfaces GitHub exchange failures with the original status + body", async () => {
+    const { env } = fixture();
+    const ts = 1_700_000_000;
+    const state = await issueState(ts);
+    const errorFetch = (async () =>
+      new Response("code expired or already used", {
+        status: 404,
+        headers: { "content-type": "text/plain" },
+      })) as unknown as typeof fetch;
+
+    const res = await handleGithubInstalled(
+      new Request(
+        `https://dispatcher.example/v1/github/installed?code=stale&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+      { now: ts, fetchImpl: errorFetch },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("code expired or already used");
   });
 });
