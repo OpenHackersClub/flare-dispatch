@@ -1,0 +1,32 @@
+{
+  "name": "@flare-dispatch/cli",
+  "version": "0.0.0",
+  "description": "FlareDispatch CLI — Effect-TS port of the GHA Action's dispatch.sh.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "flare-dispatch": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "cli": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/cli": "^0.75.1",
+    "@effect/platform": "^0.96.0",
+    "@effect/platform-node": "^0.106.0",
+    "effect": "^3.21.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "0.14.9",
+    "@types/node": "^22.19.19",
+    "tsx": "^4.22.3",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
