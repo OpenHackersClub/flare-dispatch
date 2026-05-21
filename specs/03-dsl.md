@@ -561,6 +561,58 @@ namespace github {
 
 `github` is deliberately **read-only and narrow**. Writing to GitHub is the Dispatcher's job and stays there — a run produces `findings` and an output, and the Dispatcher renders the check-run. The capability exists so a run can *discover what to act on*, not so it can act on GitHub directly. `GitHubApiError` ([§ Errors](#errors)) is a transient-friendly tagged error: a `403` secondary-rate-limit is retryable on a `Schedule`, a `401` (revoked installation) is not.
 
+### `oidc`
+
+The Dispatcher Worker is a **first-class OIDC issuer**. The `oidc` capability mints short-lived JWTs against a stable signing key whose public half is served at the Worker's `/.well-known/jwks.json` (with `/.well-known/openid-configuration` for discovery). Any IdP that trusts the Worker's issuer URL — AWS STS, GCP STS, HashiCorp Vault, an internal auth service — can federate against those tokens to issue scoped, short-lived credentials. **No long-lived cloud-provider keys land in Worker Secrets.**
+
+```ts
+type OidcToken = {
+  jwt: string;                                  // compact-serialised JWS
+  expiresAt: number;                            // epoch ms
+};
+
+namespace oidc {
+  // Sign a fresh OIDC token. `audience` is the IdP-specific value the IdP's
+  // trust policy pins (e.g. "sts.amazonaws.com" for AWS, the resource URL
+  // for GCP STS). `subject` defaults to `<run-name>:<execution-id>` so an
+  // IAM trust policy can scope a role to a *specific run*.
+  declare const sign: (opts: {
+    audience: string;
+    subject?: string;
+    ttlSec?: number;                            // default 900, capped at 3600
+    claims?: Readonly<Record<string, string | number | boolean>>;
+  }) => Effect.Effect<OidcToken, OidcSigningFailed, RunContext>;
+
+  // The stable issuer URL the IdP's trust policy pins. Derived from the
+  // Worker's deployed origin (e.g. https://flare-dispatch.example.workers.dev)
+  // — surfaced here so a run can log it / surface it on the check-run.
+  declare const issuer: () => Effect.Effect<string, never, RunContext>;
+}
+```
+
+The runtime Layer keeps the signing key opaque to the run — `oidc.sign` is the only path to a token, and a token is per-`audience` (never reused across IdPs). Token TTL caps at 60 minutes because every supported IdP STS endpoint refuses longer; runs that need a longer working window mint fresh tokens, they don't widen the cap.
+
+#### `awsAssumeRole` (primitive)
+
+A two-line `oidc.sign → sts:AssumeRoleWithWebIdentity` exchange. The most-requested federation target is AWS — Bedrock for agentic runs, S3 for artifact mirroring, KMS for envelope-encrypted secrets — so the exchange ships as a primitive on top of the `oidc` capability (see [§ Primitives — `awsAssumeRole`](#awsassumerole)).
+
+The downstream consumer the capability was lifted from: an `ai-code-review` agent that calls `bedrock:InvokeModel`. Inside its run body:
+
+```ts
+const creds = yield* awsAssumeRole({
+  roleArn: "arn:aws:iam::123456789012:role/FlareDispatchBedrockReader",
+  sessionName: `flare-dispatch-${input.repo}`,
+});
+const bedrock = makeBedrockClient(creds);             // user-supplied SDK adapter
+const reply = yield* Effect.tryPromise(() =>
+  bedrock.invokeModel({ modelId: "anthropic.claude-opus-4-7-v1:0", body: ... }),
+);
+```
+
+The pattern is the IAM-recommended *workload identity federation*: a stable issuer that the IAM trust policy pins, short-lived OIDC tokens scoped per-execution, per-call STS credentials with a 15-minute TTL. The trust policy snippet operators paste lives in [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy).
+
+`OidcSigningFailed` ([§ Errors](#errors)) wraps a key-load failure or a `SubtleCrypto.sign` reject — it is a deploy-time misconfiguration error, never transient, so runs that catch it should fail loudly rather than retry. `StsAssumeRoleFailed` (from the primitive) is the IdP-side failure — a `400` from a mistrusted issuer, a `403` from a misconfigured role — and similarly non-retryable.
+
 ## Primitives
 
 Capabilities are atomic. Recipes are not — every recipe needs to *check out a repo*, most need to *fan out across shards*, several need to *boot the app under test* or *install dependencies with a cache*. Left to raw capabilities, every recipe re-derives the same five-line `acquire → clone → install` dance, the same `Effect.forEach(Array.from({ length: n }, …), …, { concurrency })` fan-out, the same curl-and-classify probe loop.
@@ -684,6 +736,35 @@ declare const probeHttp: (opts: {
 >;
 ```
 
+### `awsAssumeRole`
+
+Exchange a Dispatcher-issued OIDC token for short-lived AWS STS credentials via `sts:AssumeRoleWithWebIdentity` — the workload-identity-federation pattern AWS recommends in place of long-lived access keys in Worker Secrets. Rides on the `oidc` capability ([§ `oidc`](#oidc)).
+
+```ts
+type AwsCredentials = {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+  expiresAt: number;                            // epoch ms
+};
+
+declare const awsAssumeRole: (opts: {
+  roleArn: string;
+  sessionName?: string;                         // default: `<run>-<executionId>`
+  durationSec?: number;                         // default 900, AWS caps at 3600
+  region?: string;                              // default us-east-1
+  audience?: string;                            // default "sts.amazonaws.com"
+}) => Effect.Effect<
+  AwsCredentials,
+  OidcSigningFailed | StsAssumeRoleFailed,
+  RunContext
+>;
+```
+
+A run hands the credentials to whatever AWS SDK it uses; the DSL ships no Bedrock / S3 / KMS adapters. Each call mints a *fresh* OIDC token and a *fresh* STS exchange — credentials are never cached across `awsAssumeRole` calls within a run, because the scope (the session name) and the working window are part of the per-call contract. A run that needs many AWS calls in tight succession passes the same credentials to its SDK and lets the SDK handle the per-request signing.
+
+Federating against a different cloud provider (GCP STS, Azure AD workload identity) follows the same shape; if a second target materialises in a shipped recipe the DSL adds `gcpAccessToken` / `azureAccessToken` primitives on the same `oidc` foundation.
+
 ### Adding a primitive
 
 A new primitive earns its place when a shape recurs across **two or more** recipes and is awkward enough that copy-paste drifts. It must: compose only capabilities and existing primitives (no new Layer, no new `Context.Tag`); fail with existing tagged errors from [§ Errors](#errors); and stay a pure Effect so it inherits Layer-swapping and the unit-test story unchanged. A one-off shape used by a single recipe stays inline in that recipe — premature primitives are just indirection.
@@ -795,11 +876,36 @@ export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
   },
 ) {}
 
+export class OidcSigningFailed extends Schema.TaggedError<OidcSigningFailed>()(
+  "OidcSigningFailed",
+  {
+    // "key-load" — signing key absent or malformed (Worker secret unset /
+    //              non-JWK / wrong alg);
+    // "subtle-sign" — WebCrypto SubtleCrypto.sign rejected.
+    reason: Schema.Literal("key-load", "subtle-sign"),
+    cause: Schema.Unknown,
+  },
+) {}
+
+export class StsAssumeRoleFailed extends Schema.TaggedError<StsAssumeRoleFailed>()(
+  "StsAssumeRoleFailed",
+  {
+    provider: Schema.Literal("aws", "gcp", "azure", "other"),
+    status: Schema.Number,                   // HTTP status from the STS endpoint
+    // "mistrusted-issuer" — the IdP does not trust the Dispatcher's JWKS URL;
+    // "role-mismatch"     — the role's trust policy rejects this subject;
+    // "audience-mismatch" — the IdP audience the run signed for is wrong;
+    // "other"             — any other 4xx/5xx from the STS endpoint.
+    reason: Schema.Literal("mistrusted-issuer", "role-mismatch", "audience-mismatch", "other"),
+  },
+) {}
+
 export type RunError =
   | CheckoutFailed | ExecFailed | ExecTimeout
   | ContainerLaunchFailed | PortNeverOpened | BrowserUnavailable
   | CacheError | ArtifactUploadFailed | StepFailed | SecretsMissing
-  | ApprovalTimedOut | EventPayloadInvalid | GitHubApiError;
+  | ApprovalTimedOut | EventPayloadInvalid | GitHubApiError
+  | OidcSigningFailed | StsAssumeRoleFailed;
 ```
 
 Runs recover with `Effect.catchTag` / `Effect.catchTags`. Anything not caught fails the execution with the full Cause attached to the check-run summary.

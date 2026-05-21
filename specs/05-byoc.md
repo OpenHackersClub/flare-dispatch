@@ -244,12 +244,14 @@ Set via `wrangler secret put` — never committed.
 | `GITHUB_APP_ID` | Numeric App id | From the App's GitHub settings page | Always |
 | `GITHUB_APP_PRIVATE_KEY` | PEM key for App auth | From "Generate a private key" on the App page | Always |
 | `GITHUB_WEBHOOK_SECRET` | Verifies inbound App webhooks (`X-Hub-Signature-256`) | `openssl rand -base64 32`; configured in App settings | App-webhook trigger path |
+| `OIDC_SIGNING_JWK` | The Dispatcher's OIDC issuer key (private JWK, ES256). Public half is auto-served at `/.well-known/jwks.json` | `pnpm cli oidc keygen` (writes a fresh P-256 private JWK to stdout) | Any run that uses the `oidc` capability or the `awsAssumeRole` primitive. Skip if no run federates. |
 
 ```sh
 wrangler secret put HMAC_SECRET                    # skip if you don't use the GHA Action / direct POST
 wrangler secret put GITHUB_APP_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY < ./github-app-private-key.pem
 wrangler secret put GITHUB_WEBHOOK_SECRET
+wrangler secret put OIDC_SIGNING_JWK < ./oidc-signing.jwk.json    # only if you federate to AWS/GCP/Vault
 ```
 
 `GITHUB_APP_PRIVATE_KEY` is large; pipe it from a file rather than typing it. After upload, delete the local PEM.
@@ -289,6 +291,48 @@ Setup:
 5. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually. **(Planned, V1 — the webhook receiver populates the installation map; at HEAD operators pass `installation-id` explicitly to the GHA Action.)**
 
 > **Security note: the `state` CSRF token is generated at step 1 but not yet bound to KV at step 2** — the callback echoes it back, but the Dispatcher does not currently reject an unminted state. Tracked as a high-severity gap in [07-trust-model § Known gaps](07-trust-model.md#known-gaps).
+
+## AWS federation trust policy
+
+Runs that need AWS credentials (Bedrock `InvokeModel`, S3 mirroring, KMS unwrap, …) reach for `awsAssumeRole` ([03-dsl § `awsAssumeRole`](03-dsl.md#awsassumerole)) — the workload-identity-federation pattern that keeps long-lived AWS keys out of Worker Secrets. The IAM trust policy on each role pins the Dispatcher's stable issuer URL and pins the `sub` claim to scope the role to a specific run.
+
+```sh
+# 1. Register the Dispatcher as an OIDC provider in AWS (one-time, per AWS account).
+aws iam create-open-id-connect-provider \
+  --url https://flare-dispatch.<your-subdomain>.workers.dev \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list <sha1-of-jwks-tls-leaf-cert>
+```
+
+```json5
+// 2. Trust policy attached to e.g. role/FlareDispatchBedrockReader.
+// `Federated` is the provider ARN from step 1. The `sub` condition pins the
+// role to one named run — the Dispatcher's `oidc.sign` defaults `subject` to
+// `<run-name>:<execution-id>`, so `StringLike` with a wildcard on the
+// execution id is the usual shape.
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::123456789012:oidc-provider/flare-dispatch.<your-subdomain>.workers.dev"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "flare-dispatch.<your-subdomain>.workers.dev:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "flare-dispatch.<your-subdomain>.workers.dev:sub": "ai-code-review:*"
+      }
+    }
+  }]
+}
+```
+
+The Dispatcher's issuer URL is its origin — no path. JWKS lives at `/.well-known/jwks.json`; AWS rotates its cached key set automatically when a new `kid` appears. Rotating the signing key is `pnpm cli oidc keygen | wrangler secret put OIDC_SIGNING_JWK` followed by a redeploy; AWS picks up the new key on the next token exchange.
+
+The same pattern federates against **GCP STS** (Workload Identity Federation pool) and **HashiCorp Vault** (`auth/jwt`); only the `audience` and trust-policy shape change. The `oidc` capability is provider-agnostic — `awsAssumeRole` is the first primitive on it because Bedrock was the first downstream consumer that needed it.
 
 ## First deploy walkthrough
 

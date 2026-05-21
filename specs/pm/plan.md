@@ -27,6 +27,7 @@ timeline
 | **V2 — Browser e2e + acceptance** | Browser Rendering integration; CDP observation helper | `+ playwright-e2e`, `+ cdp-acceptance` | Sharded Playwright suite reports per-shard status; gctrl-board acceptance suite executes |
 | **V3 — Long-running + security** | Step chaining for suites past the Workflow step limit; security scan runs; **Schedule mode** — `scheduled()` handler, `triggers.crons`, scheduling Workflow (enumerate + fan-out), `schedules` on `defineRun`, `step.sleepUntil` | `+ security-scan`, `+ custom-sandbox`; `pr-review-sweep` recipe | 30-min suite completes; npm audit / cargo audit / trivy run in Sandbox; a cron tick fans out a `pr-review` per open PR |
 | **V4 — Polish** | OpenTelemetry export, Logpush integration, retention policies, `flare-dispatch init` CLI | — | Time-to-first-green-check < 30 min on a fresh CF account |
+| **V3.5 — OIDC federation** (parallel to V3) | `oidc` capability + `awsAssumeRole` primitive; `/.well-known/openid-configuration` + `/.well-known/jwks.json` issuer routes; `OIDC_SIGNING_JWK` Worker secret + `pnpm cli oidc keygen` helper | `+ awsAssumeRole` primitive | An `ai-code-review` run dispatches `bedrock:InvokeModel` using STS creds minted per-execution; zero long-lived AWS keys in Worker Secrets. Spec contract: [03-dsl § `oidc`](../03-dsl.md#oidc), [05-byoc § AWS federation trust policy](../05-byoc.md#aws-federation-trust-policy). Lifted upstream from a downstream consumer so adopters wiring AWS don't fork. |
 
 ## V0 walking-skeleton plan
 
