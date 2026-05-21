@@ -28426,7 +28426,9 @@ var PermanentFailure = class extends Schema_exports.TaggedError()(
   {
     status: Schema_exports.Number,
     body: Schema_exports.String,
-    attempts: Schema_exports.Number
+    attempts: Schema_exports.Number,
+    localFingerprint: Schema_exports.optional(Schema_exports.String),
+    dispatcherFingerprint: Schema_exports.optional(Schema_exports.String)
   }
 ) {
 };
@@ -28471,6 +28473,7 @@ var signBytes = (secret2, body) => {
   const hex = (0, import_node_crypto.createHmac)("sha256", secret2).update(body).digest("hex");
   return `sha256=${hex}`;
 };
+var secretFingerprint = (secret2) => (0, import_node_crypto.createHash)("sha256").update(secret2).digest("hex").slice(0, 8);
 var requireInput = (env, key, human) => {
   const value5 = env[key];
   return value5 && value5.length > 0 ? Effect_exports.succeed(value5) : Effect_exports.fail(new MissingInput({ name: human }));
@@ -28482,9 +28485,29 @@ var backoffMs = (env) => {
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : 5e3;
 };
-var categorize = (status, body, attempt) => Match_exports.value(status).pipe(
+var parseDispatcherFingerprint = (body) => {
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed !== null && typeof parsed === "object" && "dispatcher_secret_fingerprint" in parsed && typeof parsed.dispatcher_secret_fingerprint === "string") {
+      return parsed.dispatcher_secret_fingerprint;
+    }
+  } catch {
+  }
+  return "<not provided>";
+};
+var categorize = (status, body, attempt, localFingerprint) => Match_exports.value(status).pipe(
   Match_exports.when(
-    (s) => s === 400 || s === 401 || s === 404,
+    (s) => s === 401,
+    () => new PermanentFailure({
+      status: 401,
+      body,
+      attempts: attempt,
+      localFingerprint,
+      dispatcherFingerprint: parseDispatcherFingerprint(body)
+    })
+  ),
+  Match_exports.when(
+    (s) => s === 400 || s === 404,
     (s) => new PermanentFailure({ status: s, body, attempts: attempt })
   ),
   Match_exports.orElse(
@@ -28504,7 +28527,7 @@ var defaultFetch = async (url2, init) => {
     return { status: 0, text: () => Promise.resolve(message) };
   }
 };
-var postOnce = (url2, body, signature, attempt, fetchImpl) => Effect_exports.gen(function* () {
+var postOnce = (url2, body, signature, attempt, fetchImpl, localFingerprint) => Effect_exports.gen(function* () {
   const res = yield* Effect_exports.promise(
     () => fetchImpl(url2, {
       method: "POST",
@@ -28517,7 +28540,9 @@ var postOnce = (url2, body, signature, attempt, fetchImpl) => Effect_exports.gen
   );
   const text = yield* Effect_exports.promise(() => res.text());
   if (res.status === 202) return { status: 202, body: text };
-  return yield* Effect_exports.fail(categorize(res.status, text, attempt));
+  return yield* Effect_exports.fail(
+    categorize(res.status, text, attempt, localFingerprint)
+  );
 });
 var runDispatch = (deps) => Effect_exports.gen(function* () {
   const env = deps.env;
@@ -28534,10 +28559,11 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
   const body = buildBody(env);
   const bytes = new TextEncoder().encode(JSON.stringify(body));
   const signature = signBytes(secret2, bytes);
+  const localFp = secretFingerprint(secret2);
   let attempt = 0;
   const attemptOnce = Effect_exports.suspend(() => {
     attempt += 1;
-    return postOnce(url2, bytes, signature, attempt, fetchImpl).pipe(
+    return postOnce(url2, bytes, signature, attempt, fetchImpl, localFp).pipe(
       Effect_exports.tapError(
         (e) => Match_exports.value(e).pipe(
           Match_exports.tag(
@@ -28599,10 +28625,27 @@ var reportFailure = (e) => Match_exports.value(e).pipe(
   ),
   Match_exports.tag(
     "PermanentFailure",
-    ({ status, body }) => Effect_exports.gen(function* () {
+    ({ status, body, localFingerprint, dispatcherFingerprint }) => Effect_exports.gen(function* () {
       yield* Console_exports.error(
         `::error::FlareDispatch dispatch failed (HTTP ${status}): ${body}`
       );
+      if (status === 401 && localFingerprint !== void 0) {
+        yield* Console_exports.error(
+          "::error::HMAC drift between flare-dispatch-action and Dispatcher Worker."
+        );
+        yield* Console_exports.error(
+          `  local secret fingerprint      = ${localFingerprint}`
+        );
+        yield* Console_exports.error(
+          `  dispatcher secret fingerprint = ${dispatcherFingerprint ?? "<not provided>"}`
+        );
+        yield* Console_exports.error(
+          "  \u2192 if they differ, re-sync the secret on the mismatching side"
+        );
+        yield* Console_exports.error(
+          "  \u2192 if they match, the canonicalization contract has drifted (file a separate bug)"
+        );
+      }
       return yield* Effect_exports.die(e);
     })
   ),

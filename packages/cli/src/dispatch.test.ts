@@ -14,6 +14,7 @@ import {
   type DispatchEnv,
   type FetchLike,
   runDispatch,
+  secretFingerprint,
   signBytes,
 } from "./dispatch.js";
 
@@ -131,6 +132,35 @@ describe("signBytes", () => {
   });
 });
 
+describe("secretFingerprint", () => {
+  it("matches the openssl|xxd|cut pipeline the dispatcher uses for parity", () => {
+    // The dispatcher's `fingerprint()` (apps/dispatcher/src/hmac.ts) is
+    // `sha256(secret)[:8]` lowercase hex. The dispatcher locks this with a
+    // cross-side test against `openssl dgst -sha256 | xxd -p | cut -c1-8`;
+    // we replicate the same pipeline here so the two sides cannot drift.
+    const digest = execFileSync(
+      "openssl",
+      ["dgst", "-sha256", "-binary"],
+      { input: SECRET },
+    );
+    const opensslFp = execFileSync("xxd", ["-p", "-c", "256"], {
+      input: digest,
+    })
+      .toString()
+      .trim()
+      .slice(0, 8);
+
+    expect(secretFingerprint(SECRET)).toBe(opensslFp);
+    expect(secretFingerprint(SECRET)).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("flips when a trailing newline sneaks into the secret", () => {
+    // Issue #24's dominant failure mode — `wrangler secret put` adds a `\n`
+    // on one side. The fingerprint MUST change so the operator sees it.
+    expect(secretFingerprint(SECRET)).not.toBe(secretFingerprint(`${SECRET}\n`));
+  });
+});
+
 interface MockCall {
   url: string;
   headers: Record<string, string>;
@@ -226,6 +256,45 @@ describe("runDispatch", () => {
       expect(pretty).toContain("401");
     }
     expect(calls).toHaveLength(1);
+  });
+
+  it("HTTP 401 attaches local + dispatcher fingerprints for drift diagnosis", async () => {
+    // The Worker returns `dispatcher_secret_fingerprint` in 401 bodies
+    // (apps/dispatcher/src/routes/dispatch.ts). The CLI must parse it and
+    // attach BOTH it and the local sha256(secret)[:8] fingerprint to the
+    // PermanentFailure so the reporter can show them.
+    const body = JSON.stringify({
+      error: "unauthorized",
+      message: "HMAC signature missing or invalid",
+      dispatcher_secret_fingerprint: "deadbeef",
+    });
+    const { fetch } = mockFetch([{ status: 401, body }]);
+    const env = baseEnv();
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const pretty = JSON.stringify(exit.cause);
+      expect(pretty).toContain("PermanentFailure");
+      expect(pretty).toContain(secretFingerprint(SECRET));
+      expect(pretty).toContain("deadbeef");
+    }
+  });
+
+  it("HTTP 401 with non-JSON body falls back to '<not provided>'", async () => {
+    const { fetch } = mockFetch([{ status: 401, body: "plain text 401" }]);
+    const env = baseEnv();
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const pretty = JSON.stringify(exit.cause);
+      expect(pretty).toContain("PermanentFailure");
+      expect(pretty).toContain(secretFingerprint(SECRET));
+      expect(pretty).toContain("<not provided>");
+    }
   });
 
   it("HTTP 500 then 202 → retries once and succeeds", async () => {

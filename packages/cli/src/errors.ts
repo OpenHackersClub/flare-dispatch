@@ -29,6 +29,11 @@ export class BadMode extends Schema.TaggedError<BadMode>()(
 /**
  * A non-retryable HTTP response (401/400/404). The body is whatever the
  * Dispatcher returned — surfaced in the `::error::` line.
+ *
+ * On 401 (HMAC drift), both `localFingerprint` and `dispatcherFingerprint`
+ * are populated — they're `sha256(secret)[:8]` for each side. The reporter
+ * prints them so an operator can pinpoint which side has the wrong value.
+ * See `apps/dispatcher/src/hmac.ts § fingerprint` and issue #24.
  */
 export class PermanentFailure extends Schema.TaggedError<PermanentFailure>()(
   "PermanentFailure",
@@ -36,6 +41,8 @@ export class PermanentFailure extends Schema.TaggedError<PermanentFailure>()(
     status: Schema.Number,
     body: Schema.String,
     attempts: Schema.Number,
+    localFingerprint: Schema.optional(Schema.String),
+    dispatcherFingerprint: Schema.optional(Schema.String),
   },
 ) {}
 

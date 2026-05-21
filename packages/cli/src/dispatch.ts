@@ -13,7 +13,7 @@
 //   * 401/400/404 fail immediately; transient (000/429/5xx) retry up to 3
 //     attempts total with `attempt * backoffMs` backoff (5s, 10s by default).
 
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { Console, Effect, Match, Schedule } from "effect";
 import {
@@ -100,6 +100,17 @@ export const signBytes = (secret: string, body: Uint8Array): string => {
   return `sha256=${hex}`;
 };
 
+/**
+ * Non-secret fingerprint of the HMAC secret — `sha256(secret)[:8]`, lowercase
+ * hex. Matches the dispatcher's `fingerprint()` in
+ * `apps/dispatcher/src/hmac.ts` so the two sides can be compared in 401 drift
+ * diagnostics. Sensitive to whitespace — a trailing `\n` smuggled in by
+ * `wrangler secret put` flips the fingerprint (issue #24, the dominant 401
+ * failure mode this primitive exists to catch).
+ */
+export const secretFingerprint = (secret: string): string =>
+  createHash("sha256").update(secret).digest("hex").slice(0, 8);
+
 /** Read a required INPUT_* var; fail with a tagged error if missing. */
 const requireInput = (
   env: DispatchEnv,
@@ -125,19 +136,58 @@ const backoffMs = (env: DispatchEnv): number => {
 };
 
 /**
+ * Try to extract `dispatcher_secret_fingerprint` from a 401 body. The
+ * Worker returns `{ error, message, dispatcher_secret_fingerprint }` on HMAC
+ * drift (apps/dispatcher/src/routes/dispatch.ts) — anything else (non-JSON,
+ * field missing, wrong type) is reported as `<not provided>` so the operator
+ * still sees the local fingerprint and isn't blocked.
+ */
+const parseDispatcherFingerprint = (body: string): string => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "dispatcher_secret_fingerprint" in parsed &&
+      typeof (parsed as { dispatcher_secret_fingerprint: unknown })
+        .dispatcher_secret_fingerprint === "string"
+    ) {
+      return (parsed as { dispatcher_secret_fingerprint: string })
+        .dispatcher_secret_fingerprint;
+    }
+  } catch {
+    // fall through
+  }
+  return "<not provided>";
+};
+
+/**
  * Categorize an HTTP status into the retry policy.
  *   * 202        → success (handled by caller)
- *   * 400/401/404 → permanent (no retry)
+ *   * 400/401/404 → permanent (no retry); 401 also carries the two
+ *                   HMAC fingerprints for drift diagnostics
  *   * everything else (incl. 000 = network error) → transient
  */
 const categorize = (
   status: number,
   body: string,
   attempt: number,
+  localFingerprint: string,
 ): PermanentFailure | TransientFailure =>
   Match.value(status).pipe(
     Match.when(
-      (s) => s === 400 || s === 401 || s === 404,
+      (s) => s === 401,
+      () =>
+        new PermanentFailure({
+          status: 401,
+          body,
+          attempts: attempt,
+          localFingerprint,
+          dispatcherFingerprint: parseDispatcherFingerprint(body),
+        }),
+    ),
+    Match.when(
+      (s) => s === 400 || s === 404,
       (s) => new PermanentFailure({ status: s, body, attempts: attempt }),
     ),
     Match.orElse(
@@ -183,6 +233,7 @@ const postOnce = (
   signature: string,
   attempt: number,
   fetchImpl: FetchLike,
+  localFingerprint: string,
 ): Effect.Effect<
   { status: number; body: string },
   PermanentFailure | TransientFailure
@@ -202,7 +253,9 @@ const postOnce = (
 
     if (res.status === 202) return { status: 202, body: text };
 
-    return yield* Effect.fail(categorize(res.status, text, attempt));
+    return yield* Effect.fail(
+      categorize(res.status, text, attempt, localFingerprint),
+    );
   });
 
 /**
@@ -243,12 +296,16 @@ export const runDispatch = (
     const bytes = new TextEncoder().encode(JSON.stringify(body));
     const signature = signBytes(secret, bytes);
 
+    // Computed once — threaded into a 401 PermanentFailure so the reporter
+    // can print it next to the dispatcher's fingerprint (issue #24).
+    const localFp = secretFingerprint(secret);
+
     // Mutable so the schedule can advance it; Schedule.recurs handles the
     // bound, and `whileInput` keeps retrying only on TransientFailure.
     let attempt = 0;
     const attemptOnce = Effect.suspend(() => {
       attempt += 1;
-      return postOnce(url, bytes, signature, attempt, fetchImpl).pipe(
+      return postOnce(url, bytes, signature, attempt, fetchImpl, localFp).pipe(
         Effect.tapError((e) =>
           Match.value(e).pipe(
             Match.tag("TransientFailure", ({ status }) =>
@@ -343,13 +400,37 @@ export const reportFailure = (
         return yield* Effect.die(e);
       }),
     ),
-    Match.tag("PermanentFailure", ({ status, body }) =>
-      Effect.gen(function* () {
-        yield* Console.error(
-          `::error::FlareDispatch dispatch failed (HTTP ${status}): ${body}`,
-        );
-        return yield* Effect.die(e);
-      }),
+    Match.tag(
+      "PermanentFailure",
+      ({ status, body, localFingerprint, dispatcherFingerprint }) =>
+        Effect.gen(function* () {
+          yield* Console.error(
+            `::error::FlareDispatch dispatch failed (HTTP ${status}): ${body}`,
+          );
+          // 401 → HMAC drift between flare-dispatch-action and the Worker.
+          // Print both fingerprints so the operator can pinpoint which side
+          // holds the wrong secret (issue #24).
+          if (status === 401 && localFingerprint !== undefined) {
+            yield* Console.error(
+              "::error::HMAC drift between flare-dispatch-action and Dispatcher Worker.",
+            );
+            yield* Console.error(
+              `  local secret fingerprint      = ${localFingerprint}`,
+            );
+            yield* Console.error(
+              `  dispatcher secret fingerprint = ${
+                dispatcherFingerprint ?? "<not provided>"
+              }`,
+            );
+            yield* Console.error(
+              "  → if they differ, re-sync the secret on the mismatching side",
+            );
+            yield* Console.error(
+              "  → if they match, the canonicalization contract has drifted (file a separate bug)",
+            );
+          }
+          return yield* Effect.die(e);
+        }),
     ),
     Match.tag("TransientFailure", ({ status, body, attempt }) =>
       Effect.gen(function* () {
