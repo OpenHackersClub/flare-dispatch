@@ -225,10 +225,10 @@ A manifest ships in `infra/github-app-manifest.json`:
 
 Setup:
 
-1. POST the manifest to `https://github.com/settings/apps/new?state=<random>` (or use GitHub's "Create from manifest" flow).
-2. GitHub redirects to your endpoint with a code; the Dispatcher exchanges it for the App credentials and prints them.
-3. Stash `app_id`, `webhook_secret`, and `private_key` into Worker Secrets.
-4. Install the App on the org or specific repos you want to use it with.
+1. Visit `<your-endpoint>/v1/github/install/new` in a browser (the `pnpm cli github-app create --endpoint <url>` subcommand prints this URL and opens it for you). The Dispatcher renders a self-submitting form that POSTs the manifest to `https://github.com/settings/apps/new?state=<csrf>` — the placeholder `runs.example.com` URLs in `infra/github-app-manifest.json` are substituted with the Dispatcher's own origin at request time.
+2. GitHub redirects to `<your-endpoint>/v1/github/installed?code=<code>`; the Dispatcher exchanges the code at `POST /app-manifests/<code>/conversions` and renders a one-shot "Success" page with the credentials and the `wrangler secret put` commands you need to run.
+3. Stash `app_id`, `webhook_secret`, `private_key`, `client_id`, and `client_secret` into Worker Secrets — they are shown ONCE.
+4. Install the App on the org or specific repos you want to use it with via the install link the success page surfaces.
 5. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually.
 
 ## First deploy walkthrough

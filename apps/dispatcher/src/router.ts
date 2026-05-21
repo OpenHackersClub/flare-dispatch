@@ -5,6 +5,8 @@
 //   GET  /health                          → routes/health.ts
 //   POST /v1/dispatch/:run                 → routes/dispatch.ts
 //   GET  /v1/artifacts/:execution/:name    → routes/artifacts.ts
+//   GET  /v1/github/install/new            → routes/github.ts
+//   GET  /v1/github/installed              → routes/github.ts
 //
 // Everything route-specific (HMAC verify, Schema validation, R2 streaming)
 // lives in the route module; this file only matches and delegates. Anything
@@ -15,12 +17,13 @@
 // the typed `Env`. That keeps it (and the routes) testable under plain Node +
 // Vitest 2: `index.ts` owns the runtime-coupled binding-class re-exports.
 //
-// Spec: specs/pm/plan.md § PR5.
+// Spec: specs/pm/plan.md § PR5, specs/05-byoc.md § GitHub App setup.
 
 import type { Env } from "./env";
 import { handleArtifact } from "./routes/artifacts";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
+import { handleInstallNew, handleInstalled } from "./routes/github";
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {
@@ -71,6 +74,33 @@ export const handleRequest = async (
       decodeURIComponent(segments[2]!),
       decodeURIComponent(segments[3]!),
     );
+  }
+
+  // GET /v1/github/install/new — render the manifest-form page.
+  if (
+    segments.length === 4 &&
+    segments[0] === "v1" &&
+    segments[1] === "github" &&
+    segments[2] === "install" &&
+    segments[3] === "new"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleInstallNew(request);
+  }
+
+  // GET /v1/github/installed — the manifest-conversion callback.
+  if (
+    segments.length === 3 &&
+    segments[0] === "v1" &&
+    segments[1] === "github" &&
+    segments[2] === "installed"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleInstalled(request);
   }
 
   return json({ error: "not_found" }, 404);
