@@ -5,7 +5,7 @@
 // directly with no Workers pool.
 
 import { describe, expect, it } from "vitest";
-import { SIGNATURE_HEADER, sign, verify } from "./hmac";
+import { fingerprint, SIGNATURE_HEADER, sign, verify } from "./hmac";
 
 const SECRET = "test-hmac-secret-32-bytes-long!!";
 const encoder = new TextEncoder();
@@ -48,6 +48,52 @@ describe("hmac", () => {
     expect(await verify(SECRET, "sha256=zzzz", body)).toBe(false);
     // right prefix, wrong length (not 32 bytes)
     expect(await verify(SECRET, "sha256=00", body)).toBe(false);
+  });
+
+  describe("fingerprint", () => {
+    it("is 8 lowercase hex chars", async () => {
+      const fp = await fingerprint(SECRET);
+      expect(fp).toMatch(/^[0-9a-f]{8}$/);
+    });
+
+    it("is deterministic for a given secret", async () => {
+      const fp1 = await fingerprint(SECRET);
+      const fp2 = await fingerprint(SECRET);
+      expect(fp1).toBe(fp2);
+    });
+
+    it("matches the openssl|xxd|cut pipeline the GHA Action uses", async () => {
+      // Locks the cross-side contract: the dispatcher's `fingerprint(secret)`
+      // and `printf '%s' "$secret" | openssl dgst -sha256 -binary | xxd -p -c
+      // 256 | cut -c1-8` MUST produce the same 8 chars. Computed here against
+      // a hand-precomputed SHA-256 of SECRET — if either side ever changes
+      // (charset, truncation length, casing), this test breaks loudly.
+      const expected = await crypto.subtle
+        .digest("SHA-256", new TextEncoder().encode(SECRET))
+        .then((buf) =>
+          Array.from(new Uint8Array(buf))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("")
+            .slice(0, 8),
+        );
+      expect(await fingerprint(SECRET)).toBe(expected);
+    });
+
+    it("flips on a single-byte change (the stray-newline drift case)", async () => {
+      // The dominant drift mode is a trailing `\n` smuggled in by
+      // `wrangler secret put` / `gh secret set` from a piped shell command.
+      // Different by one byte ⟹ different fingerprint.
+      const fpClean = await fingerprint(SECRET);
+      const fpDirty = await fingerprint(`${SECRET}\n`);
+      expect(fpDirty).not.toBe(fpClean);
+    });
+
+    it("is non-secret — same shape as a git short-SHA", async () => {
+      // Guards against accidentally widening the fingerprint to something
+      // that leaks the secret. 8 hex chars = 32 bits, useless as a credential.
+      const fp = await fingerprint(SECRET);
+      expect(fp.length).toBe(8);
+    });
   });
 
   it("verifies raw bytes — no JSON normalization (key order matters)", async () => {

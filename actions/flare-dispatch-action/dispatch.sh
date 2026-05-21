@@ -76,9 +76,34 @@ while :; do
     exit 0
   fi
 
-  # 401/400/404 are config bugs — fail immediately, no retry.
+  # 401 is almost always operator-config drift between this side's
+  # FLAREDISPATCH_HMAC and the Worker's HMAC_SECRET. Compute the local
+  # fingerprint (sha256(secret)[:8], lowercase hex) and print it next to the
+  # dispatcher's fingerprint from the response body — if they differ, the side
+  # with the unexpected value is the one to fix; if they match, the
+  # canonicalization contract has drifted (file a separate bug). See
+  # apps/dispatcher/src/hmac.ts § fingerprint and issue #24.
+  if [ "$CODE" = "401" ]; then
+    BODY=$(cat "$RESP")
+    LOCAL_FP=$(printf '%s' "$INPUT_HMAC_SECRET" \
+      | openssl dgst -sha256 -binary \
+      | xxd -p -c 256 \
+      | cut -c1-8)
+    DISPATCHER_FP=$(printf '%s' "$BODY" \
+      | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(JSON.parse(s).dispatcher_secret_fingerprint||"<not provided>")}catch{process.stdout.write("<not provided>")}})')
+    echo "::error::FlareDispatch dispatch failed (HTTP 401): ${BODY}"
+    echo "::error::HMAC drift between flare-dispatch-action and Dispatcher Worker."
+    echo "  local secret fingerprint      = ${LOCAL_FP}"
+    echo "  dispatcher secret fingerprint = ${DISPATCHER_FP}"
+    echo "  → if they differ, re-sync the secret on the mismatching side"
+    echo "  → if they match, the canonicalization contract has drifted (file a separate bug)"
+    rm -f "$RESP"
+    exit 1
+  fi
+
+  # 400/404 are config bugs — fail immediately, no retry.
   case "$CODE" in
-    401|400|404)
+    400|404)
       echo "::error::FlareDispatch dispatch failed (HTTP ${CODE}): $(cat "$RESP")"
       rm -f "$RESP"
       exit 1

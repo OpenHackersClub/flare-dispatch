@@ -86,6 +86,20 @@ export const sign = async (
 };
 
 /**
+ * Non-secret fingerprint of the HMAC secret — `sha256(secret)[:8]`, lowercase
+ * hex. Same shape as a git short-SHA: enough bits to disambiguate two secrets,
+ * useless as a credential. Surfaced in 401 bodies (and any future health
+ * surface) so an operator can compare caller-vs-dispatcher fingerprints during
+ * drift diagnosis. Sensitive to whitespace — a trailing `\n` smuggled in by
+ * `wrangler secret put` flips the fingerprint, which is the dominant failure
+ * mode this primitive exists to catch (issue #24).
+ */
+export const fingerprint = async (secret: string): Promise<string> => {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(secret));
+  return bytesToHex(digest).slice(0, 8);
+};
+
+/**
  * Constant-time verify of a `X-FlareDispatch-Signature` header value against
  * the raw request body bytes.
  *
