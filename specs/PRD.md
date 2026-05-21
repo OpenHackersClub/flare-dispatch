@@ -48,7 +48,7 @@ Runs are not opaque — they are TypeScript files in the user's repo. The shippe
 ```mermaid
 flowchart LR
   GHA[GitHub Actions<br/>trigger + cheap jobs] -->|HMAC POST<br/>/v1/dispatch| W[Run Worker<br/>in your CF account]
-  APP[GitHub App webhook<br/>autonomous trigger] -->|App-signed<br/>/v1/webhooks/github| W
+  APP[GitHub App webhook<br/>autonomous trigger<br/>Planned V1] -.->|App-signed<br/>/v1/webhooks/github| W
   CRON[Cloudflare Cron Trigger<br/>scheduled cadence] -->|scheduled handler| W
   W --> WF[CF Workflow<br/>durable orchestration]
   WF --> SB[Sandbox / Container<br/>test execution]
@@ -57,6 +57,8 @@ flowchart LR
   WF --> D1[(D1<br/>execution metadata)]
   W -->|check-run API| GH[GitHub Checks tab]
 ```
+
+> The dashed arrow marks an autonomous **Webhook-mode** trigger that is **Planned (V1)** — the `/v1/webhooks/github` receiver is not yet wired in code. The Action-mode (solid HMAC arrow) and Schedule-mode (Cron Trigger) paths are live today.
 
 A team installs runs by:
 
@@ -112,4 +114,5 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 | [04-gha-integration](04-gha-integration.md) | Three trigger modes (Action / Webhook / Schedule), HMAC auth, Cron Triggers, check-runs callback |
 | [05-byoc](05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
 | [06-cost](06-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
+| [07-trust-model](07-trust-model.md) | Trust boundaries, adversary catalog, controls in place, known gaps |
 | [pm/plan](pm/plan.md) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |

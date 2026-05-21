@@ -21,92 +21,163 @@ The Paid plan is the only hard money requirement. Browser Rendering on Workers P
 
 A single Worker (the Dispatcher) bound to:
 
-- 1 × **Workflow** binding — `RUNS_WORKFLOW`
-- 1 × **Container** binding — `RUNS_SANDBOX`
-- 1 × **Browser Rendering** binding — `RUNS_BROWSER`
-- 1 × **Durable Object** namespace — `COORDINATOR`
-- 1 × **R2 bucket** — `RUNS_STORAGE`
-- 1 × **D1 database** — `RUNS_METADATA`
-- 3 × **KV namespaces** — `RUNS_CONFIG` (installation map, feature flags), `IDEMPOTENCY_KV` (receiver dedup, 24h TTL), `INSTALL_TOKEN_KV` (App install-token cache, 55min TTL)
-- 1 × **Queue** producer + consumer — `RUNS_FANOUT`
+| Binding | Type | Status |
+|---|---|---|
+| `RUNS_WORKFLOW` | Workflow | Live |
+| `RUNS_SANDBOX` | Container (Durable Object) | Live |
+| `RUNS_STORAGE` | R2 bucket | Live |
+| `RUNS_METADATA` | D1 database | Live |
+| `CONFIG_KV` | KV namespace (dynamic config + `loadSecrets` secret store) | Live |
+| `triggers.crons` | Cron Triggers (Schedule mode heartbeat) | Live |
+| `RUNS_BROWSER` | Browser Rendering | **Planned (V2)** — `cdp-acceptance` today uses operator-pinned `BROWSER_CDP_CONNECT_URL` + `BROWSER_CDP_API_TOKEN` Worker secrets (the container, not the Worker, opens the CDP WebSocket). |
+| `COORDINATOR` | Durable Object namespace | **Planned (V1)** — fan-out result aggregation, lands with `matrix-fanout`. |
+| `IDEMPOTENCY_KV` | KV namespace (receiver dedup, 24h TTL) | **Planned (V1)** — lands with the Webhook-mode receiver. |
+| `INSTALL_TOKEN_KV` | KV namespace (App install-token cache, 55min TTL) | **Planned (V1)** — V0 caches install tokens in Worker memory only. |
+| `RUNS_FANOUT` | Queue producer + consumer | **Planned (V1)** — engaged only at very high shard counts. |
 
-All bindings are declared in `wrangler.jsonc`, alongside a `triggers.crons` array — not a binding, but the Cron Triggers that drive Schedule-mode runs (and the D1 retention sweep). The Dispatcher is the only entry point exposed publicly. The `/v1/admin/*` sub-path is additionally gated by a Cloudflare Access application at the edge — the Worker re-verifies the Access JWT in code, so an Access misconfiguration cannot leak the admin surface.
+All live bindings are declared in `wrangler.jsonc`, alongside a `triggers.crons` array — not a binding, but the Cron Triggers that drive Schedule-mode runs. The Dispatcher is the only entry point exposed publicly. A `/v1/admin/*` sub-path (operator surface — force-cancel, replay, `step.waitForEvent` signalling) gated by Cloudflare Access is **Planned (V2/V3)** — see [01-architecture § Dispatcher Worker](01-architecture.md#control-plane) and [07-trust-model § Controls](07-trust-model.md#controls-in-place).
+
+The retention sweep (`infra/cron-cleanup.ts`) referenced in [§ Retention and cleanup](#retention-and-cleanup) is also **Planned (V4)** — at HEAD `apps/dispatcher/src/routes/scheduled.ts` only routes cron ticks to runs whose `schedules[].cron` matches.
 
 ## Repo layout
 
+The actual layout at HEAD (a pnpm workspace, not a flat `src/`):
+
 ```
 flare-dispatch/                                    your fork of the template
-├── wrangler.jsonc                             bindings + secrets
-├── package.json
-├── src/
-│   ├── dispatcher.ts                          Worker entry — HMAC verify + route
-│   ├── workflow.ts                            CF Workflow class (extends WorkflowEntrypoint)
-│   ├── coordinator.ts                         Durable Object — fan-out state
-│   ├── github.ts                              App auth + check-runs
-│   └── runtime/                               Effect Layers for live CF bindings
+├── wrangler.jsonc                             bindings + Cron Triggers
+├── package.json                               pnpm workspace root
+├── pnpm-workspace.yaml
+├── apps/
+│   └── dispatcher/                            the Worker
+│       └── src/
+│           ├── index.ts                       Worker entry (fetch + scheduled)
+│           ├── router.ts                      HTTP path/method routing
+│           ├── routes/
+│           │   ├── dispatch.ts                POST /v1/dispatch/:run (HMAC verify)
+│           │   ├── artifacts.ts               GET /v1/artifacts/:execution/:name
+│           │   ├── github.ts                  GET /v1/github/install/new + /installed
+│           │   ├── health.ts                  GET /health
+│           │   └── scheduled.ts               Cron Trigger → scheduling Workflow
+│           ├── hmac.ts                        constant-time HMAC verify (raw-bytes contract)
+│           ├── workflow.ts                    RunWorkflow class (extends WorkflowEntrypoint)
+│           ├── sandbox.ts                     RunSandbox DO (container binding class)
+│           ├── registry.ts                    run-name → Run map; schedulesByCron()
+│           └── env.ts                         typed binding Env
+├── packages/                                  Effect-TS DSL + live Layers + CLI
+│   ├── core/                                  @flare-dispatch/core — DSL + primitives + fakes
+│   ├── runtime-cf/                            live CF binding Layers
+│   ├── github-app/                            App JWT + install token + check-runs
+│   └── cli/                                   @flare-dispatch/cli — dispatch + github-app create
 ├── runs/                                      one file per run
-│   ├── offload-test.ts
-│   ├── matrix-fanout.ts
-│   ├── playwright-e2e.ts
-│   └── ...
-├── packages/                                  shared Effect-TS DSL + types
-│   └── core/
+│   ├── offload-test.ts                        V0
+│   ├── cdp-acceptance.ts                      V2 (PR9)
+│   └── product-demo.ts                        Schedule-mode demo run
+├── recipes/                                   starter library — copy-paste, not a dependency
+├── actions/
+│   └── flare-dispatch-action/                 GHA composite Action (bundled JS)
 ├── infra/
 │   ├── d1-schema.sql
+│   ├── Dockerfile.sandbox                     container image baked from @cloudflare/sandbox
 │   └── github-app-manifest.json
-└── README.md
+└── specs/                                     these docs
 ```
 
-The template ships with all built-in runs wired. Users add their own under `runs/` — the Dispatcher auto-discovers them from the run registry at startup.
+Runs declared in `apps/dispatcher/src/registry.ts` are dispatch-able. Adding a new run today means: drop a file under `runs/`, re-export it from `runs/index.ts`, and register it in `apps/dispatcher/src/registry.ts`. Auto-discovery is **Planned (V4)** — currently the registry is a hand-written map.
 
 ## Wrangler config
 
+The shape at HEAD (`wrangler.jsonc` on `main`) ships only the **live** bindings. The Planned bindings (`RUNS_BROWSER`, `COORDINATOR`, `IDEMPOTENCY_KV`, `INSTALL_TOKEN_KV`, `RUNS_FANOUT`) land alongside the features that consume them — V1 for fan-out + receiver dedup, V2 for the Browser Rendering binding (`cdp-acceptance` today uses `BROWSER_CDP_*` Worker secrets instead, see [§ Secrets](#secrets)).
+
 ```jsonc
-// wrangler.jsonc
+// wrangler.jsonc — V0/V3 live config
 {
-  "name": "flare-dispatch",
-  "main": "src/dispatcher.ts",
+  "name": "flare-dispatch-v0",
+  "main": "apps/dispatcher/src/index.ts",
   "compatibility_date": "2026-05-01",
   "compatibility_flags": ["nodejs_compat"],
+
+  "observability": { "enabled": true },
 
   "workflows": [
     { "name": "runs-workflow", "binding": "RUNS_WORKFLOW", "class_name": "RunWorkflow" }
   ],
 
+  // Container binding. The `@cloudflare/sandbox` SDK's Sandbox DO speaks an
+  // RPC protocol to a server baked into the container, so the image is built
+  // from the matching `docker.io/cloudflare/sandbox` base via a Dockerfile
+  // (infra/Dockerfile.sandbox) — a bare node image has no sandbox server.
+  // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io,
+  // or Amazon ECR; the Dockerfile's FROM resolves docker.io.
   "containers": [
     {
-      "binding": "RUNS_SANDBOX",
-      // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io, or Amazon ECR.
-      // GHCR is not a supported pull source — CI mirrors the GHCR image to CF's registry at release.
-      "image": "registry.cloudflare.com/openhackersclub/flare-dispatch-node:latest",
+      "class_name": "RunSandbox",
+      "image": "./infra/Dockerfile.sandbox",
       // Instance types (2026-05): lite (1/16 vCPU, 256 MiB) | basic (1/4, 1 GiB) |
       //   standard-1 (1/2, 4 GiB) | standard-2 (1, 6 GiB) | standard-3 (2, 8 GiB) | standard-4 (4, 12 GiB).
-      // "standard" + "dev" are legacy aliases retained for back-compat.
       "instance_type": "standard-2",
       "max_instances": 16
     }
   ],
 
-  "browser": { "binding": "RUNS_BROWSER" },
-
+  // The Container runtime is fronted by a Durable Object class. RunSandbox is the
+  // DO class backing the RUNS_SANDBOX container binding (NOT the Coordinator
+  // fan-out DO, which is Planned for V1).
   "durable_objects": {
     "bindings": [
-      { "name": "COORDINATOR", "class_name": "Coordinator" }
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" }
     ]
   },
 
+  "migrations": [
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] }
+  ],
+
   "r2_buckets": [
-    { "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-prod" }
+    { "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-v0" }
   ],
 
   "d1_databases": [
-    { "binding": "RUNS_METADATA", "database_name": "flare-dispatch", "database_id": "<filled by wrangler>" }
+    { "binding": "RUNS_METADATA", "database_name": "flare-dispatch-v0", "database_id": "<filled by wrangler>" }
   ],
 
+  // KV namespace backing the `config` capability + `loadSecrets` primitive.
+  // Provision with `wrangler kv namespace create CONFIG_KV` and paste the id.
   "kv_namespaces": [
-    { "binding": "RUNS_CONFIG", "id": "<filled by wrangler>" },
-    { "binding": "IDEMPOTENCY_KV", "id": "<filled by wrangler>" },
-    { "binding": "INSTALL_TOKEN_KV", "id": "<filled by wrangler>" }
+    { "binding": "CONFIG_KV", "id": "<filled by wrangler>" }
+  ],
+
+  // Cron Triggers — the heartbeat for Schedule-mode runs (04-gha-integration
+  // § Schedule mode). Every cron expression a run's `schedules` declares MUST
+  // appear in this array — it is what Cloudflare actually subscribes to; the
+  // Worker's `scheduled()` handler then routes `controller.cron` to the
+  // matching run(s) via `schedulesByCron`. Multiple runs may share one expression.
+  "triggers": {
+    "crons": ["0 14 * * *"]
+  }
+}
+```
+
+### Planned wrangler entries (V1+)
+
+These entries land with the features that consume them — keep them out of `wrangler.jsonc` until the consumer exists, or `wrangler deploy --dry-run` will reject the unused binding.
+
+```jsonc
+// Planned — V1 fan-out + receiver dedup + V2 Browser Rendering.
+{
+  "browser": { "binding": "RUNS_BROWSER" },                            // V2 — cdp-acceptance currently uses BROWSER_CDP_* secrets
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
+      { "name": "COORDINATOR", "class_name": "Coordinator" }           // V1 — fan-out aggregator
+    ]
+  },
+
+  "kv_namespaces": [
+    { "binding": "CONFIG_KV", "id": "..." },
+    { "binding": "IDEMPOTENCY_KV", "id": "..." },                      // V1 — receiver dedup
+    { "binding": "INSTALL_TOKEN_KV", "id": "..." }                     // V1 — install token cache
   ],
 
   "queues": {
@@ -114,27 +185,13 @@ The template ships with all built-in runs wired. Users add their own under `runs
     "consumers": [{ "queue": "flare-dispatch-fanout", "max_batch_size": 10 }]
   },
 
-  // migrations are the Durable Object lifecycle mechanism — only DO classes
-  // belong here. RunWorkflow is a Workflow, registered via "workflows" above.
   "migrations": [
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
     { "tag": "v1", "new_classes": ["Coordinator"] }
   ],
 
-  "observability": { "enabled": true },
-
-  // Cron Triggers — the heartbeat for Schedule-mode runs (04-gha-integration
-  // § Schedule mode). Every cron expression a run's `schedules` declares MUST
-  // appear in this array — it is what Cloudflare actually subscribes to; the
-  // Worker's `scheduled()` handler then routes `controller.cron` to the
-  // matching run(s). "0 3 * * *" is shared by the D1 retention sweep
-  // (§ Retention) and a nightly pr-review-sweep; "0 9 * * 1" drives weekly
-  // release-notes. Multiple runs may share one expression.
-  "triggers": {
-    "crons": ["0 3 * * *", "0 9 * * 1"]
-  },
-
   "routes": [
-    { "pattern": "runs.example.com/*", "custom_domain": true }
+    { "pattern": "runs.example.com/*", "custom_domain": true }          // custom domain — DNS, not code
   ]
 }
 ```
@@ -225,11 +282,13 @@ A manifest ships in `infra/github-app-manifest.json`:
 
 Setup:
 
-1. Visit `<your-endpoint>/v1/github/install/new` in a browser (the `pnpm cli github-app create --endpoint <url>` subcommand prints this URL and opens it for you). The Dispatcher renders a self-submitting form that POSTs the manifest to `https://github.com/settings/apps/new?state=<csrf>` — the placeholder `runs.example.com` URLs in `infra/github-app-manifest.json` are substituted with the Dispatcher's own origin at request time.
+1. Visit `<your-endpoint>/v1/github/install/new` in a browser (the `pnpm --filter @flare-dispatch/cli cli github-app create --endpoint <url>` subcommand prints this URL for you). The Dispatcher renders a self-submitting form that POSTs the manifest to `https://github.com/settings/apps/new?state=<csrf>` — the placeholder `runs.example.com` URLs in `infra/github-app-manifest.json` are substituted with the Dispatcher's own origin at request time.
 2. GitHub redirects to `<your-endpoint>/v1/github/installed?code=<code>`; the Dispatcher exchanges the code at `POST /app-manifests/<code>/conversions` and renders a one-shot "Success" page with the credentials and the `wrangler secret put` commands you need to run.
 3. Stash `app_id`, `webhook_secret`, `private_key`, `client_id`, and `client_secret` into Worker Secrets — they are shown ONCE.
 4. Install the App on the org or specific repos you want to use it with via the install link the success page surfaces.
-5. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually.
+5. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually. **(Planned, V1 — the webhook receiver populates the installation map; at HEAD operators pass `installation-id` explicitly to the GHA Action.)**
+
+> **Security note: the `state` CSRF token is generated at step 1 but not yet bound to KV at step 2** — the callback echoes it back, but the Dispatcher does not currently reject an unminted state. Tracked as a high-severity gap in [07-trust-model § Known gaps](07-trust-model.md#known-gaps).
 
 ## First deploy walkthrough
 
@@ -239,18 +298,17 @@ git clone https://github.com/openhackersclub/flare-dispatch-template my-flare-di
 cd my-flare-dispatch
 pnpm install
 
-# 2. Create the CF resources (Wrangler will prompt for new IDs)
-wrangler r2 bucket create flare-dispatch-prod
-wrangler d1 create flare-dispatch
-wrangler kv namespace create RUNS_CONFIG
-wrangler kv namespace create IDEMPOTENCY_KV
-wrangler kv namespace create INSTALL_TOKEN_KV
-wrangler queues create flare-dispatch-fanout
+# 2. Create the CF resources (Wrangler will prompt for new IDs).
+# At V0 only CONFIG_KV is required; IDEMPOTENCY_KV / INSTALL_TOKEN_KV /
+# RUNS_FANOUT land in V1 alongside the features that need them.
+wrangler r2 bucket create flare-dispatch-v0
+wrangler d1 create flare-dispatch-v0
+wrangler kv namespace create CONFIG_KV
 
 # Wrangler writes the IDs back into wrangler.jsonc.
 
 # 3. Apply the D1 schema
-wrangler d1 execute flare-dispatch --file infra/d1-schema.sql
+wrangler d1 execute flare-dispatch-v0 --file infra/d1-schema.sql
 
 # 4. Set secrets
 wrangler secret put HMAC_SECRET
@@ -260,16 +318,22 @@ wrangler secret put HMAC_SECRET
 wrangler deploy
 
 # 6. Verify
-curl -fsS https://flare-dispatch.<your-subdomain>.workers.dev/health
-# {"status":"ok","runs":["offload-test","matrix-fanout",...]}
+curl -fsS https://flare-dispatch-v0.<your-subdomain>.workers.dev/health
+# {"status":"ok","runs":["cdp-acceptance","offload-test","product-demo"]}
 
 # 7. Create the GitHub App (interactive)
-pnpm cli github-app create --endpoint https://flare-dispatch.<your-subdomain>.workers.dev
+pnpm --filter @flare-dispatch/cli cli github-app create \
+  --endpoint https://flare-dispatch-v0.<your-subdomain>.workers.dev
 
 # 8. Install the App on your org/repo via the URL it prints.
 
-# 9. Test
-pnpm cli dispatch offload-test --repo <your-repo> --sha <commit-sha> --command "echo hello"
+# 9. Test — dispatch via the CLI (env-var driven, mirrors the GHA Action contract)
+INPUT_RUN=offload-test \
+INPUT_ENDPOINT=https://flare-dispatch-v0.<your-subdomain>.workers.dev \
+INPUT_HMAC_SECRET=$HMAC_SECRET \
+INPUT_INPUTS='{"repo":"owner/test-repo","sha":"<sha>","command":"echo hello"}' \
+GITHUB_REPOSITORY=owner/test-repo GITHUB_SHA=<sha> \
+  pnpm --filter @flare-dispatch/cli cli dispatch
 ```
 
 After step 9, the Dispatcher creates a check-run on the commit and reports `success` once `echo hello` completes in a container.
@@ -282,18 +346,18 @@ The Dispatcher is itself a Worker, so ongoing deploys don't have to be manual `w
 
 `@flare-dispatch/cli` ships as a thin wrapper around the HTTP API. Used for setup, local dispatch, and ops.
 
-```sh
-flare-dispatch init                         # interactive setup; runs the wrangler/d1/kv create steps
-flare-dispatch deploy                       # wrangler deploy + run migrations
-flare-dispatch github-app create            # manifest-based App creation
-flare-dispatch dispatch <run> ...           # send a one-off dispatch
-flare-dispatch executions list              # list recent executions (D1 query)
-flare-dispatch executions view <id>         # show execution details + log links
-flare-dispatch logs <execution-id> <step>   # stream R2 NDJSON log
-flare-dispatch runs list                    # list registered runs
-```
+| Subcommand | Status | Notes |
+|---|---|---|
+| `dispatch` | Live | Env-var driven (`INPUT_RUN`, `INPUT_ENDPOINT`, `INPUT_HMAC_SECRET`, `INPUT_INPUTS`, …), mirroring the GHA Action contract. Also bundled into `actions/flare-dispatch-action/dist/index.js`. |
+| `github-app create --endpoint <url>` | Live | Prints the manifest-creation URL for the App-installation flow. |
+| `init` | **Planned (V4)** | Interactive setup; runs the wrangler/d1/kv create steps. |
+| `deploy` | **Planned (V4)** | `wrangler deploy` + run migrations. |
+| `executions list` | **Planned (V1)** | List recent executions (D1 query). |
+| `executions view <id>` | **Planned (V1)** | Show execution details + log links. |
+| `logs <execution-id> <step>` | **Planned (V1)** | Stream R2 NDJSON log. |
+| `runs list` | **Planned (V4)** | List registered runs (`GET /health` returns the list today). |
 
-The CLI uses `@effect/cli` and the same Effect-TS types as the run runtime — so options/args are typed, errors are tagged, and adding a subcommand is one file.
+The CLI uses `@effect/cli` and the same Effect-TS types as the run runtime — so options/args are typed, errors are tagged, and adding a subcommand is one file (`packages/cli/src/command.ts`). The standalone binary is `flare-dispatch`; from a monorepo checkout, invoke via `pnpm --filter @flare-dispatch/cli cli <subcommand>`.
 
 ## Local development
 
@@ -360,7 +424,9 @@ GHA workflows reference the appropriate endpoint via env secrets.
 
 ## Retention and cleanup
 
-R2 lifecycle policy in `infra/r2-lifecycle.json`:
+> **Status: Planned (V4).** Neither `infra/r2-lifecycle.json` nor `infra/cron-cleanup.ts` ships at HEAD. The lifecycle policy and the D1 retention sweep are forward-looking; today an operator manages retention manually (drop and recreate the R2 bucket, or run an ad-hoc `wrangler d1 execute --command "DELETE FROM executions WHERE ..."`).
+
+R2 lifecycle policy (to live in `infra/r2-lifecycle.json` once V4 lands):
 
 ```json
 {
@@ -372,16 +438,14 @@ R2 lifecycle policy in `infra/r2-lifecycle.json`:
 }
 ```
 
-Applied with `wrangler r2 bucket lifecycle set flare-dispatch-prod --file infra/r2-lifecycle.json` (replaces the full policy). Individual rules can be appended with `wrangler r2 bucket lifecycle add flare-dispatch-prod ...` and removed with `wrangler r2 bucket lifecycle remove flare-dispatch-prod --id <rule-id>`. There is no `wrangler r2 bucket lifecycle put` subcommand.
+When V4 lands, this is applied with `wrangler r2 bucket lifecycle set flare-dispatch-prod --file infra/r2-lifecycle.json` (replaces the full policy). Individual rules can be appended with `wrangler r2 bucket lifecycle add flare-dispatch-prod ...` and removed with `wrangler r2 bucket lifecycle remove flare-dispatch-prod --id <rule-id>`. There is no `wrangler r2 bucket lifecycle put` subcommand.
 
 *Source:* https://developers.cloudflare.com/r2/buckets/object-lifecycles/ (2026-05).
 
-D1 has no built-in lifecycle. The Dispatcher's `scheduled()` handler prunes `executions` and `steps` older than 90 days (`infra/cron-cleanup.ts`) on the `0 3 * * *` tick. This is *not* a separate Worker — there is one `scheduled()` handler per Dispatcher, and it does two things on each tick: run any internal housekeeping (the D1 sweep) and instantiate a scheduling Workflow for every run whose `schedules` declares the firing expression. So `0 3 * * *` can drive both the retention sweep and a nightly `pr-review-sweep` at once.
-
-The cron lives in the Worker-wide `triggers.crons` array (see [§ Wrangler config](#wrangler-config)) — there is no separate retention-only cron:
+D1 has no built-in lifecycle. The V4 plan is for the Dispatcher's `scheduled()` handler to prune `executions` and `steps` older than 90 days on a dedicated `0 3 * * *` tick — the same single `scheduled()` handler that today only routes cron ticks to Schedule-mode runs would gain a housekeeping branch. Until then, the Worker-wide `triggers.crons` array (see [§ Wrangler config](#wrangler-config)) carries only the Schedule-mode entries each run declares:
 
 ```jsonc
-"triggers": { "crons": ["0 3 * * *", "0 9 * * 1"] }
+"triggers": { "crons": ["0 14 * * *"] }
 ```
 
 ## Cost ceiling — what to expect
@@ -392,10 +456,14 @@ The full pricing model, per-execution cost anatomy, both worked estimates, the h
 
 ## Security posture
 
-- **HMAC** on `/v1/dispatch/:run`. 32-byte secret, constant-time `crypto.subtle.verify("HMAC", ...)` (no `timingSafeEqual` — that's Node-only and isn't on Workers).
-- **App webhook signature** on `/v1/webhooks/github`. `X-Hub-Signature-256` verified against `GITHUB_WEBHOOK_SECRET` with the same `crypto.subtle.verify` primitive. No shared secret with the user's GHA workflows.
-- **Cloudflare Access** on `/v1/admin/*`. Worker re-verifies the Access JWT in code so a misconfigured Access app cannot leak the admin surface. The same `/v1/admin/events/:wf_id` route debounces `(wf_id, decider_email)` in `IDEMPOTENCY_KV` (1h window) so racing approvals are deterministic.
-- **App installation tokens** are short-lived (1 hour TTL), scoped to one installation, refreshed on demand. Cached in `INSTALL_TOKEN_KV` with 55min TTL so the token survives Worker recycles mid-execution. No long-lived PATs.
+A standalone trust/threat-model spec — adversaries, controls, and known gaps — is in [07-trust-model](07-trust-model.md). This section is the operator-facing summary.
+
+- **HMAC** on `/v1/dispatch/:run` (live). 32-byte secret, raw-request-bytes canonicalization (`apps/dispatcher/src/hmac.ts`), constant-time `crypto.subtle.verify("HMAC", ...)`. No `timingSafeEqual` — that's Node-only and isn't on Workers. A 401 carries `dispatcher_secret_fingerprint = sha256(secret)[:8]` so an operator can diff it against the caller-side fingerprint (issue #24).
+- **App webhook signature** on `/v1/webhooks/github`. `X-Hub-Signature-256` verified against `GITHUB_WEBHOOK_SECRET` with the same `crypto.subtle.verify` primitive. No shared secret with the user's GHA workflows. **Status: Planned (V1)** — receiver not yet wired.
+- **Cloudflare Access** on `/v1/admin/*`. Worker re-verifies the Access JWT in code so a misconfigured Access app cannot leak the admin surface. The same `/v1/admin/events/:wf_id` route debounces `(wf_id, decider_email)` in `IDEMPOTENCY_KV` (1h window) so racing approvals are deterministic. **Status: Planned (V2/V3)** — lands with `step.waitForEvent`.
+- **App installation tokens** are short-lived (1 hour TTL), scoped to one installation, refreshed on demand. At V0 cached in **Worker memory only**; KV-backed `INSTALL_TOKEN_KV` (55min TTL across Worker recycles) is Planned (V1). No long-lived PATs.
+- **HTTP scheme allowlist** on the GHA Action's `endpoint` input (live). `packages/cli/src/dispatch.ts` rejects anything but `http:`/`https:` before any network attempt, blocking `file://` / `data:` / `ftp://` / cloud-metadata pivots.
+- **`::error::` workflow-command escaping** (live). The Action's `safeForCmd` in `packages/cli/src/dispatch.ts` percent-encodes `%`/`\r`/`\n` and caps user-controlled strings at 500 chars before they reach a runner log, so a hostile Dispatcher response cannot inject a second workflow command.
 - **R2 signed URLs** for artifacts: TTL configurable per upload (default 30 days), can be revoked by rotating the R2 access key.
 - **Container isolation**: each Container instance is a fresh filesystem. No persistence between executions.
 - **Workers Secrets** for all credentials. Never committed; rotated via `wrangler secret put`.
@@ -412,20 +480,20 @@ The full pricing model, per-execution cost anatomy, both worked estimates, the h
 | R2 storage growth | CF dashboard | > 50GB → review lifecycle policy |
 | Check-run write 4xx | App webhook log | any → installation revoked or token expired |
 
-A `infra/grafana/` dashboard ships in V4 once OTel export is wired.
+A `infra/grafana/` dashboard is **Planned (V4)** once OTel export is wired.
 
 ## Reference: ship-ready checklist
 
 - [ ] Workers Paid plan active
-- [ ] `wrangler.jsonc` updated with bucket / db / KV / queue IDs (three KVs: `RUNS_CONFIG`, `IDEMPOTENCY_KV`, `INSTALL_TOKEN_KV`)
+- [ ] `wrangler.jsonc` updated with bucket / db / KV IDs (live today: one KV `CONFIG_KV`; Planned V1 adds `IDEMPOTENCY_KV` + `INSTALL_TOKEN_KV`)
 - [ ] D1 schema applied
-- [ ] R2 lifecycle policy applied
-- [ ] Worker Secrets set (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` always; `HMAC_SECRET` if using the GHA Action / direct-POST path)
+- [ ] R2 lifecycle policy applied **(Planned, V4)**
+- [ ] Worker Secrets set (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` always; `HMAC_SECRET` if using the GHA Action / direct-POST path; `BROWSER_CDP_CONNECT_URL` + `BROWSER_CDP_API_TOKEN` if running `cdp-acceptance`)
 - [ ] GitHub App created and installed on target repos
-- [ ] Cloudflare Access app configured for `/v1/admin/*` (if any run uses `step.waitForEvent`)
+- [ ] Cloudflare Access app configured for `/v1/admin/*` **(Planned, V2/V3 — only relevant once a run uses `step.waitForEvent`)**
 - [ ] `health` endpoint returns ok with run list
-- [ ] One successful dispatch end-to-end (CLI, GHA Action, or App webhook)
+- [ ] One successful dispatch end-to-end (CLI or GHA Action; App-webhook path lands in V1)
 - [ ] Check-run appears on the PR
 - [ ] Required-status-check configured on the protected branch
-- [ ] `triggers.crons` lists every expression a run's `schedules` declares, plus `0 3 * * *` for the D1 retention sweep
+- [ ] `triggers.crons` lists every expression a run's `schedules` declares (plus `0 3 * * *` for the D1 retention sweep once V4 lands)
 - [ ] Schedule-mode runs verified — `controller.cron` routes to the expected run(s); a cron tick produces a scheduling Workflow (check D1 `executions`)
