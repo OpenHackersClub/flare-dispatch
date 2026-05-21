@@ -61,13 +61,27 @@
     }
   ],
 
-  // KV namespace backing the `config` capability — dynamic config + the secret
-  // store the `loadSecrets` primitive resolves run credentials through.
-  // Provision with `wrangler kv namespace create CONFIG_KV` and paste the id.
+  // KV namespaces.
+  //   * CONFIG_KV         — `config` capability + the `loadSecrets` store.
+  //   * IDEMPOTENCY_KV    — receiver-level dedup (spec 04-gha § Receiver
+  //                         dedup). Optional: absent → dedup falls back to CF
+  //                         Workflows' platform-level `create({id})` no-op.
+  //   * INSTALL_TOKEN_KV  — GitHub App installation-token cache. Optional:
+  //                         absent → token cached in Worker memory only.
+  // Provision each with `wrangler kv namespace create <BINDING>` and paste
+  // the id back in.
   "kv_namespaces": [
     {
       "binding": "CONFIG_KV",
       "id": "efc3ec8fd0d040e689d43276e0946c7f"
+    },
+    {
+      "binding": "IDEMPOTENCY_KV",
+      "id": "00000000000000000000000000000000"
+    },
+    {
+      "binding": "INSTALL_TOKEN_KV",
+      "id": "00000000000000000000000000000000"
     }
   ],
 

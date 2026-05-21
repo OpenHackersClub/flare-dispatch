@@ -28496,6 +28496,16 @@ var requireInput = (env, name) => {
   return value5 !== void 0 ? Effect_exports.succeed(value5) : Effect_exports.fail(new MissingInput({ name }));
 };
 var stripTrailingSlash = (s) => s.endsWith("/") ? s.slice(0, -1) : s;
+var computeIdempotencyKey = (env, run3) => {
+  const repo = env.GITHUB_REPOSITORY ?? "";
+  const sha = env.GITHUB_SHA ?? "";
+  if (repo !== "" && sha !== "") {
+    const repoSafe = repo.replace(/\//g, "_");
+    const shaShort = sha.slice(0, 12);
+    return `${run3}-${repoSafe}-${shaShort}`;
+  }
+  return `${run3}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+};
 var backoffMs = (env) => {
   const raw = env.FLARE_RETRY_BACKOFF_MS;
   if (!raw) return 5e3;
@@ -28544,13 +28554,14 @@ var defaultFetch = async (url2, init) => {
     return { status: 0, text: () => Promise.resolve(message) };
   }
 };
-var postOnce = (url2, body, signature, attempt, fetchImpl, localFingerprint) => Effect_exports.gen(function* () {
+var postOnce = (url2, body, signature, idempotencyKey, attempt, fetchImpl, localFingerprint) => Effect_exports.gen(function* () {
   const res = yield* Effect_exports.promise(
     () => fetchImpl(url2, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-FlareDispatch-Signature": signature
+        "X-FlareDispatch-Signature": signature,
+        "Idempotency-Key": idempotencyKey
       },
       body
     })
@@ -28592,10 +28603,19 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
   const bytes = new TextEncoder().encode(JSON.stringify(body));
   const signature = signBytes(secret2, bytes);
   const localFp = secretFingerprint(secret2);
+  const idempotencyKey = computeIdempotencyKey(env, run3);
   let attempt = 0;
   const attemptOnce = Effect_exports.suspend(() => {
     attempt += 1;
-    return postOnce(url2, bytes, signature, attempt, fetchImpl, localFp).pipe(
+    return postOnce(
+      url2,
+      bytes,
+      signature,
+      idempotencyKey,
+      attempt,
+      fetchImpl,
+      localFp
+    ).pipe(
       Effect_exports.tapError(
         (e) => Match_exports.value(e).pipe(
           Match_exports.tag(

@@ -40,6 +40,26 @@ export interface Env {
   readonly CONFIG_KV?: KVNamespace;
 
   /**
+   * Receiver-level dedup KV — specs/04-gha-integration.md § Receiver dedup.
+   * Keyed on the caller-supplied `Idempotency-Key` (or the semantic
+   * `{run}:{repo}:{sha}` fallback) → the stored `executionId`. A repeat
+   * delivery short-circuits to `202 {executionId}` without ever creating the
+   * Workflow. Optional: absent → no receiver short-circuit, dedup falls back
+   * to CF Workflows' platform-level `create({id})` no-op behaviour, which is
+   * still correct just one RPC more expensive per redelivery.
+   */
+  readonly IDEMPOTENCY_KV?: KVNamespace;
+
+  /**
+   * Installation-token cache KV — specs/04-gha-integration.md § Check-runs
+   * callback. Keyed by `installation_id`, value is the cached `{ token,
+   * expiresAt }` so a Worker eviction does not force a fresh JWT exchange on
+   * every check-run callback. Optional: absent → tokens cached in Worker
+   * memory only (the V0 behaviour).
+   */
+  readonly INSTALL_TOKEN_KV?: KVNamespace;
+
+  /**
    * GitHub App id — Worker secret, set via `wrangler secret put GITHUB_APP_ID`.
    * Numeric, carried as a string. With `GITHUB_APP_PRIVATE_KEY` it authorizes
    * the check-run callback; absent, the runtime degrades to a no-op `Checks`

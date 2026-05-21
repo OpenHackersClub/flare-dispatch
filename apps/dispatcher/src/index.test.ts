@@ -15,7 +15,12 @@
 import { describe, expect, it } from "vitest";
 import { handleRequest } from "./router";
 import { fingerprint, sign } from "./hmac";
-import { makeFakeEnv, makeFakeR2, makeFakeWorkflow } from "./test-helpers";
+import {
+  makeFakeEnv,
+  makeFakeKv,
+  makeFakeR2,
+  makeFakeWorkflow,
+} from "./test-helpers";
 
 const HMAC_SECRET = "acceptance-test-secret-please-rotate";
 
@@ -42,7 +47,12 @@ const validBody = {
 const dispatchRequest = async (
   run: string,
   bodyText: string,
-  opts: { sign?: boolean; signWith?: string; signature?: string } = {},
+  opts: {
+    sign?: boolean;
+    signWith?: string;
+    signature?: string;
+    idempotencyKey?: string;
+  } = {},
 ): Promise<Request> => {
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -54,6 +64,9 @@ const dispatchRequest = async (
       opts.signWith ?? HMAC_SECRET,
       new TextEncoder().encode(bodyText),
     );
+  }
+  if (opts.idempotencyKey !== undefined) {
+    headers["Idempotency-Key"] = opts.idempotencyKey;
   }
   return new Request(`https://dispatcher.example/v1/dispatch/${run}`, {
     method: "POST",
@@ -68,11 +81,17 @@ const errorOf = async (res: Response): Promise<string> => {
   return body.error ?? "";
 };
 
-const fixture = () => {
+const fixture = (opts: { withIdempotencyKv?: boolean } = {}) => {
   const workflow = makeFakeWorkflow();
   const storage = makeFakeR2();
-  const env = makeFakeEnv({ hmacSecret: HMAC_SECRET, workflow, storage });
-  return { workflow, storage, env };
+  const idempotencyKv = opts.withIdempotencyKv ? makeFakeKv() : undefined;
+  const env = makeFakeEnv({
+    hmacSecret: HMAC_SECRET,
+    workflow,
+    storage,
+    idempotencyKv: idempotencyKv?.binding,
+  });
+  return { workflow, storage, idempotencyKv, env };
 };
 
 describe("GET /health", () => {
@@ -85,7 +104,13 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       status: "ok",
-      runs: ["cdp-acceptance", "offload-test", "product-demo"],
+      runs: [
+        "cdp-acceptance",
+        "matrix-fanout",
+        "offload-test",
+        "playwright-e2e",
+        "product-demo",
+      ],
     });
   });
 
@@ -202,7 +227,7 @@ describe("POST /v1/dispatch/:run — validation", () => {
 });
 
 describe("POST /v1/dispatch/:run — success", () => {
-  it("valid HMAC + valid body → 202 { executionId } and creates the Workflow", async () => {
+  it("valid HMAC + valid body → 202 { executionId } with semantic id and creates the Workflow", async () => {
     const { env, workflow } = fixture();
     const bodyText = JSON.stringify(validBody);
     const req = await dispatchRequest("offload-test", bodyText);
@@ -210,9 +235,11 @@ describe("POST /v1/dispatch/:run — success", () => {
 
     expect(res.status).toBe(202);
     const payload = (await res.json()) as { executionId: string };
-    expect(typeof payload.executionId).toBe("string");
-    // A ULID is 26 Crockford-base32 chars.
-    expect(payload.executionId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    // Semantic instanceId per spec 04-gha § Receiver dedup —
+    // `{run}:{repo}:{sha[:12]}` (slashes in repo replaced with `_`).
+    expect(payload.executionId).toBe(
+      "offload-test:owner_test-repo:abc123def456",
+    );
 
     expect(workflow.calls).toHaveLength(1);
     const call = workflow.calls[0]!;
@@ -314,6 +341,56 @@ describe("GET /v1/artifacts/:execution/:name", () => {
       env,
     );
     expect(res.status).toBe(405);
+  });
+});
+
+describe("POST /v1/dispatch/:run — dedup", () => {
+  it("explicit Idempotency-Key header → executionId equals the header value", async () => {
+    const { env, workflow } = fixture();
+    const bodyText = JSON.stringify(validBody);
+    const req = await dispatchRequest("offload-test", bodyText, {
+      idempotencyKey: "caller-supplied-key-2026",
+    });
+    const res = await handleRequest(req, env);
+
+    expect(res.status).toBe(202);
+    const payload = (await res.json()) as { executionId: string };
+    expect(payload.executionId).toBe("caller-supplied-key-2026");
+    expect(workflow.calls).toHaveLength(1);
+    expect(workflow.calls[0]!.id).toBe("caller-supplied-key-2026");
+  });
+
+  it("second dispatch with same semantic key collapses — one Workflow.create, same executionId", async () => {
+    const { env, workflow, idempotencyKv } = fixture({
+      withIdempotencyKv: true,
+    });
+    expect(idempotencyKv).toBeDefined();
+
+    const bodyText = JSON.stringify(validBody);
+    const req1 = await dispatchRequest("offload-test", bodyText);
+    const res1 = await handleRequest(req1, env);
+    expect(res1.status).toBe(202);
+    const id1 = (await res1.json() as { executionId: string }).executionId;
+
+    const req2 = await dispatchRequest("offload-test", bodyText);
+    const res2 = await handleRequest(req2, env);
+    expect(res2.status).toBe(202);
+    const id2 = (await res2.json() as { executionId: string }).executionId;
+
+    expect(id1).toBe(id2);
+    // Workflow.create is short-circuited on the second call.
+    expect(workflow.calls).toHaveLength(1);
+  });
+
+  it("without IDEMPOTENCY_KV bound, semantic id is still used — duplicate Workflow.create is the dedup", async () => {
+    const { env, workflow } = fixture();
+    const bodyText = JSON.stringify(validBody);
+    await handleRequest(await dispatchRequest("offload-test", bodyText), env);
+    await handleRequest(await dispatchRequest("offload-test", bodyText), env);
+    // Two create calls, both with the same semantic id — CF Workflows dedups
+    // at the platform level. (Our fake doesn't simulate that.)
+    expect(workflow.calls).toHaveLength(2);
+    expect(workflow.calls[0]!.id).toBe(workflow.calls[1]!.id);
   });
 });
 

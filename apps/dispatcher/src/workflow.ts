@@ -52,7 +52,13 @@ import {
   type ChecksGithubConfig,
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
-import { cdpAcceptance, productDemo, offloadTest } from "@flare-dispatch/runs";
+import {
+  cdpAcceptance,
+  matrixFanout,
+  offloadTest,
+  playwrightE2E,
+  productDemo,
+} from "@flare-dispatch/runs";
 import type { Env } from "./env";
 
 /**
@@ -64,6 +70,8 @@ import type { Env } from "./env";
 const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
+  [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
+  [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
   [productDemo.name]: productDemo as Run<unknown, unknown>,
 };
 

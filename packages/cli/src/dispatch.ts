@@ -162,6 +162,29 @@ const requireInput = (
 const stripTrailingSlash = (s: string): string =>
   s.endsWith("/") ? s.slice(0, -1) : s;
 
+/**
+ * Compute an `Idempotency-Key` per spec 04-gha § Dispatch body — "the GHA
+ * Action generates one per dispatch." Derived from `{run, repo, sha[:12]}`
+ * so two retries of the same GHA step (e.g. a re-run after a transient
+ * failure) collapse onto one execution at the receiver. Falls back to a
+ * timestamp-randomized form if `repo` or `sha` is missing.
+ *
+ * Uses `-` as the separator (PR #22 fix — `:` was unsafe for KV keys).
+ */
+export const computeIdempotencyKey = (
+  env: DispatchEnv,
+  run: string,
+): string => {
+  const repo = env.GITHUB_REPOSITORY ?? "";
+  const sha = env.GITHUB_SHA ?? "";
+  if (repo !== "" && sha !== "") {
+    const repoSafe = repo.replace(/\//g, "_");
+    const shaShort = sha.slice(0, 12);
+    return `${run}-${repoSafe}-${shaShort}`;
+  }
+  return `${run}-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+};
+
 /** Default backoff base — overridable via `FLARE_RETRY_BACKOFF_MS` for tests. */
 const backoffMs = (env: DispatchEnv): number => {
   const raw = env.FLARE_RETRY_BACKOFF_MS;
@@ -265,6 +288,7 @@ const postOnce = (
   url: string,
   body: Uint8Array,
   signature: string,
+  idempotencyKey: string,
   attempt: number,
   fetchImpl: FetchLike,
   localFingerprint: string,
@@ -279,6 +303,7 @@ const postOnce = (
         headers: {
           "Content-Type": "application/json",
           "X-FlareDispatch-Signature": signature,
+          "Idempotency-Key": idempotencyKey,
         },
         body,
       }),
@@ -368,12 +393,24 @@ export const runDispatch = (
     // can print it next to the dispatcher's fingerprint (issue #24).
     const localFp = secretFingerprint(secret);
 
+    // Idempotency-Key per spec 04-gha § Dispatch body — same key for every
+    // retry attempt so the receiver collapses GHA re-runs of the same step.
+    const idempotencyKey = computeIdempotencyKey(env, run);
+
     // Mutable so the schedule can advance it; Schedule.recurs handles the
     // bound, and `whileInput` keeps retrying only on TransientFailure.
     let attempt = 0;
     const attemptOnce = Effect.suspend(() => {
       attempt += 1;
-      return postOnce(url, bytes, signature, attempt, fetchImpl, localFp).pipe(
+      return postOnce(
+        url,
+        bytes,
+        signature,
+        idempotencyKey,
+        attempt,
+        fetchImpl,
+        localFp,
+      ).pipe(
         Effect.tapError((e) =>
           Match.value(e).pipe(
             Match.tag("TransientFailure", ({ status }) =>

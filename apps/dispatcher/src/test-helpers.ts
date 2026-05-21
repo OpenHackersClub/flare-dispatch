@@ -85,16 +85,46 @@ export const makeFakeR2 = (): FakeR2 => {
   };
 };
 
+/** A fake KV namespace backed by an in-memory Map — get/put/delete only. */
+export interface FakeKv {
+  readonly binding: KVNamespace;
+  /** Inspect stored entries. */
+  readonly store: Map<string, string>;
+}
+
+export const makeFakeKv = (): FakeKv => {
+  const store = new Map<string, string>();
+  const binding = {
+    get: async (key: string) => store.get(key) ?? null,
+    put: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
+    },
+    list: async () => ({
+      keys: Array.from(store.keys()).map((name) => ({ name })),
+      list_complete: true,
+      cursor: "",
+    }),
+  } as unknown as KVNamespace;
+  return { binding, store };
+};
+
 /** Build a fake `Env` with the given HMAC secret and binding fakes. */
 export const makeFakeEnv = (opts: {
   hmacSecret: string;
   workflow: FakeWorkflow;
   storage: FakeR2;
+  idempotencyKv?: KVNamespace;
 }): Env =>
   ({
     HMAC_SECRET: opts.hmacSecret,
     RUNS_WORKFLOW: opts.workflow.binding,
     RUNS_STORAGE: opts.storage.binding,
+    ...(opts.idempotencyKv !== undefined
+      ? { IDEMPOTENCY_KV: opts.idempotencyKv }
+      : {}),
     // Not exercised by PR5 routes — cast away.
     RUNS_SANDBOX: {} as Env["RUNS_SANDBOX"],
     RUNS_METADATA: {} as Env["RUNS_METADATA"],

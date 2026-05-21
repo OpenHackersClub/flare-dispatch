@@ -26,7 +26,22 @@ import type { ParseError } from "effect/ParseResult";
 import type { Env } from "../env";
 import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
 import { lookupRun } from "../registry";
-import { ulid } from "../ulid";
+
+/** TTL on receiver-dedup KV entries — spec 04-gha § Receiver dedup (24h). */
+const IDEMPOTENCY_TTL_SEC = 86_400;
+
+/**
+ * Build the semantic Workflow instanceId per spec 04-gha § Receiver dedup:
+ * `{run}:{repo}:{sha[:12]}`, with `/` in the repo replaced with `_` so the
+ * id is a single path segment. Two dispatches naming the same logical work
+ * collapse onto one execution at the CF Workflows layer.
+ *
+ * SHA is truncated to 12 chars to keep the id well within CF Workflows'
+ * 64-char instance-id limit; 12 hex chars is ~4.7e14 — collision space large
+ * enough for a single repo's worth of unique commits.
+ */
+const semanticInstanceId = (run: string, repo: string, sha: string): string =>
+  `${run}:${repo.replace(/\//g, "_")}:${sha.slice(0, 12)}`;
 
 /** JSON helper — a `Response` with the right content-type. */
 const json = (body: unknown, status: number): Response =>
@@ -168,11 +183,31 @@ export const handleDispatch = async (
     );
   }
 
-  // 6. Accepted — mint a ULID, build the Workflow `params`, instantiate.
-  //    `params` is exactly the `DispatchPayload` shape `RunWorkflow.run`
-  //    decodes (apps/dispatcher/src/workflow.ts). `installation_id` (+
-  //    `pr_number` when present) ride along in `github` for PR6.
-  const executionId = ulid();
+  // 6. Compute the dedup key + Workflow instanceId.
+  //    Precedence: explicit `Idempotency-Key` header (direct callers MUST send
+  //    one per spec 04-gha) → semantic `{run}:{repo}:{sha}` fallback. Both
+  //    serve as BOTH the executionId returned to the caller AND the Workflow
+  //    instanceId, so platform-level `create({id})` dedup is automatic.
+  const headerKey = request.headers.get("Idempotency-Key");
+  const executionId =
+    headerKey && headerKey.length > 0
+      ? headerKey
+      : semanticInstanceId(body.run, body.github.repo, body.github.sha);
+
+  // 7. Receiver-level dedup short-circuit. With IDEMPOTENCY_KV bound, a
+  //    repeat delivery returns 202 immediately without touching Workflows.
+  //    Without the KV, dedup falls back to CF Workflows' duplicate-create
+  //    no-op (same end-state, one wasted RPC per redelivery).
+  if (env.IDEMPOTENCY_KV !== undefined) {
+    const existing = await env.IDEMPOTENCY_KV.get(executionId);
+    if (existing !== null) {
+      return json({ executionId }, 202);
+    }
+  }
+
+  // 8. Build the Workflow `params` — exactly the `DispatchPayload` shape
+  //    `RunWorkflow.run` decodes (apps/dispatcher/src/workflow.ts).
+  //    `installation_id` (+ `pr_number` when present) ride along in `github`.
   const params = {
     executionId,
     run: body.run,
@@ -189,6 +224,15 @@ export const handleDispatch = async (
   };
 
   await env.RUNS_WORKFLOW.create({ id: executionId, params });
+
+  // 9. Record the dedup key AFTER the Workflow create succeeds — a failed
+  //    create must remain retryable (the second attempt would otherwise be
+  //    silently short-circuited above).
+  if (env.IDEMPOTENCY_KV !== undefined) {
+    await env.IDEMPOTENCY_KV.put(executionId, executionId, {
+      expirationTtl: IDEMPOTENCY_TTL_SEC,
+    });
+  }
 
   return json({ executionId }, 202);
 };
