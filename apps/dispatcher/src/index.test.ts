@@ -106,6 +106,7 @@ describe("GET /health", () => {
       status: "ok",
       runs: [
         "cdp-acceptance",
+        "deploy-smoke",
         "matrix-fanout",
         "offload-test",
         "playwright-e2e",

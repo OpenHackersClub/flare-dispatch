@@ -117,6 +117,7 @@ export const makeFakeEnv = (opts: {
   workflow: FakeWorkflow;
   storage: FakeR2;
   idempotencyKv?: KVNamespace;
+  githubWebhookSecret?: string;
 }): Env =>
   ({
     HMAC_SECRET: opts.hmacSecret,
@@ -124,6 +125,9 @@ export const makeFakeEnv = (opts: {
     RUNS_STORAGE: opts.storage.binding,
     ...(opts.idempotencyKv !== undefined
       ? { IDEMPOTENCY_KV: opts.idempotencyKv }
+      : {}),
+    ...(opts.githubWebhookSecret !== undefined
+      ? { GITHUB_WEBHOOK_SECRET: opts.githubWebhookSecret }
       : {}),
     // Not exercised by PR5 routes — cast away.
     RUNS_SANDBOX: {} as Env["RUNS_SANDBOX"],

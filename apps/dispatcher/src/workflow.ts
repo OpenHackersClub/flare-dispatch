@@ -54,6 +54,7 @@ import {
 } from "@flare-dispatch/runtime-cf";
 import {
   cdpAcceptance,
+  deploySmoke,
   matrixFanout,
   offloadTest,
   playwrightE2E,
@@ -70,6 +71,7 @@ import type { Env } from "./env";
 const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
+  [deploySmoke.name]: deploySmoke as Run<unknown, unknown>,
   [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
   [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
   [productDemo.name]: productDemo as Run<unknown, unknown>,

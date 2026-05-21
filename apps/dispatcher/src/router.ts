@@ -24,6 +24,7 @@ import { handleArtifact } from "./routes/artifacts";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
 import { handleInstallNew, handleInstalled } from "./routes/github";
+import { handleGithubWebhook } from "./routes/webhook";
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {
@@ -58,6 +59,19 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleDispatch(request, env, decodeURIComponent(segments[2]!));
+  }
+
+  // POST /v1/webhooks/github
+  if (
+    segments.length === 3 &&
+    segments[0] === "v1" &&
+    segments[1] === "webhooks" &&
+    segments[2] === "github"
+  ) {
+    if (request.method !== "POST") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleGithubWebhook(request, env);
   }
 
   // GET /v1/artifacts/:execution/:name

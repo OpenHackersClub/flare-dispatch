@@ -75,6 +75,15 @@ export interface Env {
   readonly GITHUB_APP_PRIVATE_KEY?: string;
 
   /**
+   * GitHub App webhook secret — Worker secret. Verifies `X-Hub-Signature-256`
+   * on `POST /v1/webhooks/github` (specs/04-gha-integration.md § Webhook
+   * mode). Absent → the webhook route refuses (`503 webhook_not_configured`):
+   * Webhook mode is opt-in, and silently accepting unsigned deliveries would
+   * be a worse failure than rejecting.
+   */
+  readonly GITHUB_WEBHOOK_SECRET?: string;
+
+  /**
    * Browser Rendering CDP `/connect` WebSocket URL — Worker secret. The
    * `cdp-acceptance` run hands this (with `BROWSER_CDP_API_TOKEN` appended) to
    * the container's Playwright process. Absent, the runtime degrades to the

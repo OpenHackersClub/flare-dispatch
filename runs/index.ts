@@ -10,6 +10,7 @@
 
 export { offloadTest } from "./offload-test";
 export { cdpAcceptance } from "./cdp-acceptance";
+export { deploySmoke } from "./deploy-smoke";
 export { matrixFanout } from "./matrix-fanout";
 export { playwrightE2E } from "./playwright-e2e";
 export { productDemo } from "./product-demo";
