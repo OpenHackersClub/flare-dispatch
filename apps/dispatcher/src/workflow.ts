@@ -52,7 +52,14 @@ import {
   type ChecksGithubConfig,
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
-import { cdpAcceptance, productDemo, offloadTest } from "@flare-dispatch/runs";
+import {
+  cdpAcceptance,
+  deploySmoke,
+  matrixFanout,
+  offloadTest,
+  playwrightE2E,
+  productDemo,
+} from "@flare-dispatch/runs";
 import type { Env } from "./env";
 
 /**
@@ -64,6 +71,9 @@ import type { Env } from "./env";
 const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
+  [deploySmoke.name]: deploySmoke as Run<unknown, unknown>,
+  [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
+  [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
   [productDemo.name]: productDemo as Run<unknown, unknown>,
 };
 
@@ -174,6 +184,19 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       checks: resolveChecksConfig(this.env, payload.github),
       configKv: this.env.CONFIG_KV,
       browser: resolveBrowserConfig(this.env),
+      // Wire the live OIDC signing Layer when both the JWK + issuer URL are
+      // configured. Subject defaults to `<run>:<execution-id>` so an IAM
+      // trust policy can scope a role to a single run+execution.
+      ...(this.env.OIDC_SIGNING_JWK !== undefined &&
+      this.env.OIDC_ISSUER_URL !== undefined
+        ? {
+            oidc: {
+              signingJwkJson: this.env.OIDC_SIGNING_JWK,
+              issuerUrl: this.env.OIDC_ISSUER_URL,
+              defaultSubject: `${payload.run}:${payload.executionId}`,
+            },
+          }
+        : {}),
     });
 
     // The execution program — the `finalize` boundary:
@@ -221,10 +244,25 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         onFailure: () => "failure" as const,
       });
 
+      // Persist the run output as JSON so `io.priorExecution` can recover it
+      // on the next execution in the semantic family. A failed Exit has no
+      // output; the column stays NULL.
+      const summaryJson = Exit.match(exit, {
+        onSuccess: (out) => {
+          try {
+            return JSON.stringify(out);
+          } catch {
+            return undefined;
+          }
+        },
+        onFailure: () => undefined,
+      });
+
       yield* executions.finishExecution({
         id: payload.executionId,
         completedAt,
         status,
+        ...(summaryJson !== undefined ? { summaryJson } : {}),
       });
 
       // Complete the check-run with the run's verdict.

@@ -7,10 +7,10 @@
 //     channel — no throw escapes the Effect.
 
 import { it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { expect } from "vitest";
-import { ExecFailed } from "./errors";
-import { makeCFRuntimeTest } from "./testing";
+import { ApprovalTimedOut, EventPayloadInvalid, ExecFailed } from "./errors";
+import { enqueueInlineEvent, makeCFRuntimeTest } from "./testing";
 import { step } from "./step";
 
 it.effect("records one start+end step record per step name", () => {
@@ -121,3 +121,83 @@ it.effect("step recovers via Effect.catchTag inside the run", () => {
     expect(handles.executions.steps[0]!.status).toBe("failure");
   }).pipe(Effect.provide(layer));
 });
+
+const Approval = Schema.Struct({
+  decision: Schema.Literal("approve", "reject"),
+  deciderEmail: Schema.String,
+});
+
+it.effect("step.waitForEvent resolves with a queued event payload", () => {
+  const { layer, handles } = makeCFRuntimeTest();
+  // Pre-queue an approval event the run will pick up.
+  enqueueInlineEvent(handles.eventQueue, "release-approval", {
+    decision: "approve",
+    deciderEmail: "alice@example.com",
+  });
+
+  return Effect.gen(function* () {
+    const approval = yield* step.waitForEvent("release-approval", {
+      type: "release-approval",
+      timeout: "72 hours",
+      payloadSchema: Approval,
+    });
+    expect(approval).toEqual({
+      decision: "approve",
+      deciderEmail: "alice@example.com",
+    });
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("step.waitForEvent fails with ApprovalTimedOut on empty queue", () => {
+  const { layer } = makeCFRuntimeTest();
+
+  return Effect.gen(function* () {
+    const exit = yield* Effect.exit(
+      step.waitForEvent("release-approval", {
+        type: "release-approval",
+        timeout: "1 hour",
+        payloadSchema: Approval,
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    // Recover so the test asserts the tag.
+    const recovered = yield* step
+      .waitForEvent("release-approval", {
+        type: "release-approval",
+        timeout: "1 hour",
+        payloadSchema: Approval,
+      })
+      .pipe(
+        Effect.catchTag("ApprovalTimedOut", (e: ApprovalTimedOut) =>
+          Effect.succeed(`timed-out:${e.eventName}`),
+        ),
+      );
+    expect(recovered).toBe("timed-out:release-approval");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "step.waitForEvent fails with EventPayloadInvalid on schema mismatch",
+  () => {
+    const { layer, handles } = makeCFRuntimeTest();
+    // Queue a malformed payload — missing `deciderEmail`.
+    enqueueInlineEvent(handles.eventQueue, "release-approval", {
+      decision: "approve",
+    });
+
+    return Effect.gen(function* () {
+      const recovered = yield* step
+        .waitForEvent("release-approval", {
+          type: "release-approval",
+          timeout: "1 hour",
+          payloadSchema: Approval,
+        })
+        .pipe(
+          Effect.catchTag("EventPayloadInvalid", (e: EventPayloadInvalid) =>
+            Effect.succeed(`bad:${e.eventName}`),
+          ),
+        );
+      expect(recovered).toBe("bad:release-approval");
+    }).pipe(Effect.provide(layer));
+  },
+);

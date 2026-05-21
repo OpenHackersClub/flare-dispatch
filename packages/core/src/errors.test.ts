@@ -15,10 +15,13 @@ import {
   EventPayloadInvalid,
   ExecFailed,
   ExecTimeout,
+  GitHubApiError,
+  OidcSigningFailed,
   PortNeverOpened,
   type RunError,
   SecretsMissing,
   StepFailed,
+  StsAssumeRoleFailed,
 } from "./errors";
 
 /**
@@ -39,6 +42,9 @@ const summarize = (e: RunError): string =>
     Match.tag("ApprovalTimedOut", ({ eventName }) => `approval ${eventName}`),
     Match.tag("EventPayloadInvalid", ({ reason }) => `event payload ${reason}`),
     Match.tag("SecretsMissing", ({ keys }) => `secrets missing ${keys.join(",")}`),
+    Match.tag("GitHubApiError", ({ status, reason }) => `github ${status} ${reason}`),
+    Match.tag("OidcSigningFailed", ({ reason }) => `oidc ${reason}`),
+    Match.tag("StsAssumeRoleFailed", ({ provider, reason }) => `sts ${provider} ${reason}`),
     Match.exhaustive,
   );
 
@@ -103,6 +109,25 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
       name: "SecretsMissing",
       err: new SecretsMissing({ keys: ["CLERK_SECRET_KEY"] }),
       expect: "secrets missing CLERK_SECRET_KEY",
+    },
+    {
+      name: "GitHubApiError",
+      err: new GitHubApiError({ status: 429, reason: "rate-limited" }),
+      expect: "github 429 rate-limited",
+    },
+    {
+      name: "OidcSigningFailed",
+      err: new OidcSigningFailed({ reason: "key-load", cause: "missing JWK" }),
+      expect: "oidc key-load",
+    },
+    {
+      name: "StsAssumeRoleFailed",
+      err: new StsAssumeRoleFailed({
+        provider: "aws",
+        status: 403,
+        reason: "role-mismatch",
+      }),
+      expect: "sts aws role-mismatch",
     },
   ];
 

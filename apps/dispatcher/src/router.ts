@@ -20,10 +20,13 @@
 // Spec: specs/pm/plan.md § PR5, specs/05-byoc.md § GitHub App setup.
 
 import type { Env } from "./env";
+import { handleAdminEvent } from "./routes/admin-events";
 import { handleArtifact } from "./routes/artifacts";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
 import { handleInstallNew, handleInstalled } from "./routes/github";
+import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
+import { handleGithubWebhook } from "./routes/webhook";
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {
@@ -48,6 +51,30 @@ export const handleRequest = async (
     return handleHealth();
   }
 
+  // OIDC issuer endpoints — public, unauthenticated (IdPs fetch them).
+  // GET /.well-known/openid-configuration
+  if (
+    segments.length === 2 &&
+    segments[0] === ".well-known" &&
+    segments[1] === "openid-configuration"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleOidcDiscovery(env);
+  }
+  // GET /.well-known/jwks.json
+  if (
+    segments.length === 2 &&
+    segments[0] === ".well-known" &&
+    segments[1] === "jwks.json"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleOidcJwks(env);
+  }
+
   // POST /v1/dispatch/:run
   if (
     segments.length === 3 &&
@@ -58,6 +85,32 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleDispatch(request, env, decodeURIComponent(segments[2]!));
+  }
+
+  // POST /v1/webhooks/github
+  if (
+    segments.length === 3 &&
+    segments[0] === "v1" &&
+    segments[1] === "webhooks" &&
+    segments[2] === "github"
+  ) {
+    if (request.method !== "POST") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleGithubWebhook(request, env);
+  }
+
+  // POST /v1/admin/events/:wf_id — signal a Workflow paused on step.waitForEvent.
+  if (
+    segments.length === 4 &&
+    segments[0] === "v1" &&
+    segments[1] === "admin" &&
+    segments[2] === "events"
+  ) {
+    if (request.method !== "POST") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleAdminEvent(request, env, decodeURIComponent(segments[3]!));
   }
 
   // GET /v1/artifacts/:execution/:name

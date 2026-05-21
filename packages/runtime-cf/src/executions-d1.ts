@@ -112,16 +112,25 @@ export const makeD1ExecutionsLive = (
           .run(),
       ),
 
-    finishExecution: ({ id, completedAt, status }) =>
+    finishExecution: ({ id, completedAt, status, summaryJson }) =>
       run("finishExecution", () =>
-        db
-          .prepare(
-            `UPDATE executions
-               SET status = ?, completed_at = ?
-             WHERE id = ?`,
-          )
-          .bind(status, completedAt, id)
-          .run(),
+        summaryJson === undefined
+          ? db
+              .prepare(
+                `UPDATE executions
+                   SET status = ?, completed_at = ?
+                 WHERE id = ?`,
+              )
+              .bind(status, completedAt, id)
+              .run()
+          : db
+              .prepare(
+                `UPDATE executions
+                   SET status = ?, completed_at = ?, summary_json = ?
+                 WHERE id = ?`,
+              )
+              .bind(status, completedAt, summaryJson, id)
+              .run(),
       ),
 
     startStep: ({ executionId, name, startedAt }) =>

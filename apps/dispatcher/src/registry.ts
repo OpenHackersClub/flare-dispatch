@@ -9,13 +9,23 @@
 // Each run slots in as another entry: `offload-test` (V0), `cdp-acceptance`
 // (V2 browser acceptance, PR9), `product-demo` (V3 — Action + Schedule mode).
 
-import type { Run, ScheduleSpec } from "@flare-dispatch/core";
-import { cdpAcceptance, productDemo, offloadTest } from "@flare-dispatch/runs";
+import type { Run, ScheduleSpec, TriggerSpec } from "@flare-dispatch/core";
+import {
+  cdpAcceptance,
+  deploySmoke,
+  matrixFanout,
+  offloadTest,
+  playwrightE2E,
+  productDemo,
+} from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
 export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
+  [deploySmoke.name]: deploySmoke as Run<unknown, unknown>,
+  [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
+  [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
   [productDemo.name]: productDemo as Run<unknown, unknown>,
 };
 
@@ -54,6 +64,31 @@ export const schedulesByCron = (cron: string): readonly ScheduleMatch[] => {
     for (const s of schedules) {
       if (s.cron === cron) {
         matches.push({ run, schedule: s as ScheduleSpec<unknown> });
+      }
+    }
+  }
+  return matches;
+};
+
+/**
+ * Find every (run, trigger-spec) pair in the registry whose `event` matches
+ * the inbound GitHub webhook event. The Webhook-mode counterpart to
+ * `schedulesByCron`. Filtering by trigger `actions[]` happens at the receiver
+ * (spec 04-gha § Webhook mode) once we've read the payload's `action` field.
+ */
+export type TriggerMatch = {
+  readonly run: Run<unknown, unknown>;
+  readonly trigger: TriggerSpec<unknown>;
+};
+
+export const triggersByEvent = (event: string): readonly TriggerMatch[] => {
+  const matches: TriggerMatch[] = [];
+  for (const run of Object.values(RUN_REGISTRY)) {
+    const triggers = run.triggers;
+    if (!triggers) continue;
+    for (const t of triggers) {
+      if (t.event === event) {
+        matches.push({ run, trigger: t as TriggerSpec<unknown> });
       }
     }
   }

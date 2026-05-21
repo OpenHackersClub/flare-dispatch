@@ -57,6 +57,21 @@ export {
 } from "./services/io";
 export { config, Config, type ConfigService } from "./services/config";
 export {
+  github,
+  Github,
+  type GithubService,
+  type RepoRef,
+  type PullRequestRef,
+} from "./services/github";
+export {
+  oidc,
+  Oidc,
+  type OidcService,
+  type OidcToken,
+  OIDC_TOKEN_DEFAULT_TTL_SEC,
+  OIDC_TOKEN_MAX_TTL_SEC,
+} from "./services/oidc";
+export {
   checks,
   Checks,
   type ChecksService,

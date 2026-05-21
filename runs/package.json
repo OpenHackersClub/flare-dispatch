@@ -7,7 +7,12 @@
   "license": "MIT",
   "exports": {
     ".": "./index.ts",
-    "./offload-test": "./offload-test.ts"
+    "./offload-test": "./offload-test.ts",
+    "./cdp-acceptance": "./cdp-acceptance.ts",
+    "./deploy-smoke": "./deploy-smoke.ts",
+    "./matrix-fanout": "./matrix-fanout.ts",
+    "./playwright-e2e": "./playwright-e2e.ts",
+    "./product-demo": "./product-demo.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -31,6 +31,7 @@ Not for: teams whose CI is already cheap and fast (lint + unit only) — there i
 4. **You own the runs.** Runs are typed Effect programs — composable steps, tagged errors, exhaustive matching, retry/Schedule combinators — not stringly-typed YAML. Fork them, vendor-edit them, unit-test them without booting a container. See [02-runs](02-runs.md) and [03-dsl](03-dsl.md).
 5. **BYOC, no new dashboard.** Every code path assumes "deployed into the user's own Cloudflare account" — bring-your-own-Cloud, no operator runs it for you. Status reports back as a GitHub Check Run — the existing PR UI is the UI. See [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes).
 6. **Three trigger modes, one Dispatcher.** Action mode interleaves with existing GHA jobs; Webhook mode runs autonomously on GitHub events with zero GHA minutes; Schedule mode fires runs on a wall-clock cadence via Cloudflare Cron Triggers — nightly PR-review sweeps, weekly release notes, scheduled dependency scans. See [04-gha-integration](04-gha-integration.md).
+7. **Federated cloud credentials, no long-lived keys.** The Dispatcher self-issues OIDC tokens at a stable JWKS endpoint; runs federate against AWS STS (`bedrock:InvokeModel` for agentic review, S3 for artifact mirroring), GCP STS, or HashiCorp Vault to get short-lived, per-execution credentials. No AWS / GCP access keys land in Worker Secrets. See [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy).
 
 ## What a run is
 

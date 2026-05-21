@@ -40,6 +40,26 @@ export interface Env {
   readonly CONFIG_KV?: KVNamespace;
 
   /**
+   * Receiver-level dedup KV — specs/04-gha-integration.md § Receiver dedup.
+   * Keyed on the caller-supplied `Idempotency-Key` (or the semantic
+   * `{run}:{repo}:{sha}` fallback) → the stored `executionId`. A repeat
+   * delivery short-circuits to `202 {executionId}` without ever creating the
+   * Workflow. Optional: absent → no receiver short-circuit, dedup falls back
+   * to CF Workflows' platform-level `create({id})` no-op behaviour, which is
+   * still correct just one RPC more expensive per redelivery.
+   */
+  readonly IDEMPOTENCY_KV?: KVNamespace;
+
+  /**
+   * Installation-token cache KV — specs/04-gha-integration.md § Check-runs
+   * callback. Keyed by `installation_id`, value is the cached `{ token,
+   * expiresAt }` so a Worker eviction does not force a fresh JWT exchange on
+   * every check-run callback. Optional: absent → tokens cached in Worker
+   * memory only (the V0 behaviour).
+   */
+  readonly INSTALL_TOKEN_KV?: KVNamespace;
+
+  /**
    * GitHub App id — Worker secret, set via `wrangler secret put GITHUB_APP_ID`.
    * Numeric, carried as a string. With `GITHUB_APP_PRIVATE_KEY` it authorizes
    * the check-run callback; absent, the runtime degrades to a no-op `Checks`
@@ -53,6 +73,42 @@ export interface Env {
    * `GITHUB_APP_ID` to mint short-lived installation tokens (no PATs).
    */
   readonly GITHUB_APP_PRIVATE_KEY?: string;
+
+  /**
+   * GitHub App webhook secret — Worker secret. Verifies `X-Hub-Signature-256`
+   * on `POST /v1/webhooks/github` (specs/04-gha-integration.md § Webhook
+   * mode). Absent → the webhook route refuses (`503 webhook_not_configured`):
+   * Webhook mode is opt-in, and silently accepting unsigned deliveries would
+   * be a worse failure than rejecting.
+   */
+  readonly GITHUB_WEBHOOK_SECRET?: string;
+
+  /**
+   * Admin bearer token — Worker secret. Gates `POST /v1/admin/events/:wf_id`
+   * (the `step.waitForEvent` signalling surface, specs/03-dsl.md
+   * § Human-in-the-loop). Production deploys put Cloudflare Access in front
+   * of the route and let CF Access enforce the SSO; the bearer token is the
+   * cheap-and-correct fallback for deploys without CF Access. Absent → the
+   * admin route refuses (`503 admin_not_configured`).
+   */
+  readonly ADMIN_TOKEN?: string;
+
+  /**
+   * OIDC signing key — ES256 private JWK as a JSON string. Worker secret
+   * (`wrangler secret put OIDC_SIGNING_JWK < ./oidc-signing.jwk.json`).
+   * Pairs with `OIDC_ISSUER_URL` to back the live `oidc` capability and the
+   * `/.well-known/jwks.json` endpoint. Absent → `OidcDeferred` (a run that
+   * calls `oidc.sign` fails with `OidcSigningFailed`). Spec: 03-dsl § oidc.
+   */
+  readonly OIDC_SIGNING_JWK?: string;
+
+  /**
+   * OIDC issuer URL — the Worker's stable origin (e.g.
+   * `https://flare-dispatch.<account>.workers.dev`). Pinned by AWS / GCP
+   * trust policies, so it must match exactly what's registered as the
+   * OIDC provider. Worker secret (or var; semantics are the same).
+   */
+  readonly OIDC_ISSUER_URL?: string;
 
   /**
    * Browser Rendering CDP `/connect` WebSocket URL — Worker secret. The

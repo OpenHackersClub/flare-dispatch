@@ -18,13 +18,33 @@
 //
 // Spec: specs/03-dsl.md § step, specs/pm/plan.md § PR2.
 
-import { Cause, Effect, Exit, Layer, Option } from "effect";
+import { Cause, Duration, Effect, Exit, Layer, Option, Schema } from "effect";
+import { ApprovalTimedOut, EventPayloadInvalid } from "../errors";
 import { Executions, type ExecutionsService } from "../services/executions";
 import { IO, type IOService } from "../services/io";
 import { StepRunner, type StepRunnerService } from "../services/step-runner";
 
 /** Default execution id used when a test does not supply one. */
 export const DEFAULT_TEST_EXECUTION_ID = "01TEST00000000000000000000";
+
+/**
+ * The in-memory event source `StepRunnerInline.waitForEvent` resolves against.
+ * Tests pre-populate this with `enqueueInlineEvent`; an empty queue causes
+ * `waitForEvent` to fail with `ApprovalTimedOut` immediately (the test runner
+ * does not actually sleep — that's the point of being a fake).
+ */
+export type InlineEventQueue = Map<string, unknown[]>;
+
+/** Push an event payload into the inline runner's queue for a given type. */
+export const enqueueInlineEvent = (
+  queue: InlineEventQueue,
+  type: string,
+  payload: unknown,
+): void => {
+  const arr = queue.get(type) ?? [];
+  arr.push(payload);
+  queue.set(type, arr);
+};
 
 /** Extract a tagged error's `_tag` from a Cause, without a raw `._tag` branch. */
 const errorTagOf = (cause: Cause.Cause<unknown>): string | undefined =>
@@ -42,9 +62,10 @@ const errorTagOf = (cause: Cause.Cause<unknown>): string | undefined =>
  * and `IO` (deterministic timestamps), so the resulting Layer requires those.
  */
 export const makeStepRunnerInline = (
-  opts: { executionId?: string } = {},
+  opts: { executionId?: string; eventQueue?: InlineEventQueue } = {},
 ): Layer.Layer<StepRunner, never, Executions | IO> => {
   const executionId = opts.executionId ?? DEFAULT_TEST_EXECUTION_ID;
+  const events = opts.eventQueue ?? new Map<string, unknown[]>();
 
   return Layer.effect(
     StepRunner,
@@ -90,6 +111,46 @@ export const makeStepRunnerInline = (
                   // in the `E` channel; nothing is thrown.
                   .pipe(Effect.andThen(Effect.failCause(cause))),
             });
+          }),
+
+        // Inline `waitForEvent` reads from the test-supplied event queue —
+        // present payload → decode + return; empty queue → `ApprovalTimedOut`
+        // immediately. The fake never sleeps; tests that want to assert the
+        // timeout path call `waitForEvent` with no queued event.
+        waitForEvent: <P, I>(
+          _name: string,
+          {
+            type,
+            timeout,
+            payloadSchema,
+          }: {
+            type: string;
+            timeout: Duration.Duration | string;
+            payloadSchema: Schema.Schema<P, I>;
+          },
+        ): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid> =>
+          Effect.suspend((): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid> => {
+            const queue = events.get(type) ?? [];
+            if (queue.length === 0) {
+              const timeoutMs = Duration.toMillis(
+                Duration.decode(timeout as Duration.DurationInput),
+              );
+              return Effect.fail(
+                new ApprovalTimedOut({ eventName: type, timeoutMs }),
+              );
+            }
+            const raw = queue.shift()!;
+            events.set(type, queue);
+            const decoded = Schema.decodeUnknownEither(payloadSchema)(raw);
+            if (decoded._tag === "Left") {
+              return Effect.fail(
+                new EventPayloadInvalid({
+                  eventName: type,
+                  reason: "decode failed",
+                }),
+              );
+            }
+            return Effect.succeed(decoded.right);
           }),
       };
 

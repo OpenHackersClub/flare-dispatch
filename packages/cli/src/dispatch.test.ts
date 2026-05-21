@@ -216,6 +216,13 @@ describe("runDispatch", () => {
     expect(calls[0]?.headers["X-FlareDispatch-Signature"]).toMatch(
       /^sha256=[0-9a-f]{64}$/,
     );
+    // Idempotency-Key per spec 04-gha § Dispatch body — derived from
+    // {run, repo, sha[:12]}. baseEnv() sets GITHUB_REPOSITORY=owner/test-repo
+    // and GITHUB_SHA=abc123 (< 12 chars, so used in full). PR #22 swapped
+    // `:` for `-` as the separator.
+    expect(calls[0]?.headers["Idempotency-Key"]).toBe(
+      "offload-test-owner_test-repo-abc123",
+    );
 
     // Signature must match HMAC over the EXACT bytes POSTed (raw-bytes
     // contract). Recompute and compare.

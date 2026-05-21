@@ -15,3 +15,4 @@ export { sharded, type Shard } from "./sharded";
 export { bootApp } from "./boot-app";
 export { probeHttp, type ProbeResult } from "./probe-http";
 export { loadSecrets } from "./load-secrets";
+export { awsAssumeRole, type AwsCredentials } from "./aws-assume-role";

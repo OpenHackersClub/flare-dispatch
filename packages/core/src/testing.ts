@@ -39,6 +39,16 @@ import {
   makeConfigFake,
 } from "./fakes/misc-fakes";
 import {
+  GithubFake,
+  type GithubFakeState,
+  makeGithubFake,
+} from "./fakes/github-fake";
+import {
+  OidcFake,
+  type OidcFakeState,
+  makeOidcFake,
+} from "./fakes/oidc-fake";
+import {
   makeSandboxFake,
   SandboxFake,
   type SandboxFakeState,
@@ -85,6 +95,16 @@ export {
   makeConfigFake,
 } from "./fakes/misc-fakes";
 export {
+  GithubFake,
+  makeGithubFake,
+  type GithubFakeState,
+} from "./fakes/github-fake";
+export {
+  OidcFake,
+  makeOidcFake,
+  type OidcFakeState,
+} from "./fakes/oidc-fake";
+export {
   SandboxFake,
   makeSandboxFake,
   sandboxFakeProgram,
@@ -96,6 +116,8 @@ export {
   StepRunnerInline,
   makeStepRunnerInline,
   DEFAULT_TEST_EXECUTION_ID,
+  enqueueInlineEvent,
+  type InlineEventQueue,
 } from "./fakes/step-runner-inline";
 
 /**
@@ -115,6 +137,8 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   IOFake,
   ConfigFake,
   ChecksFake,
+  GithubFake,
+  OidcFake,
   ExecutionsFake,
   // StepRunnerInline needs Executions + IO — supply them from the merge above.
   Layer.provide(StepRunnerInline, Layer.merge(ExecutionsFake, IOFake)),
@@ -128,6 +152,10 @@ export type CFRuntimeTestHandles = {
   readonly io: IOFakeState;
   readonly checks: ChecksFakeState;
   readonly executions: ExecutionsFakeState;
+  readonly github: GithubFakeState;
+  readonly oidc: OidcFakeState;
+  /** The inline runner's event queue — feed `step.waitForEvent` from tests. */
+  readonly eventQueue: import("./fakes/step-runner-inline").InlineEventQueue;
 };
 
 export type CFRuntimeTestOptions = {
@@ -137,10 +165,22 @@ export type CFRuntimeTestOptions = {
   readonly browser?: Parameters<typeof makeBrowserFake>[0];
   /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
   readonly config?: Record<string, string>;
+  /** Github fake seed — repos + PRs returned by `github.*`. */
+  readonly github?: Parameters<typeof makeGithubFake>[0];
+  /** Oidc fake options — issuer override + deterministic `iat` clock. */
+  readonly oidc?: Parameters<typeof makeOidcFake>[0];
   /** the execution id `StepRunnerInline` records steps under. */
   readonly executionId?: string;
   /** IO fake clock options. */
   readonly io?: Parameters<typeof makeIOFake>[0];
+  /**
+   * Event queue `step.waitForEvent` resolves against. Tests pre-populate it
+   * with `enqueueInlineEvent(queue, type, payload)`; an empty queue causes
+   * the run's `waitForEvent` to fail with `ApprovalTimedOut` immediately
+   * (the inline runner does not sleep). The same queue is returned in
+   * `handles.eventQueue` so a test can inject AFTER constructing the runtime.
+   */
+  readonly eventQueue?: import("./fakes/step-runner-inline").InlineEventQueue;
 };
 
 /**
@@ -156,8 +196,14 @@ export const makeCFRuntimeTest = (
   const artifact = makeArtifactFake();
   const io = makeIOFake(opts.io);
   const checks = makeChecksFake();
+  const github = makeGithubFake(opts.github);
+  const oidcLayer = makeOidcFake(opts.oidc);
   const executions = makeExecutionsFake();
-  const stepRunner = makeStepRunnerInline({ executionId: opts.executionId });
+  const eventQueue = opts.eventQueue ?? new Map<string, unknown[]>();
+  const stepRunner = makeStepRunnerInline({
+    executionId: opts.executionId,
+    eventQueue,
+  });
 
   const layer = Layer.mergeAll(
     sandbox.layer,
@@ -167,6 +213,8 @@ export const makeCFRuntimeTest = (
     io.layer,
     makeConfigFake(opts.config),
     checks.layer,
+    github.layer,
+    oidcLayer.layer,
     executions.layer,
     Layer.provide(stepRunner, Layer.merge(executions.layer, io.layer)),
   );
@@ -179,7 +227,10 @@ export const makeCFRuntimeTest = (
       artifact: artifact.state,
       io: io.state,
       checks: checks.state,
+      github: github.state,
+      oidc: oidcLayer.state,
       executions: executions.state,
+      eventQueue,
     },
   };
 };

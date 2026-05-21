@@ -29,7 +29,13 @@ import {
   makeChecksGithubLive,
 } from "./checks-github";
 import { makeConfigKvLive } from "./config-kv";
-import { BrowserDeferred, ConfigDeferred } from "./deferred";
+import {
+  BrowserDeferred,
+  ConfigDeferred,
+  GithubDeferred,
+  OidcDeferred,
+} from "./deferred";
+import { makeOidcLive, type OidcLiveConfig } from "./oidc-live";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
 import { makeSandboxCloudflareLive } from "./sandbox-cf";
@@ -75,6 +81,13 @@ export type CFRuntimeLiveOptions = {
    * (`cdp-acceptance`) fails loudly. Non-browser runs never touch the Tag.
    */
   readonly browser?: BrowserRenderingConfig;
+  /**
+   * OIDC signing config for the `oidc` capability — the ES256 private JWK
+   * (`OIDC_SIGNING_JWK` secret) + the issuer URL the IdP's trust policy
+   * pins. `undefined` selects `OidcDeferred`: a run that calls `oidc.sign`
+   * fails with `OidcSigningFailed` (`reason: "key-load"`).
+   */
+  readonly oidc?: OidcLiveConfig;
 };
 
 /**
@@ -85,7 +98,10 @@ export type CFRuntimeLiveOptions = {
 export const makeCFRuntimeLive = (
   opts: CFRuntimeLiveOptions,
 ): Layer.Layer<RunContext> => {
-  const io = makeIOLive();
+  const io = makeIOLive({
+    db: opts.db,
+    currentExecutionId: opts.executionId,
+  });
   const executions = makeD1ExecutionsLive(opts.db, opts.execution);
   const artifact = makeR2ArtifactLive(opts.bucket, opts.executionId);
   const sandbox = makeSandboxCloudflareLive(
@@ -117,6 +133,10 @@ export const makeCFRuntimeLive = (
     opts.browser === undefined
       ? BrowserDeferred
       : makeBrowserRenderingLive(opts.browser);
+  // `Oidc` is live when the signing JWK + issuer are configured; absent, a
+  // call to `oidc.sign` fails with `OidcSigningFailed`.
+  const oidcLayer =
+    opts.oidc === undefined ? OidcDeferred : makeOidcLive(opts.oidc);
 
   return Layer.mergeAll(
     sandbox,
@@ -126,6 +146,8 @@ export const makeCFRuntimeLive = (
     io,
     config,
     checks,
+    GithubDeferred,
+    oidcLayer,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.
     Layer.provide(stepRunner, Layer.merge(executions, io)),
