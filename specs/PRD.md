@@ -48,7 +48,7 @@ Runs are not opaque — they are TypeScript files in the user's repo. The shippe
 ```mermaid
 flowchart LR
   GHA[GitHub Actions<br/>trigger + cheap jobs] -->|HMAC POST<br/>/v1/dispatch| W[Run Worker<br/>in your CF account]
-  APP[GitHub App webhook<br/>autonomous trigger] -->|App-signed<br/>/v1/webhooks/github| W
+  APP[GitHub App webhook<br/>autonomous trigger<br/>Planned V1] -.->|App-signed<br/>/v1/webhooks/github| W
   CRON[Cloudflare Cron Trigger<br/>scheduled cadence] -->|scheduled handler| W
   W --> WF[CF Workflow<br/>durable orchestration]
   WF --> SB[Sandbox / Container<br/>test execution]
@@ -57,6 +57,8 @@ flowchart LR
   WF --> D1[(D1<br/>execution metadata)]
   W -->|check-run API| GH[GitHub Checks tab]
 ```
+
+> The dashed arrow marks an autonomous **Webhook-mode** trigger that is **Planned (V1)** — the `/v1/webhooks/github` receiver is not yet wired in code. The Action-mode (solid HMAC arrow) and Schedule-mode (Cron Trigger) paths are live today.
 
 A team installs runs by:
 
@@ -78,7 +80,7 @@ After that, each PR fires runs against the team's own Cloudflare bill. The proje
 
 ## Success criteria
 
-V0 is the slice that proves the model — a `pnpm test` executing in CF Sandbox reports green/red to a PR check. Everything after is incremental and independently shippable: V1 adds fan-out + cache + artifacts, V2 browser e2e + acceptance, V3 long-running + security scans, V4 polish (OpenTelemetry, retention, an `init` CLI).
+V0 — the slice that proves the model, a `pnpm test` executing in CF Sandbox reporting green/red to a PR check — has shipped. Implementation has continued out of strict V order: `cdp-acceptance` (V2, browser acceptance) and `product-demo` (V3, AI demo in Action + Schedule mode) are live alongside the V0 `offload-test`. Still incremental and independently shippable: V1 adds matrix fan-out + Webhook mode + `await` mode + the cache/artifact polish on top of already-wired primitives; V2 adds the browser-pool `playwright-e2e`; V3 the human-in-loop surface and security scans; V4 polish (OpenTelemetry, retention, an `init` CLI). See [pm/plan § Implementation status](pm/plan.md#flaredispatch--roadmap--v0-plan).
 
 Project-management detail lives under [`pm/`](pm/): the phased roadmap — scope, runs shipped, and the exit criterion that closes each phase — and the 7-PR V0 build sequence are both in [pm/plan.md](pm/plan.md).
 
@@ -112,4 +114,5 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 | [04-gha-integration](04-gha-integration.md) | Three trigger modes (Action / Webhook / Schedule), HMAC auth, Cron Triggers, check-runs callback |
 | [05-byoc](05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
 | [06-cost](06-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
+| [07-trust-model](07-trust-model.md) | Trust boundaries, adversary catalog, controls in place, known gaps |
 | [pm/plan](pm/plan.md) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |

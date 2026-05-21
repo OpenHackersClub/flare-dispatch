@@ -24,7 +24,7 @@ The dominant variable cost is **Containers** — that's where test commands actu
 
 ## Per-execution cost anatomy
 
-A single `offload-test`-shaped execution (clone → install → test → upload log):
+A single `offload-test`-shaped execution (clone → install → test → upload log). The same vCPU-s shape applies to the other live runs at HEAD — `cdp-acceptance` (boot + CDP + acceptance suite, [02-runs § cdp-acceptance](02-runs.md#4-cdp-acceptance)) and `product-demo` (CDP-driven AI demo over a deployed URL, [02-runs § product-demo](02-runs.md#5-product-demo)) — with the obvious adders for Browser Rendering hours when CDP is in use:
 
 - **Worker / Workflow CPU** — the step bodies are I/O-bound (spawn container, await exit, write D1). A few hundred CPU-ms per execution. Negligible against the 30M CPU-ms monthly quota.
 - **Container vCPU-seconds** — the real cost. A `standard-2` instance (1 vCPU, 6 GiB) running an 8-minute test = ~480 vCPU-s ≈ **$0.0096** in vCPU, plus ~$0.0072 GiB-s memory ≈ **~$0.017 per execution** before the included quota.
@@ -42,7 +42,7 @@ pie showData
 
 ## Worked estimate — small team
 
-Assumptions: 200 PRs/month, ~8 min average run wall time, 4-shard matrices, `standard-2` containers.
+Assumptions: 200 PRs/month, ~8 min average run wall time, 4-shard matrices, `standard-2` containers. Matrix fan-out is **Planned (V1)** — see [02-runs § matrix-fanout](02-runs.md#2-matrix-fanout); the 4-shard figure is the shape this estimate models once it lands. At HEAD the live runs are single-container; substitute `× 1` for the matrix factor to project current cost.
 
 | Line item | Estimate |
 |---|---|

@@ -56,21 +56,26 @@ The single entry point. Its responsibilities are deliberately narrow — **authe
 
 It is invoked two ways — the Worker's `fetch()` handler serves the HTTP surfaces; its `scheduled()` handler is the Cron Trigger entry point:
 
-| Surface | Handler | Responsibility |
-|---|---|---|
-| **Dispatch** | `fetch()` | Start an execution from an HMAC-signed POST (Action mode). |
-| **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). |
-| **Schedule** | `scheduled()` | A Cloudflare Cron Trigger fires on a wall-clock cadence; the handler instantiates a scheduling Workflow (Schedule mode). See [§ Schedule-mode dispatch](#schedule-mode-dispatch). |
-| **Inspection** | `fetch()` | Return execution metadata; redirect to signed artifact / log URLs. |
-| **Admin** | `fetch()` | Operator surface — execution list, force-cancel, replay, signalling a paused Workflow. Gated by Cloudflare Access. |
+| Surface | Handler | Responsibility | Status |
+|---|---|---|---|
+| **Dispatch** | `fetch()` | Start an execution from an HMAC-signed POST (Action mode). | Live |
+| **App manifest** | `fetch()` | `/v1/github/install/new` + `/v1/github/installed` — render the App-creation form and exchange the manifest `code` for credentials (specs/05-byoc.md § GitHub App setup). | Live |
+| **Artifact** | `fetch()` | `/v1/artifacts/:execution/:name` — 302-redirect to a short-lived signed R2 URL. | Live |
+| **Health** | `fetch()` | `/health` — liveness + registered-run list. | Live |
+| **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). | **Planned (V1)** — receiver not yet implemented. |
+| **Schedule** | `scheduled()` | A Cloudflare Cron Trigger fires on a wall-clock cadence; the handler instantiates a scheduling Workflow (Schedule mode). See [§ Schedule-mode dispatch](#schedule-mode-dispatch). | Live |
+| **Inspection** | `fetch()` | Return execution metadata; redirect to signed artifact / log URLs. | **Planned (V1)** — `/v1/executions/:id` for `await`-mode polling. |
+| **Admin** | `fetch()` | Operator surface — execution list, force-cancel, replay, signalling a paused Workflow. Gated by Cloudflare Access. | **Planned (V2/V3)** — lands with `step.waitForEvent` (`/v1/admin/events/:wf_id`). |
 
-Only the `fetch()` surfaces are publicly reachable. `scheduled()` has no HTTP route — Cloudflare invokes it internally from the Cron Trigger, which is why Schedule mode authenticates nothing inbound (see [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). Trigger modes, the request/response contracts, and the literal route paths are in [04-gha-integration](04-gha-integration.md).
+Only the `fetch()` surfaces are publicly reachable. `scheduled()` has no HTTP route — Cloudflare invokes it internally from the Cron Trigger, which is why Schedule mode authenticates nothing inbound (see [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). Trigger modes, the request/response contracts, and the literal route paths are in [04-gha-integration](04-gha-integration.md). Trust boundaries and adversaries against each surface are catalogued in [07-trust-model](07-trust-model.md).
 
 ### Workflow Engine
 
 Each execution is one **durable Cloudflare Workflow instance**. The Workflow body is an Effect program (see [03-dsl](03-dsl.md)) composed of `step`s; each step is a checkpoint — durable across Worker restarts and retried by the platform. An evicted Worker resumes from the last completed step rather than restarting the execution.
 
 ### Coordinator
+
+> **Status: Planned (V1)** — the Coordinator DO is not declared in `wrangler.jsonc` at HEAD and no `Coordinator` class is shipped today. It lands with `matrix-fanout` (V1).
 
 A Durable Object used **only by fan-out runs** to aggregate child-shard results. A matrix run spawns N child Workflows; each reports its result into a Coordinator keyed by the parent execution. Single-writer semantics let shard-completion handlers race without conflict. Once every shard has reported, the Coordinator triggers check-run finalization. Spawning the children does not itself need the Coordinator — see [§ Fan-out model](#fan-out-model).
 
@@ -97,8 +102,8 @@ Four stores, each with a distinct role:
 |---|---|---|
 | **R2** | Package cache, artifacts, per-step logs | Zero egress within Cloudflare. Cache keys are content-addressed by lockfile hash + image digest, so cross-environment poisoning is impossible. |
 | **D1** | Execution and step metadata | Metadata and pointers only — logs and artifacts live in R2. |
-| **KV** | Config, receiver-level idempotency keys, App install-token cache | Three namespaces, kept separate so an audit shows config never co-mingles with idempotency state. |
-| **Queue** | Fan-out backpressure | Engaged only when shard creation would exceed the platform's instance-creation rate. |
+| **KV** | Config (`CONFIG_KV` — live today, backs `loadSecrets`). Receiver-level idempotency keys and the App install-token cache are **Planned (V1)** — dedicated `IDEMPOTENCY_KV` / `INSTALL_TOKEN_KV` namespaces land with the Webhook-mode receiver. | Each namespace is separate so an audit shows config never co-mingles with idempotency state. |
+| **Queue** | Fan-out backpressure | **Planned (V1)** — engaged only when shard creation would exceed the platform's instance-creation rate. |
 
 ### R2 layout
 

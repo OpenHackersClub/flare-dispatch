@@ -1,6 +1,6 @@
 # 03 — DSL
 
-Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and seven capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes.
+Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and six run-author capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes. A seventh — `github` (read-only GitHub API for Schedule sweeps) — is **Planned (V3)**; the dispatcher's check-run callback rides on a runtime-only `checks` service that run bodies never see directly.
 
 ## The layering: capabilities, primitives, recipes
 
@@ -12,10 +12,10 @@ flowchart TB
     EFF[Schema · Layer · tagged errors · Schedule]
   end
   subgraph L1[Capabilities — @flare-dispatch/core]
-    CAP["sandbox · browser · cache · artifact<br/>io · config · github"]
+    CAP["sandbox · browser · cache · artifact<br/>io · config<br/><i>(github read API — Planned V3)</i>"]
   end
   subgraph L2[Primitives — @flare-dispatch/core/primitives]
-    PRIM["workspace · installCached · sharded<br/>bootApp · probeHttp"]
+    PRIM["workspace · installCached · loadSecrets<br/>sharded · bootApp · probeHttp"]
   end
   subgraph L3[Recipes — your repo]
     REC["pr-review · playwright-e2e · cdp-acceptance<br/>matrix-fanout · security-scan · deploy-smoke"]
@@ -27,7 +27,7 @@ flowchart TB
 ```
 
 - **Capabilities** are the atomic, side-effectful surface — one `Context.Tag` service per namespace, each backed by a swappable Layer (real / dev / test). A capability does *one* thing: launch a container, exec a command, upload a blob. It has no opinion about how CI work is shaped.
-- **Primitives** are reusable Effect-TS compositions the DSL ships *on top of* capabilities — `workspace`, `installCached`, `sharded`, `bootApp`, `probeHttp`. Every recipe was re-deriving the same checkout → install → fan-out → upload shapes by hand; a primitive is that shape, named once, typed once, tested once. **This is the DX layer**: the DSL "creates primitives" so a recipe author rides them instead of rebuilding them. Primitives are still just Effects — composable, layer-swappable, unit-testable — see [§ Primitives](#primitives).
+- **Primitives** are reusable Effect-TS compositions the DSL ships *on top of* capabilities — `workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`. Every recipe was re-deriving the same checkout → install → fan-out → upload shapes by hand; a primitive is that shape, named once, typed once, tested once. **This is the DX layer**: the DSL "creates primitives" so a recipe author rides them instead of rebuilding them. Primitives are still just Effects — composable, layer-swappable, unit-testable — see [§ Primitives](#primitives).
 - **Recipes** are `defineRun` programs that ride on primitives and carry only the logic unique to *that* CI use case. A recipe drops to raw capabilities only for the part no primitive covers — the escape hatch is always open, but the common path is a primitive call.
 
 The rest of this spec walks the tiers bottom-up: `defineRun` / `step` (the run frame), the seven capability namespaces, then the primitives built from them. The worked recipes that ride on this stack are in [recipes/](../recipes/). How each tier is shipped — `@flare-dispatch/core` as a pinned library, recipes as copy-paste — and what that split means for the supply chain is [§ Distribution and supply chain](#distribution-and-supply-chain).
@@ -221,6 +221,8 @@ Run authors don't call `runEffect` directly — `step(name, body)` does it under
 
 ### Human-in-the-loop with `step.waitForEvent`
 
+> **Status: Planned (V2/V3).** Currently stubbed in [`packages/core/src/step.ts`](../packages/core/src/step.ts) (`Effect.die("step.waitForEvent: not implemented in V0")`). Lands with the first run that needs it, alongside the Dispatcher's `/v1/admin/events/:wf_id` signalling route and the CF Access wiring.
+
 Some runs pause for a human signal: release approval, manual gate before promoting to prod, "click here to ack the diff before applying the migration." CF Workflows supports this natively via [`step.waitForEvent`](https://developers.cloudflare.com/workflows/build/events-and-parameters/) — the Workflow **hibernates** until an external POST to `env.RUNS_WORKFLOW.get(wfId).sendEvent({ type, payload })` arrives, or until a timeout fires.
 
 The DSL exposes this as `step.waitForEvent` directly:
@@ -308,6 +310,8 @@ export class ApprovalTimedOut extends Schema.TaggedError<ApprovalTimedOut>()(
 Two-layer approval dedup is the receiver's job, not the run's: `/v1/admin/events/:wf_id` debounces `(wf_id, decider_email)` in `IDEMPOTENCY_KV` with a 1h window so two reviewers racing to approve produces deterministic ordering (first writer wins, second gets `409 Conflict`).
 
 ### Deferred scheduling with `step.sleepUntil`
+
+> **Status: Planned (V3).** `step.sleep` / `step.sleepUntil` are not yet exposed on the `step` export at HEAD. The underlying CF Workflows primitive is available; the DSL wrapper lands with the first recipe that needs it (the staggered-fan-out example below is forward-looking).
 
 A *recurring* schedule is a Cron Trigger (`schedules` above, [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). A *one-off* future action — "re-check this PR in 24 hours," "poll this deployment until it settles, then report" — is not a cadence and does not belong in `wrangler.jsonc`. It is a single durable sleep *inside* a run, and CF Workflows expresses it natively: a step can [`sleep`](https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/) for a relative duration or `sleepUntil` an absolute time. The Workflow **hibernates** for the interval — consuming no CPU, surviving Worker eviction — then resumes from the checkpoint.
 
@@ -484,6 +488,8 @@ namespace io {
 
 `io.priorExecution` reads D1 execution metadata for the most recent **terminal** execution whose Workflow `instanceId` starts with `family:` — excluding the current one. The `family` is the semantic dedup key (see [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-all-modes)) minus its head-SHA component: `pr-review:{repo}:{pr}` rather than `pr-review:{repo}:{pr}:{head_sha}`. A run uses it to make its current decision relative to its last one — incremental review, "did this regress since the previous push," resolving stale findings. The prior `output` is decoded against `outputSchema`; a decode mismatch (the prior execution ran an older run version with a different output shape) yields `Option.none()` rather than failing.
 
+> **Status: Planned.** Stubbed in [`packages/runtime-cf/src/io-live.ts`](../packages/runtime-cf/src/io-live.ts) — the live implementation returns `Option.none()` unconditionally. Lands with the first recipe whose body branches on prior outcome (`pr-review` incremental mode is the canonical caller).
+
 ### `config`
 
 Read-only access to dynamic configuration — model routing, provider enable/disable switches, feature flags — held in a `CONFIG_KV` namespace binding. Edits to that KV propagate to **subsequent executions within seconds, with no `wrangler deploy`**: the control plane is data, not code.
@@ -505,6 +511,8 @@ namespace config {
 `config` is read-only from a run — runs never write it; operators edit `CONFIG_KV` directly (or through a small admin surface). Because every failure mode degrades gracefully — an unset key is `undefined`, a malformed JSON value is `Option.none()` — a run that reads `config` **must always carry a sensible default**. Config *tunes* behavior; it does not *gate* it. This is the seam for the kind of live model-routing / circuit-breaker control plane a multi-agent run wants (see [recipes/ai-code-review](../recipes/ai-code-review/)) without coupling routing decisions to a redeploy.
 
 ### `github`
+
+> **Status: Planned (V3).** Not exported from `@flare-dispatch/core` at HEAD — the read-side capability lands with the Schedule-mode sweep recipes that enumerate repos/PRs (the App-JWT plumbing for the install-token cache lands in V1 alongside the Webhook receiver). The Dispatcher's check-run write callback is a runtime-only `checks` service ([`packages/runtime-cf/src/checks-github.ts`](../packages/runtime-cf/src/checks-github.ts)) that run bodies never call directly.
 
 Read-only access to the GitHub API, scoped to the installations of the `FlareDispatch` App. The Dispatcher already holds the App private key for the check-run *write* callback ([04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes)); `github` is the symmetric *read* surface, backed by the same short-lived installation tokens. A run never sees a token — the capability Layer mints, caches, and scopes them.
 
@@ -609,6 +617,24 @@ declare const installCached: (opts: {
   tool?: "pnpm" | "npm" | "cargo" | "uv";    // default: auto-detect from lockfile
 }) => Effect.Effect<void, CacheError | ExecFailed, RunContext>;
 ```
+
+### `loadSecrets`
+
+Pull named secrets from `config` (KV) into a `Record<string, string>` ready to hand `sandbox.exec({ env })` or `bootApp`. The "inject credentials into the container" preamble of any run whose command needs a Clerk key, a Cloudflare API token, an LLM provider key, and so on — rather than threading secrets through GHA repo secrets and the dispatch body, the operator stores them once in the FlareDispatch config store (KV) and the run names the keys it needs.
+
+```ts
+declare const loadSecrets: (
+  keys: readonly string[],
+  opts?: {
+    prefix?: string;                         // default: ""; e.g. "secret/" to namespace
+    required?: boolean;                      // default: false; true fails with SecretsMissing
+  },
+) => Effect.Effect<Record<string, string>, SecretsMissing, RunContext>;
+```
+
+By default a missing key (unset, empty, or an errored config read) is omitted from the result and logged at `warn` — graceful degradation suited to optional values. Credentials are usually not optional: `required: true` fails with a `SecretsMissing` tagged error listing the absent keys, so a misconfigured deploy fails fast and legibly instead of booting a container that breaks mid-run.
+
+**Important:** call `loadSecrets` *inline* in the run body, not wrapped in `step(...)`. CF Workflows persist every step's return value to durable storage for replay; a checkpointed `Record<string,string>` of plaintext credentials would sit in Workflow state at rest. The `config` read is cheap and idempotent on replay, so the inline call recomputes deterministically without leaving credentials in checkpointed state. The `cdp-acceptance` run ([02-runs § cdp-acceptance](02-runs.md#4-cdp-acceptance)) is the canonical caller.
 
 ### `sharded`
 
@@ -745,6 +771,11 @@ export class StepFailed extends Schema.TaggedError<StepFailed>()(
   { step: Schema.String, cause: Schema.Unknown },
 ) {}
 
+export class SecretsMissing extends Schema.TaggedError<SecretsMissing>()(
+  "SecretsMissing",
+  { keys: Schema.Array(Schema.String), prefix: Schema.String },
+) {}
+
 export class ApprovalTimedOut extends Schema.TaggedError<ApprovalTimedOut>()(
   "ApprovalTimedOut",
   { eventName: Schema.String, timeoutMs: Schema.Number },
@@ -767,7 +798,7 @@ export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
 export type RunError =
   | CheckoutFailed | ExecFailed | ExecTimeout
   | ContainerLaunchFailed | PortNeverOpened | BrowserUnavailable
-  | CacheError | ArtifactUploadFailed | StepFailed
+  | CacheError | ArtifactUploadFailed | StepFailed | SecretsMissing
   | ApprovalTimedOut | EventPayloadInvalid | GitHubApiError;
 ```
 
@@ -809,6 +840,7 @@ const summarize = (e: RunError): string =>
     Match.tag("CacheError", ({ phase, key }) => `Cache ${phase} failed for key ${key}`),
     Match.tag("ArtifactUploadFailed", ({ name }) => `Artifact upload failed: ${name}`),
     Match.tag("StepFailed", ({ step }) => `Step "${step}" failed`),
+    Match.tag("SecretsMissing", ({ keys, prefix }) => `Missing secret keys (${prefix}${keys.join(", ")})`),
     Match.tag("ApprovalTimedOut", ({ eventName }) => `Approval "${eventName}" timed out`),
     Match.tag("GitHubApiError", ({ status, reason }) => `GitHub API ${status} (${reason})`),
     Match.tag("EventPayloadInvalid", ({ eventName, reason }) => `Event "${eventName}" payload invalid: ${reason}`),

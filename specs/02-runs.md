@@ -34,14 +34,17 @@ A user-defined run in their own repo has the same shape. The shipped runs below 
 
 | | Run | When to use | Status |
 |---|---|---|---|
-| 1 | [`offload-test`](#1-offload-test) | Single command, single container, pass/fail back to GHA | V0 |
-| 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | V1 |
-| 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | V2 |
-| 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | V2 |
-| 5 | [`security-scan`](#5-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | V3 |
-| 6 | [`custom-sandbox`](#6-custom-sandbox) | Escape hatch — run any bash in a container | V3 |
-| — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | V1 |
-| — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | V1 |
+| 1 | [`offload-test`](#1-offload-test) | Single command, single container, pass/fail back to GHA | **Live** (V0) |
+| 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | Planned (V1) |
+| 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | Planned (V2) |
+| 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | **Live** (V2) |
+| 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode | **Live** (V3) |
+| 6 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
+| 7 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
+| — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | **Live** — capability + primitive |
+| — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | **Live** — capability wired |
+
+> **Live runs at HEAD** — `offload-test`, `cdp-acceptance`, `product-demo` (see [`runs/index.ts`](../runs/index.ts)). Action mode (HMAC POST) and Schedule mode (Cron Trigger → `scheduled()` handler) are both wired; Webhook mode is Planned (V1). Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
 
 ---
 
@@ -81,6 +84,8 @@ Schema.Struct({
 ---
 
 ## 2. `matrix-fanout`
+
+> **Status: Planned (V1).** The Queues binding, Coordinator Durable Object, and `createBatch` spawn path are not declared in `wrangler.jsonc` at HEAD and no shipped run dispatches to children. The shape below is the contract V1 implements.
 
 Executes the same command across N shards. Each shard is an independent child Workflow with its own check-run annotation. Result: one parent check that's green only if all shards pass.
 
@@ -127,6 +132,8 @@ Schema.Struct({
 ---
 
 ## 3. `playwright-e2e`
+
+> **Status: Planned (V2).** Not shipped at HEAD — sharded Playwright requires the `matrix-fanout` spawn path (Planned V1) plus a Playwright base image. `cdp-acceptance` (§ 4) already exercises Browser Rendering for the acceptance shape; this run extends it to sharded test runners.
 
 Sharded Playwright executions using Browser Rendering for the page session and Sandbox for the test runner process. Each shard gets its own Browser Rendering session(s); test files are split via Playwright's native `--shard` flag.
 
@@ -179,6 +186,8 @@ Schema.Struct({
 
 ## 4. `cdp-acceptance`
 
+> **Status: Live.** Source: [`runs/cdp-acceptance.ts`](../runs/cdp-acceptance.ts). Rides on three live primitives — `workspace` (acquire + clone + cached install), `loadSecrets` (config-store credential injection), and `bootApp` (detached run + wait-for-port) — plus the `browser` capability over Browser Rendering CDP.
+
 Acceptance tests that drive a running app via Chrome DevTools Protocol — the gctrl-board pattern. Boots the app under test in one container, attaches Browser Rendering via CDP, executes assertion scripts that combine UI interactions with CDP observations (network calls, console errors, document counts, heap deltas).
 
 **Inputs:**
@@ -214,7 +223,55 @@ Schema.Struct({
 
 ---
 
-## 5. `security-scan`
+## 5. `product-demo`
+
+> **Status: Live.** Source: [`runs/product-demo.ts`](../runs/product-demo.ts). The first run wired in both **Action mode** (recipe `ci.yml` on `pull_request` / `workflow_dispatch`) and **Schedule mode** (daily cron via `schedules[]` → Dispatcher `scheduled()` handler). No checkout — the target is a deployed URL, not the repo. Drives the site over a single CDP session with Browser Run's native rrweb session recording, shells out to the bundled `demo-agent` CLI for the per-story model loop, and uploads the rrweb event stream as an R2 artifact.
+
+AI-driven product demo. A team hands it a deployed URL (preview / staging / prod) and a list of user stories as prose; the run drives the site through each story over a single CDP session, captures key screenshots, writes a per-story narrative, and produces a holistic markdown summary across all stories that a reviewer can paste into the PR.
+
+**Inputs:**
+
+```ts
+Schema.Struct({
+  targetUrl: Schema.String,                  // deployed URL (preview / staging / prod)
+  stories: Schema.Array(Schema.String),      // user stories as prose
+  viewport: Schema.optional(Schema.Struct({
+    w: Schema.Number,
+    h: Schema.Number,
+  })),
+  model: Schema.optional(Schema.String),     // demo-agent model override
+  secrets: Schema.optional(Schema.Array(Schema.String)), // KV keys → env on demo-agent
+})
+```
+
+**Outputs:**
+
+```ts
+Schema.Struct({
+  storyResults: Schema.Array(Schema.Struct({
+    title: Schema.String,
+    passed: Schema.Boolean,
+    summary: Schema.String,
+    screenshotUris: Schema.Array(Schema.String),
+  })),
+  rrwebUri: Schema.String,                   // signed R2 URL to the session events
+  summaryMd: Schema.String,                  // holistic Markdown summary
+})
+```
+
+**Steps:** `attach-cdp → start-recording → per story: { agent-driven CDP play } → stop-recording → fetch-rrweb → upload-artifact → summarize`
+
+**Platform:** Browser Rendering (CDP + native rrweb recording), Sandbox (`demo-agent` shell-out), R2 (rrweb JSON + summary), D1, Check Runs. No repo checkout.
+
+**Trigger modes:** Action (recipe in `recipes/product-demo/`) and Schedule (`schedules[].cron` daily). See [04-gha-integration § Action mode](04-gha-integration.md#action-mode) and [§ Schedule mode](04-gha-integration.md#schedule-mode).
+
+**Limits:** `maxDurationSec: 1800`; `requiresBrowser: true`.
+
+---
+
+## 6. `security-scan`
+
+> **Status: Planned (V3).** Not shipped at HEAD — independent of `matrix-fanout`, but the parallel-scanner shape rides on the same `sharded` primitive that V1 work depends on.
 
 Executes dependency / vulnerability scans against a checked-out repo. One run, multiple scanners selectable via input.
 
@@ -257,7 +314,9 @@ Schema.Struct({
 
 ---
 
-## 6. `custom-sandbox`
+## 7. `custom-sandbox`
+
+> **Status: Planned (V3).** Not shipped at HEAD — the surface is small once the `sandbox.exec` capability has a stable contract (which it does today), so this is a packaging concern, not a missing primitive.
 
 Escape hatch. Execute an arbitrary bash script in a Sandbox container with the run's typed plumbing (checkout, env, log capture, check-run reporting) but no opinions about the workload.
 

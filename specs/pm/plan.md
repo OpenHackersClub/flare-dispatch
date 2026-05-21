@@ -2,6 +2,8 @@
 
 Project-management reference for FlareDispatch: the phased delivery roadmap, then the detailed V0 walking-skeleton build plan. The run catalog is in [02-runs](../02-runs.md); the product framing is in [PRD](../PRD.md).
 
+> **Implementation status (HEAD).** V0 has shipped and implementation has continued out of strict V order. **Live**: `offload-test` (V0), `cdp-acceptance` (V2), `product-demo` (V3); Action mode + Schedule mode trigger surfaces; the GitHub App manifest-creation install flow; the JS-bundled flare-dispatch-action; six run-author capabilities + six primitives over Containers / Browser Rendering / R2 / D1 / KV. **Still Planned**: matrix fan-out (V1), Webhook mode + `IDEMPOTENCY_KV` (V1), Action `await` mode (V1), browser-pooled `playwright-e2e` (V2), `/v1/admin/*` + `step.waitForEvent` (V2/V3), `security-scan` + `custom-sandbox` (V3), OpenTelemetry / Logpush / `init` CLI (V4). Per-section Status callouts in [01-architecture](../01-architecture.md), [02-runs](../02-runs.md), [03-dsl](../03-dsl.md), [04-gha-integration](../04-gha-integration.md), and [05-byoc](../05-byoc.md) carry the detailed pinning.
+
 ## Roadmap
 
 Delivery phasing — what ships in each version and the exit criterion that closes it. **V0 is the slice that proves the model**; V1–V4 are incremental and independently shippable.
@@ -44,7 +46,7 @@ Everything else from V1–V4 is deferred. This plan covers what we build, in wha
 - **D1** — `executions` + `steps` tables per [05-byoc § D1 schema](../05-byoc.md#d1-schema).
 - **GitHub App** — JWT → installation token → `POST /repos/.../check-runs` (in_progress) and `PATCH .../check-runs/{id}` (completed).
 - **Effect-TS DSL surface** — `defineRun`, `step`, `sandbox.git.clone`, `sandbox.exec`, `artifact.upload` (logs only), `io.now`, `io.uuid`, `io.log`. Tagged errors from [03-dsl § Errors](../03-dsl.md#errors). All other DSL surface stubbed to `Effect.die("not implemented in V0")`.
-- **GHA composite Action** — `action.yml` + a ~30 LOC bash entry (`dispatch.sh`) that HMAC-signs the body and POSTs. Fire-and-forget only.
+- **GHA Action** — `action.yml` + a bundled JS entry that HMAC-signs the body and POSTs. Fire-and-forget only. (Originally landed as a composite Action with a ~30 LOC `dispatch.sh`; replaced in PR #27 with a bundled JS Action built from `packages/cli/src/action-entry.ts` for typed errors + `safeForCmd` escaping.)
 
 ### 2. Out of scope (deferred to V1+)
 
@@ -144,8 +146,8 @@ flare-dispatch/
 │   └── github-app-manifest.json                # GitHub App manifest (see 05-byoc § GitHub App setup)
 ├── actions/
 │   └── flare-dispatch-action/
-│       ├── action.yml                          # composite Action: 'using: composite', steps run dispatch.sh
-│       ├── dispatch.sh                         # ~30 LOC: compute HMAC, curl POST, exit 0
+│       ├── action.yml                          # JS Action: 'using: node20', main dist/index.js (PR #27)
+│       ├── dist/index.js                       # bundled from packages/cli/src/action-entry.ts
 │       └── README.md                           # usage snippet
 ├── README.md                                   # quickstart: wrangler deploy + Action snippet
 └── specs/                                      # this directory (unchanged in V0)
@@ -185,9 +187,9 @@ Each PR targets `main`, is independently mergeable, and ships a single concern. 
 - **What:** RS256 JWT signer using the PEM secret, installation-token exchange + cache (Worker memory only in V0 — the `INSTALL_TOKEN_KV` fallback is deferred to V1 per § 2; see [04-gha-integration § Check-runs callback](../04-gha-integration.md#check-runs-callback-shared-by-all-modes)), `POST` / `PATCH` to `/repos/{owner}/{repo}/check-runs`. Wire `ChecksGithubLive` into the runtime Layer so `offload-test` posts `in_progress` on start and `completed` with conclusion at end.
 - **Verifiable acceptance:** Integration test against an MSW-mocked `api.github.com` asserts: (a) one POST to `/repos/.../check-runs` with `status: in_progress`; (b) one PATCH with `status: completed` and `conclusion: success` for green, `failure` for red. End-to-end manual: dispatch against a real test repo, observe check-run appears on the commit's Checks tab.
 
-#### PR 7 — GHA composite Action + acceptance smoke
+#### PR 7 — GHA Action + acceptance smoke
 
-- **What:** `actions/flare-dispatch-action/action.yml` (composite, `using: composite`) calling `dispatch.sh`. `dispatch.sh` is ~30 LOC: compute `HMAC = openssl dgst -sha256 -hmac "$INPUT_HMAC_SECRET"`, curl POST, exit 0 on 202, fail on anything else. Plus a `.github/workflows/acceptance.yml` in this repo that uses the local action against the live deploy. Quickstart `README.md` with copy-paste deploy steps.
+- **What:** `actions/flare-dispatch-action/action.yml` calling a HMAC-signing entry point that POSTs the dispatch body and exits 0 on 202. Originally landed as a `using: composite` Action with `dispatch.sh` (~30 LOC: `openssl dgst -sha256 -hmac`, `curl` POST); refactored in PR #27 to a `using: node20` JS Action bundled from `packages/cli/src/action-entry.ts` (typed errors, `safeForCmd` workflow-command escape, `http(s)`-only scheme allowlist). Plus a `.github/workflows/acceptance.yml` in this repo that uses the local action against the live deploy. Quickstart `README.md` with copy-paste deploy steps.
 - **Verifiable acceptance:** A PR against this repo triggers `.github/workflows/acceptance.yml`, which calls the Action, which dispatches `offload-test` with `command: "pnpm test"` against this repo's own SHA. The check-run posted by the Worker turns green and appears as a required-status candidate on the PR. End-to-end timing recorded in PR comment.
 
 ### 5. Acceptance test
