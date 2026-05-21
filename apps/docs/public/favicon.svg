@@ -1,28 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Cloudflare-leaning: white ground, CF orange #F38020 outer, golden #FAAE40 inner, near-black arc -->
-  <rect width="64" height="64" fill="#FFFFFF"/>
-  <!-- Trajectory arc: launch from bottom-left, curves up into the base of the flame at (40,30) -->
-  <path d="M8 58 Q10 40 26 34 T40 30" fill="none" stroke="#13131A" stroke-width="6.5" stroke-linecap="round"/>
-  <!-- CF-style flame at upper-right. Tall, asymmetric, leaning slightly right.
-       Two-tone: outer CF orange, inner golden. Tip is a single sharp point, not a notch. -->
-  <g transform="translate(42 22)">
-    <!-- Outer flame -->
-    <path d="
-      M 2 -22
-      C 6 -14, 12 -10, 13 -2
-      C 14 6, 9 12, 1 12
-      C -7 12, -13 6, -12 -2
-      C -11 -8, -6 -10, -4 -14
-      C -2 -18, 0 -20, 2 -22 Z
-    " fill="#F38020"/>
-    <!-- Inner flame: smaller, similar shape, slightly offset upward -->
-    <path d="
-      M 3 -16
-      C 5 -10, 9 -7, 9 -1
-      C 9 4, 6 8, 1 8
-      C -4 8, -7 4, -7 -1
-      C -7 -5, -4 -7, -2 -10
-      C 0 -13, 2 -15, 3 -16 Z
-    " fill="#FAAE40"/>
+  <rect width="64" height="64" fill="#f4f1ea"/>
+  <!-- Trajectory arc: launch from bottom-left, arcs up to flare burst at (42,20) -->
+  <path d="M8 58 Q10 38 26 28 T42 20" fill="none" stroke="#13131A" stroke-width="6.5" stroke-linecap="round"/>
+  <!-- Flare burst at (42,20): a sudden burst of light.
+       8 asymmetric orange rays (longest N/E/NE for upward-right velocity) over a
+       three-stop hot center: orange disc, yellow halo, white incandescent core. -->
+  <g transform="translate(42 20)">
+    <!-- N (longest spike) -->
+    <path d="M0 -24 L3 -8 L0 0 L-3 -8 Z" fill="#FF3D00"/>
+    <!-- E (long spike) -->
+    <path d="M24 0 L8 3 L0 0 L8 -3 Z" fill="#FF3D00"/>
+    <!-- NE (long diagonal) -->
+    <path d="M17 -17 L5 -2 L0 0 L-2 -5 Z" fill="#FF3D00"/>
+    <!-- S (medium-long) -->
+    <path d="M0 20 L3 7 L0 0 L-3 7 Z" fill="#FF3D00"/>
+    <!-- W (medium) -->
+    <path d="M-18 0 L-7 2.5 L0 0 L-7 -2.5 Z" fill="#FF3D00"/>
+    <!-- SE (short-medium) -->
+    <path d="M13 13 L2 5 L0 0 L5 2 Z" fill="#FF3D00"/>
+    <!-- SW (medium) -->
+    <path d="M-14 14 L-2 5 L0 0 L-5 2 Z" fill="#FF3D00"/>
+    <!-- NW (short) -->
+    <path d="M-11 -11 L-4 -2 L0 0 L-2 -4 Z" fill="#FF3D00"/>
+    <!-- Hot center: orange disc → yellow halo → white incandescent core (light source) -->
+    <circle r="7.5" fill="#FF3D00"/>
+    <circle r="4" fill="#FFD000"/>
+    <circle r="1.6" fill="#FFFFFF"/>
   </g>
 </svg>
