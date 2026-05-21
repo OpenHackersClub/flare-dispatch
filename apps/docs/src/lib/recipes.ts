@@ -160,7 +160,7 @@ export const recipes: Recipe[] = [
       "AI-driven walkthrough video of a deployed site, with a per-story summary",
     mode: "Action",
     blurb:
-      "Hand a deployed URL and a list of user stories in prose; the `product-demo` run attaches Browser Rendering over CDP, records ONE master video while driving the site through each story sequentially, captures key screenshots, and writes a holistic markdown summary a reviewer pastes into the PR. Fires per-PR via `ci.yml` (Action mode), and ALSO carries an optional `schedules: [{ cron, inputs }]` block for a daily stakeholder-facing run against staging — same run code, both trigger paths.",
+      "Hand a deployed URL and a list of user stories in prose; the `product-demo` run attaches Browser Run over CDP with native rrweb session recording enabled, drives the site through each story sequentially over ONE recorded session, captures key screenshots, and writes a holistic markdown summary a reviewer pastes into the PR. The returned `replayUri` opens the rrweb player so reviewers can scrub the walkthrough inline. Fires per-PR via `ci.yml` (Action mode), and ALSO carries an optional `schedules: [{ cron, inputs }]` block for a daily stakeholder-facing run against staging — same run code, both trigger paths.",
     files: [
       { name: "ci.yml", lang: "yaml" },
       { name: "product-demo.run.ts", lang: "ts" },

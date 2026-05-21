@@ -1,18 +1,22 @@
 // `product-demo` — AI-driven product demo run.
 //
 // A team hands it a deployed URL (preview / staging / prod) and a list of
-// user stories as prose; the run records ONE master video while driving the
-// site through each story in sequence, captures key screenshots, writes a
-// per-story narrative, and then produces a holistic markdown summary across
-// all stories that a reviewer can paste into the PR.
+// user stories as prose; the run drives the site through each story in
+// sequence over a single CDP session with Browser Run's native rrweb
+// session recording enabled, captures key screenshots, writes a per-story
+// narrative, and then produces a holistic markdown summary across all
+// stories that a reviewer can paste into the PR.
 //
 // No checkout — the target is a deployed URL, not the repo. The run only
-// attaches to Browser Rendering over CDP and shells out to the bundled
+// attaches to Browser Run over CDP and shells out to the bundled
 // `demo-agent` CLI (baked into the `flare-dispatch-demo:latest` image, the
 // same shape as `review-agent` in recipes/ai-code-review). The agent owns
-// recording mechanics, model calls, and story playback; this run only
-// orchestrates: attach → record start → for each story play → record stop →
-// upload → summarize.
+// the model loop and CDP action application; the platform owns recording
+// (Browser Run records rrweb DOM events at the session level when the CDP
+// connect URL carries `?recording=true`); this run only orchestrates:
+// attach → record start (set viewport, capture sessionId) → for each
+// story play → record stop (close session, pull rrweb events from the
+// Browser Run REST API, upload as R2 JSON) → summarize.
 //
 // Modes:
 // - **Action** — dispatched by recipes/product-demo/ci.yml on `pull_request`
@@ -40,7 +44,7 @@ import {
 // A user story is just a name + prose. The agent reads the prose, decides
 // the next browser action, applies it over the live CDP session, captures
 // screenshots, and emits a narrative. Names must be unique within the
-// `stories` array — they become chapter markers on the master video.
+// `stories` array — they become chapter markers on the rrweb replay timeline.
 const Story = Schema.Struct({
   name: Schema.String,
   prose: Schema.String,
@@ -56,31 +60,41 @@ const Input = Schema.Struct({
   deployedUrl: Schema.String,
   stories: Schema.Array(Story),
   // The viewport preset is passed through to the agent — it sets the CDP
-  // viewport once at attach time so the master video uses one resolution.
-  // Default desktop; "mobile" emulates a phone profile in the agent.
+  // viewport once at attach time via Emulation.setDeviceMetricsOverride so
+  // every rrweb event in the session uses one resolution. Default desktop;
+  // "mobile" emulates a phone profile in the agent.
   viewportPreset: Schema.optional(Schema.Literal("desktop", "mobile")),
-  // Per-story wall-clock ceiling. Stories run sequentially so the master
-  // video stays one continuous track; without a per-story cap one stuck
-  // story would burn the whole run's `maxDurationSec`.
+  // Per-story wall-clock ceiling. Stories run sequentially against ONE
+  // rrweb-recorded session so the replay timeline is continuous; without
+  // a per-story cap one stuck story would burn the whole run's
+  // `maxDurationSec`.
   maxDurationSecPerStory: Schema.optional(Schema.Number),
 });
 
 // Each story round-trips its own per-chapter record so the summary can
-// point a reviewer at the exact span of the master video to look at.
+// point a reviewer at the exact span of the rrweb replay to look at.
 const StoryResult = Schema.Struct({
   name: Schema.String,
   status: Schema.Literal("passed", "failed"),
   durationMs: Schema.Number,
-  // The video has one continuous timeline; these are offsets into it, in
-  // ms, so a reviewer can jump straight to a story's chapter.
-  videoStartMs: Schema.Number,
-  videoEndMs: Schema.Number,
+  // rrweb timestamps in ms from session start — a reviewer can jump straight
+  // to a story's chapter in the replay player by seeking to chapterStartMs.
+  chapterStartMs: Schema.Number,
+  chapterEndMs: Schema.Number,
   narrative: Schema.String,
   keyScreenshotUri: Schema.String,
 });
 
 const Output = Schema.Struct({
-  videoUri: Schema.String,        // signed R2 URL — embeddable in the PR
+  // The docs-site rrweb player URL (https://<docsBase>/replay/<sessionId>).
+  // Reviewers click through to scrub the recording. The replay UI itself
+  // ships separately — see specs/pm/plan.md § Replay UI; until then this
+  // links to a "coming soon" page that displays the raw replayJsonUri.
+  replayUri: Schema.String,
+  // Signed R2 URL to the raw rrweb event JSON (30-day TTL). Power-user
+  // escape hatch — drop into an rrweb-player iframe to self-host the
+  // replay. The dispatcher mirrors Browser Run's 30-day retention.
+  replayJsonUri: Schema.String,
   summaryMd: Schema.String,       // the holistic LLM-written summary
   stories: Schema.Array(StoryResult),
 });
@@ -88,15 +102,18 @@ const Output = Schema.Struct({
 export const productDemo = defineRun({
   name: "product-demo",
   version: "1.0.0",
-  // `demo-agent` lives in this image — recording mechanics, the model
-  // client, and the CDP-driver glue. See README.md § The demo agent.
+  // `demo-agent` lives in this image — model loop, CDP-driver glue, and
+  // the Browser Run REST client for pulling rrweb events. See README.md
+  // § The demo agent.
   image: "registry.cloudflare.com/openhackersclub/flare-dispatch-demo:latest",
   inputs: Input,
   outputs: Output,
-  // Stories run SEQUENTIALLY against one CDP session so the master video is
-  // one continuous file with chapter markers. `maxConcurrency: 1` makes the
-  // sequencing explicit and keeps the Browser Rendering session count to 1.
-  // `requiresBrowser: true` reserves a slot in the Browser Rendering pool.
+  // Stories run SEQUENTIALLY against one CDP session so the rrweb timeline
+  // stays continuous. `maxConcurrency: 1` makes the sequencing explicit and
+  // keeps the Browser Run session count to 1. `requiresBrowser: true`
+  // reserves a slot in the Browser Run pool — and the dispatcher's
+  // `newCDPSession` primitive appends `?recording=true` so Browser Run
+  // captures the rrweb event stream for the session's lifetime.
   limits: { maxDurationSec: 3600, maxConcurrency: 1, requiresBrowser: true },
 
   // Schedule-mode binding — 14:00 UTC daily. The cron expression MUST also
@@ -133,43 +150,49 @@ export const productDemo = defineRun({
       const viewport = input.viewportPreset ?? "desktop";
       const perStorySec = input.maxDurationSecPerStory ?? 180;
 
-      // 1. Attach Browser Rendering over CDP against the DEPLOYED URL. No
-      //    checkout, no app boot — the site is already live. The CDP
-      //    endpoint flows to the agent; the agent applies the viewport
-      //    profile and drives the page.
+      // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
+      //    checkout, no app boot — the site is already live. The dispatcher's
+      //    `newCDPSession` primitive composes the connect URL with
+      //    `?recording=true` so Browser Run records rrweb DOM events for
+      //    the whole session; the agent doesn't have to start recording —
+      //    it inherits a session that's already recording.
       const session = yield* step("attach-cdp", () =>
         browser.newCDPSession({ targetUrl: input.deployedUrl }),
       );
 
       // Filesystem layout inside the container — relative paths the agent
-      // and the artifact uploads share. The container's working dir is its
-      // own; the agent writes here.
-      const videoPath = "/tmp/demo/master.webm";
+      // writes through. The session-id file is the handoff between
+      // `record-start` (which queries it via puppeteer.sessionId()) and
+      // `record-stop` (which uses it to call Browser Run's recording REST
+      // endpoint after the session closes).
+      const sessionIdPath = "/tmp/demo/session-id";
+      const replayJsonPath = "/tmp/demo/replay.json";
       const screenshotsDir = "/tmp/demo/screenshots";
       const storiesJsonPath = "/tmp/demo/stories.json";
       const summaryPath = "/tmp/demo/summary.md";
 
-      // 2. Tell the agent to start recording. The agent owns the recording
-      //    pipeline (one chromium tab → ffmpeg → master.webm); the run only
-      //    sees a path. `record start` returns once recording is live so
-      //    the first story's first frame is captured.
+      // 2. Validate the connect URL carries `?recording=true`, set the
+      //    viewport once (one resolution for the whole rrweb stream), and
+      //    capture the session ID for the REST pull in step 4. The agent
+      //    does NOT start a recording pipeline of its own — Browser Run is
+      //    already recording on the platform side.
       yield* step("record-start", () =>
         sandbox.exec({
           command: [
             "demo-agent", "record", "start",
             "--cdp-ws", session.wsEndpoint,
             "--viewport", viewport,
-            "--out", videoPath,
+            "--session-id-out", sessionIdPath,
           ],
         }),
       );
 
       // 3. Walk the stories in order. Each `demo-agent play` reads the
-      //    prose, applies actions over the SAME CDP session (so the video
+      //    prose, applies actions over the SAME CDP session (so the rrweb
       //    timeline stays continuous), captures key screenshots into
       //    `screenshotsDir`, and emits one JSON line per story with the
-      //    chapter offsets, status, narrative, and the key-screenshot path.
-      //    Concurrency 1 — see `limits` above.
+      //    chapter offsets (rrweb timestamps), status, narrative, and the
+      //    key-screenshot path. Concurrency 1 — see `limits` above.
       const playResults = yield* step("play-stories", () =>
         Effect.forEach(
           input.stories,
@@ -189,10 +212,20 @@ export const productDemo = defineRun({
         ),
       );
 
-      // 4. Stop recording. The agent flushes the video file and exits.
-      yield* step("record-stop", () =>
+      // 4. Close the CDP session and pull the recording. Browser Run only
+      //    finalizes rrweb events after the session closes; `demo-agent
+      //    record stop` closes the session, polls
+      //    GET /accounts/<id>/browser-rendering/recording/<sessionId>, writes
+      //    the event array to `--out`, and emits a JSON last-line with the
+      //    sessionId + the realized event count.
+      const recordStopResult = yield* step("record-stop", () =>
         sandbox.exec({
-          command: ["demo-agent", "record", "stop", "--out", videoPath],
+          command: [
+            "demo-agent", "record", "stop",
+            "--cdp-ws", session.wsEndpoint,
+            "--session-id-in", sessionIdPath,
+            "--out", replayJsonPath,
+          ],
         }),
       );
 
@@ -203,8 +236,8 @@ export const productDemo = defineRun({
       type PlayJson = {
         status: "passed" | "failed";
         durationMs: number;
-        videoStartMs: number;
-        videoEndMs: number;
+        chapterStartMs: number;
+        chapterEndMs: number;
         narrative: string;
         keyScreenshotPath: string;
       };
@@ -221,14 +254,19 @@ export const productDemo = defineRun({
         };
       });
 
-      // 6. Upload the master video once, signed for 30 days so the link
+      type RecordStopJson = { sessionId: string; eventCount: number };
+      const recordStopJson = JSON.parse(
+        recordStopResult.stdout.trim().split("\n").pop() ?? "{}",
+      ) as RecordStopJson;
+
+      // 6. Upload the rrweb event JSON once, signed for 30 days so the link
       //    survives PR-review cycles. Reviewers paste the URL straight into
-      //    the PR description.
-      const videoUri = yield* step("upload-video", () =>
+      //    the PR description, or feed it to an rrweb-player iframe.
+      const replayJsonUri = yield* step("upload-replay-json", () =>
         artifact.upload({
-          name: "demo-video.webm",
-          path: videoPath,
-          contentType: "video/webm",
+          name: "replay.json",
+          path: replayJsonPath,
+          contentType: "application/json",
           signedUrlTTL: "30 days",
         }),
       );
@@ -250,16 +288,26 @@ export const productDemo = defineRun({
         ),
       );
 
-      // 8. Resolve the summary model through the control plane. Mirrors the
-      //    `pr-review` pattern (recipes/ai-code-review) — an operator can
-      //    repoint `product-demo.model.summary` in KV without redeploying
-      //    when a provider degrades. Default `opus`; never a hard failure
-      //    (config is `tuning`, not `gating` — see specs/03-dsl.md § config).
+      // 8. Resolve the summary model + docs-site base through the control
+      //    plane. Mirrors the `pr-review` pattern (recipes/ai-code-review) —
+      //    an operator can repoint `product-demo.model.summary` or
+      //    `product-demo.docsBase` in KV without redeploying. Default model
+      //    `opus`; default docsBase the FlareDispatch docs site. Neither is
+      //    a hard failure (config is `tuning`, not `gating` — see
+      //    specs/03-dsl.md § config).
       const summaryModel = yield* step("resolve-model", () =>
         config.get("product-demo.model.summary").pipe(
           Effect.map((override) => override ?? "opus"),
         ),
       );
+      const docsBase = yield* step("resolve-docs-base", () =>
+        config.get("product-demo.docsBase").pipe(
+          Effect.map(
+            (override) => override ?? "https://flare-dispatch.openhackersclub.com",
+          ),
+        ),
+      );
+      const replayUri = `${docsBase}/replay/${recordStopJson.sessionId}`;
 
       // 9. Stitch typed per-story results, then write them to disk for the
       //    agent's summarizer. Doing the file write through `sandbox.exec`
@@ -269,8 +317,8 @@ export const productDemo = defineRun({
         name: p.story.name,
         status: p.json.status,
         durationMs: p.json.durationMs,
-        videoStartMs: p.json.videoStartMs,
-        videoEndMs: p.json.videoEndMs,
+        chapterStartMs: p.json.chapterStartMs,
+        chapterEndMs: p.json.chapterEndMs,
         narrative: p.json.narrative,
         // `screenshotUris.length === parsed.length` — Effect.forEach over `parsed`.
         keyScreenshotUri: screenshotUris[i]!,
@@ -280,7 +328,7 @@ export const productDemo = defineRun({
           command: [
             "demo-agent", "write-json",
             "--out", storiesJsonPath,
-            "--data", JSON.stringify({ stories, videoUri }),
+            "--data", JSON.stringify({ stories, replayUri, replayJsonUri }),
           ],
         }),
       );
@@ -331,16 +379,17 @@ export const productDemo = defineRun({
 
       yield* io.log(
         "info",
-        `product-demo: ${stories.length} stories, ${stories.filter((s) => s.status === "passed").length} passed`,
+        `product-demo: ${stories.length} stories, ${stories.filter((s) => s.status === "passed").length} passed, ${recordStopJson.eventCount} rrweb events`,
       );
 
       // The check-run summary the Dispatcher posts EMBEDS `summaryMd`
-      // verbatim and links `videoUri` — reviewers see the holistic write-up
-      // on the PR's Checks tab and one signed video link they can drop
+      // verbatim and links `replayUri` — reviewers see the holistic write-up
+      // on the PR's Checks tab and one signed replay link they can drop
       // straight into the PR description (see specs/04-gha-integration.md
       // § Inline findings — summary).
       return {
-        videoUri,
+        replayUri,
+        replayJsonUri,
         summaryMd: summaryResult.stdout.trim(),
         stories,
       };
