@@ -231,10 +231,25 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         onFailure: () => "failure" as const,
       });
 
+      // Persist the run output as JSON so `io.priorExecution` can recover it
+      // on the next execution in the semantic family. A failed Exit has no
+      // output; the column stays NULL.
+      const summaryJson = Exit.match(exit, {
+        onSuccess: (out) => {
+          try {
+            return JSON.stringify(out);
+          } catch {
+            return undefined;
+          }
+        },
+        onFailure: () => undefined,
+      });
+
       yield* executions.finishExecution({
         id: payload.executionId,
         completedAt,
         status,
+        ...(summaryJson !== undefined ? { summaryJson } : {}),
       });
 
       // Complete the check-run with the run's verdict.

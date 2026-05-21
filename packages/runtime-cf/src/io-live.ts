@@ -7,18 +7,35 @@
 // fake — Workflow checkpoint replay then stays consistent (specs/03-dsl.md
 // § io, specs/pm/plan.md § 6 "Run replay determinism").
 //
-// `io.env` and `io.priorExecution` are not on the V0 path (`offload-test` uses
-// only `io.now` indirectly via the exec step result). They are implemented as
-// honest no-ops / `Option.none()` rather than `Effect.die` so the live runtime
-// is a complete `IOService` — a run that reads them degrades gracefully.
+// `io.env` is a graceful no-op (no per-run env surface yet). `io.priorExecution`
+// queries D1 for the most recent terminal execution in the semantic family
+// when the live D1 binding + current execution id are supplied (the normal
+// per-execution wiring in runtime.ts). Without them — a stand-alone `IOLive`
+// for tests or local dev — it returns `Option.none()`, the documented "first
+// execution of a family" result.
 //
 // Spec: specs/03-dsl.md § io, specs/pm/plan.md § PR4.
 
-import { Duration, Effect, Layer, Option } from "effect";
+import { Duration, Effect, Layer, Option, Schema } from "effect";
 import { IO, type IOService } from "@flare-dispatch/core";
 
-/** Build the live `IO` Layer. No bindings required — pure platform globals. */
-export const makeIOLive = (): Layer.Layer<IO> =>
+/**
+ * Options for {@link makeIOLive}. All optional — IOLive runs with no bindings
+ * for tests and local dev. Supplying `{db, currentExecutionId}` enables the
+ * live `priorExecution` D1 query.
+ */
+export type IOLiveOptions = {
+  /** D1 binding (`env.RUNS_METADATA`) — required for live `priorExecution`. */
+  readonly db?: D1Database;
+  /**
+   * The current execution's instanceId — excluded from `priorExecution`
+   * results so a run never sees itself as its own prior.
+   */
+  readonly currentExecutionId?: string;
+};
+
+/** Build the live `IO` Layer. */
+export const makeIOLive = (opts: IOLiveOptions = {}): Layer.Layer<IO> =>
   Layer.succeed(IO, {
     now: Effect.sync(() => Date.now()),
 
@@ -45,12 +62,98 @@ export const makeIOLive = (): Layer.Layer<IO> =>
         else console.log(line);
       }),
 
-    // `io.priorExecution` reads prior D1 execution metadata — deferred past V0
-    // (no run on the V0 path consumes it). `Option.none()` is the documented
-    // "first execution of a family" result, so this stays a total, non-failing
-    // capability rather than an `Effect.die`.
-    priorExecution: () => Effect.succeed(Option.none()),
+    // `io.priorExecution` (specs/03-dsl.md § io.priorExecution) — most recent
+    // terminal execution in the semantic family. The family is the instanceId
+    // prefix (e.g. `pr-review:owner/name:42`); the query matches `id LIKE
+    // 'family:%'` and excludes the current execution. A NULL or malformed
+    // `summary_json` degrades to `Option.none()` rather than failing — the
+    // capability is "best-effort tuning, never a hard run failure" per spec.
+    priorExecution: <O, I>({
+      family,
+      outputSchema,
+    }: {
+      family: string;
+      outputSchema: Schema.Schema<O, I>;
+    }) =>
+      opts.db === undefined
+        ? Effect.succeed(Option.none<{
+            executionId: string;
+            sha: string;
+            output: O;
+            finishedAt: number;
+          }>())
+        : Effect.tryPromise(async () => {
+            // `LIKE` with a `family:%` prefix; SQLite treats `:` as a literal
+            // char (it is not a parameter marker in `prepare` bind position).
+            const row = await opts.db!
+              .prepare(
+                `SELECT id, sha, summary_json, completed_at
+                   FROM executions
+                  WHERE id LIKE ?
+                    AND id != ?
+                    AND status IN ('success', 'failure')
+                    AND summary_json IS NOT NULL
+                  ORDER BY completed_at DESC
+                  LIMIT 1`,
+              )
+              .bind(`${family}:%`, opts.currentExecutionId ?? "")
+              .first<{
+                id: string;
+                sha: string;
+                summary_json: string;
+                completed_at: number;
+              }>();
+            if (row === null) {
+              return Option.none<{
+                executionId: string;
+                sha: string;
+                output: O;
+                finishedAt: number;
+              }>();
+            }
+            // Decode summary_json against the run's outputSchema. A mismatch
+            // (prior execution ran an older run version with a different
+            // output shape) → none, not failure.
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(row.summary_json);
+            } catch {
+              return Option.none<{
+                executionId: string;
+                sha: string;
+                output: O;
+                finishedAt: number;
+              }>();
+            }
+            const decoded = Schema.decodeUnknownEither(outputSchema)(parsed);
+            if (decoded._tag === "Left") {
+              return Option.none<{
+                executionId: string;
+                sha: string;
+                output: O;
+                finishedAt: number;
+              }>();
+            }
+            return Option.some({
+              executionId: row.id,
+              sha: row.sha,
+              output: decoded.right,
+              finishedAt: row.completed_at,
+            });
+          }).pipe(
+            // A D1 outage during this lookup is not a fatal run condition —
+            // degrade to `Option.none()` so the run proceeds as if first in
+            // its family (matches spec's "best-effort tuning" framing).
+            Effect.orElseSucceed(() =>
+              Option.none<{
+                executionId: string;
+                sha: string;
+                output: O;
+                finishedAt: number;
+              }>(),
+            ),
+          ),
   } satisfies IOService);
 
-/** The live `IO` Layer — platform `crypto` + `Date`. */
+/** The live `IO` Layer — platform `crypto` + `Date`, no D1. */
 export const IOLive: Layer.Layer<IO> = makeIOLive();

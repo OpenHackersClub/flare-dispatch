@@ -438,7 +438,7 @@ namespace cache {
 
 ### `artifact`
 
-R2-backed artifact upload with signed URLs.
+R2-backed artifact upload. Returns the stable artifact URL the Dispatcher serves at `GET /v1/artifacts/:executionId/:name` (specs/01-architecture.md § Dispatcher Worker).
 
 ```ts
 namespace artifact {
@@ -446,14 +446,16 @@ namespace artifact {
     name: string;
     path: string;                            // file or directory (dir tars to .tar.zst)
     contentType?: string;
-    signedUrlTTL?: Duration | string;
+    signedUrlTTL?: Duration | string;        // accepted but ignored in V0-V2 — see below
     container?: Container;
-  }) => Effect.Effect<string /* signed URL */, ArtifactUploadFailed, RunContext>;
+  }) => Effect.Effect<string /* /v1/artifacts/<exec>/<name> */, ArtifactUploadFailed, RunContext>;
 
   declare const list: (opts: { executionId: string }) =>
     Effect.Effect<readonly ArtifactInfo[], never, RunContext>;
 }
 ```
+
+The returned URL is the **stable path** the Dispatcher streams the R2 object body through (not a true R2 presigned S3-API URL). The link resolves through the same Worker, so no R2 access-key-id / secret needs to enter the Worker Secret set. `signedUrlTTL` is accepted for forward compatibility but does not change the URL today; when real R2 S3 credentials enter the secret set (V3+), `artifact.upload` switches to issuing a presigned URL + the `GET /v1/artifacts/...` route 302-redirects to it. The path is the stable contract — callers don't care which mechanism serves the bytes.
 
 ### `io`
 

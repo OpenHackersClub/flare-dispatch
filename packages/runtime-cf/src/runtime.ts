@@ -85,7 +85,10 @@ export type CFRuntimeLiveOptions = {
 export const makeCFRuntimeLive = (
   opts: CFRuntimeLiveOptions,
 ): Layer.Layer<RunContext> => {
-  const io = makeIOLive();
+  const io = makeIOLive({
+    db: opts.db,
+    currentExecutionId: opts.executionId,
+  });
   const executions = makeD1ExecutionsLive(opts.db, opts.execution);
   const artifact = makeR2ArtifactLive(opts.bucket, opts.executionId);
   const sandbox = makeSandboxCloudflareLive(

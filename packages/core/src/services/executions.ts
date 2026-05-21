@@ -60,6 +60,14 @@ export interface ExecutionsService {
     id: string;
     completedAt: number;
     status: StepStatus;
+    /**
+     * The run's terminal output, JSON-encoded. When provided, the live
+     * runtime persists it to the `executions.summary_json` column so
+     * `io.priorExecution` can recover it on the next execution in the
+     * semantic family (specs/03-dsl.md § `io.priorExecution`). Omitted →
+     * the column stays NULL.
+     */
+    summaryJson?: string;
   }) => Effect.Effect<void>;
 
   /** Record a `steps` row at step entry. */
