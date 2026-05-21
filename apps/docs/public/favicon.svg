@@ -1,6 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" fill="#f4f1ea"/>
-  <path d="M8 30 C11 24 15 21 20 18" fill="none" stroke="#13131A" stroke-width="3" stroke-linecap="round"/>
-  <path d="M21 2 L23 10 L21 18 L19 10 Z M13 10 L21 8 L29 10 L21 12 Z" fill="#FF3D00"/>
-  <circle cx="21" cy="10" r="3.4" fill="#13131A"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" fill="#f4f1ea"/>
+  <!-- Trajectory arc: launch from bottom-left, arcs up to burst at (42,20) -->
+  <path d="M8 58 Q10 38 26 28 T42 20" fill="none" stroke="#13131A" stroke-width="6.5" stroke-linecap="round"/>
+  <!-- 8-ray asymmetric starburst at (42,20). Long N + E + NE convey upward/right
+       velocity; shorter rays fill the silhouette to read as "burst" not "asterisk". -->
+  <g transform="translate(42 20)">
+    <!-- N (longest, vertical spike) -->
+    <path d="M0 -24 L3 -8 L0 0 L-3 -8 Z" fill="#FF3D00"/>
+    <!-- E (long, horizontal spike) -->
+    <path d="M24 0 L8 3 L0 0 L8 -3 Z" fill="#FF3D00"/>
+    <!-- NE (long diagonal, reinforces upward-right vector) -->
+    <path d="M17 -17 L5 -2 L0 0 L-2 -5 Z" fill="#FF3D00"/>
+    <!-- S (medium-long) -->
+    <path d="M0 20 L3 7 L0 0 L-3 7 Z" fill="#FF3D00"/>
+    <!-- W (medium) -->
+    <path d="M-18 0 L-7 2.5 L0 0 L-7 -2.5 Z" fill="#FF3D00"/>
+    <!-- SE (short-medium) -->
+    <path d="M13 13 L2 5 L0 0 L5 2 Z" fill="#FF3D00"/>
+    <!-- SW (medium) -->
+    <path d="M-14 14 L-2 5 L0 0 L-5 2 Z" fill="#FF3D00"/>
+    <!-- NW (short) -->
+    <path d="M-11 -11 L-4 -2 L0 0 L-2 -4 Z" fill="#FF3D00"/>
+    <!-- Hot center: orange disc + yellow core -->
+    <circle r="7.5" fill="#FF3D00"/>
+    <circle r="3.5" fill="#FFD000"/>
+  </g>
 </svg>
