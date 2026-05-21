@@ -57,6 +57,7 @@ import {
   deploySmoke,
   matrixFanout,
   offloadTest,
+  playwrightDemo,
   playwrightE2E,
   productDemo,
 } from "@flare-dispatch/runs";
@@ -66,7 +67,9 @@ import type { Env } from "./env";
  * The run registry — a map from run name to its `Run` value. `RunWorkflow`
  * looks a dispatched run up here; an unknown name fails the execution. Each
  * new run slots in as another entry — `offload-test` (V0), `cdp-acceptance`
- * (V2 browser acceptance, PR9).
+ * (V2 browser acceptance, PR9), `product-demo` (V3 — AI-driven, requires
+ * the `demo-agent` image), `playwright-demo` (record a hand-authored
+ * Playwright spec against a deployed URL + upload the artifact bundle).
  */
 const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
@@ -75,6 +78,7 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
   [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
   [productDemo.name]: productDemo as Run<unknown, unknown>,
+  [playwrightDemo.name]: playwrightDemo as Run<unknown, unknown>,
 };
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */

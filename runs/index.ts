@@ -14,3 +14,4 @@ export { deploySmoke } from "./deploy-smoke";
 export { matrixFanout } from "./matrix-fanout";
 export { playwrightE2E } from "./playwright-e2e";
 export { productDemo } from "./product-demo";
+export { playwrightDemo } from "./playwright-demo";

@@ -109,6 +109,7 @@ describe("GET /health", () => {
         "deploy-smoke",
         "matrix-fanout",
         "offload-test",
+        "playwright-demo",
         "playwright-e2e",
         "product-demo",
       ],
