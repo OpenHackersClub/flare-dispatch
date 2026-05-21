@@ -8,15 +8,17 @@
 
 import { execFileSync } from "node:child_process";
 import { Effect, Exit } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildBody,
   type DispatchEnv,
   type FetchLike,
+  reportFailure,
   runDispatch,
   secretFingerprint,
   signBytes,
 } from "./dispatch.js";
+import { PermanentFailure } from "./errors.js";
 
 const SECRET = "test-hmac-secret-32-bytes-aaaaaaa";
 
@@ -398,6 +400,82 @@ describe("runDispatch", () => {
     expect(result.executionId).toBe("01DEF");
   });
 
+  it("URL-encodes the run slug in the request path (security M4)", async () => {
+    // A run slug containing `/` or `..` would otherwise rewrite the request
+    // path — and the HMAC is over the body, not the URL, so a path rewrite
+    // would let a hostile workflow author pivot the (signed) request.
+    const { fetch, calls } = mockFetch([
+      { status: 202, body: '{"executionId":"01ENC"}' },
+    ]);
+    const env = baseEnv({ INPUT_RUN: "../evil/path?query=x" });
+
+    await Effect.runPromise(runDispatch({ env, fetch }));
+
+    expect(calls).toHaveLength(1);
+    const url = calls[0]?.url ?? "";
+    expect(url).toBe(
+      `https://dispatcher.example.com/v1/dispatch/${encodeURIComponent(
+        "../evil/path?query=x",
+      )}`,
+    );
+    // Belt-and-braces — no raw `/`, `?`, `.` left in the slug segment.
+    expect(url).not.toContain("/v1/dispatch/../");
+    expect(url).not.toContain("?query=x");
+  });
+
+  it("rejects file:// endpoint with InvalidEndpoint and no fetch attempt", async () => {
+    const { fetch, calls } = mockFetch([]);
+    const env = baseEnv({ INPUT_ENDPOINT: "file:///etc/passwd" });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const pretty = JSON.stringify(exit.cause);
+      expect(pretty).toContain("InvalidEndpoint");
+      expect(pretty).toContain("file:");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects data: endpoint with InvalidEndpoint and no fetch attempt", async () => {
+    const { fetch, calls } = mockFetch([]);
+    const env = baseEnv({ INPUT_ENDPOINT: "data:text/plain,hello" });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const pretty = JSON.stringify(exit.cause);
+      expect(pretty).toContain("InvalidEndpoint");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects a malformed endpoint URL with InvalidEndpoint", async () => {
+    const { fetch, calls } = mockFetch([]);
+    const env = baseEnv({ INPUT_ENDPOINT: "not a url" });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const pretty = JSON.stringify(exit.cause);
+      expect(pretty).toContain("InvalidEndpoint");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("accepts http:// (local dev) endpoints", async () => {
+    const { fetch } = mockFetch([
+      { status: 202, body: '{"executionId":"01LOCAL"}' },
+    ]);
+    const env = baseEnv({ INPUT_ENDPOINT: "http://127.0.0.1:8787" });
+
+    const result = await Effect.runPromise(runDispatch({ env, fetch }));
+    expect(result.executionId).toBe("01LOCAL");
+  });
+
   it("reads inputs via the GHA-canonical INPUT_HMAC-SECRET form (hyphen preserved)", async () => {
     // GitHub Actions sets env vars for JS Action inputs as
     // `INPUT_<UPPER(name.replace(' ','_'))>` — hyphens stay literal. The
@@ -430,5 +508,89 @@ describe("runDispatch", () => {
       github: { installation_id: number };
     };
     expect(body.github.installation_id).toBe(999);
+  });
+});
+
+describe("reportFailure — workflow-command injection escape (security H2)", () => {
+  // Effect's `Console.error` writes via `console.error`; spying on that gives
+  // us the exact lines the runner would see.
+  const captureStderr = async <E>(
+    effect: Effect.Effect<never, never, never>,
+  ): Promise<string[]> => {
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      captured.push(args.map((a) => String(a)).join(" "));
+    });
+    try {
+      await Effect.runPromiseExit(effect);
+    } finally {
+      spy.mockRestore();
+    }
+    return captured;
+    // E parameter exists only to keep type-narrowing honest at call sites.
+    void (undefined as unknown as E);
+  };
+
+  it("percent-encodes a Dispatcher body containing newlines + workflow commands", async () => {
+    // The hostile body would inject a second workflow command if interpolated
+    // raw — `::set-output name=execution-id::evil` would rewrite the action's
+    // output to attacker-controlled content downstream consumers trust.
+    const hostileBody = "unauthorized\n::set-output name=execution-id::evil";
+    const e = new PermanentFailure({
+      status: 401,
+      body: hostileBody,
+      attempts: 1,
+      localFingerprint: "1f3a9c2e",
+      dispatcherFingerprint: "deadbeef",
+    });
+
+    const lines = await captureStderr(reportFailure(e));
+    const joined = lines.join("\n");
+
+    // The newline in the body MUST be %0A, not a real newline.
+    expect(joined).toContain("unauthorized%0A::set-output");
+    // No literal `\n::set-output` survives — the runner sees ONE annotation.
+    const setOutputLines = lines.filter((l) =>
+      l.startsWith("::set-output"),
+    );
+    expect(setOutputLines).toHaveLength(0);
+  });
+
+  it("encodes `%` first so we don't double-encode our own %0A", async () => {
+    // A body containing the literal characters `%0A` (e.g. a URL-encoded
+    // newline returned by the dispatcher) must round-trip as `%250A`, not
+    // become a real newline after we percent-encode our own escapes.
+    const e = new PermanentFailure({
+      status: 400,
+      body: "before%0Aafter",
+      attempts: 1,
+    });
+
+    const lines = await captureStderr(reportFailure(e));
+    const joined = lines.join("\n");
+
+    expect(joined).toContain("before%250Aafter");
+    // Belt-and-braces — no bare `%0A` survives in the body interpolation.
+    expect(joined).not.toMatch(/before%0Aafter/);
+  });
+
+  it("truncates an absurdly long body to ~500 chars + suffix", async () => {
+    // Security review M2 — a hostile or buggy Worker that returns 50 KiB
+    // shouldn't bury the actual error message in the runner log.
+    const huge = "x".repeat(2000);
+    const e = new PermanentFailure({
+      status: 500,
+      body: huge,
+      attempts: 1,
+    });
+
+    // Use TransientFailure-shape via the actual flow? No — PermanentFailure
+    // with status 500 isn't categorized here; the helper is the unit under
+    // test. We're driving the reporter directly with a synthetic value.
+    const lines = await captureStderr(reportFailure(e));
+    const joined = lines.join("\n");
+
+    expect(joined).toContain("… (truncated)");
+    expect(joined).not.toContain("x".repeat(600));
   });
 });

@@ -39,7 +39,6 @@ the moment the dispatch is accepted (`202`).
 | `hmac-secret` | yes | — | Shared HMAC secret. Same value as the Worker's `HMAC_SECRET`. |
 | `inputs` | no | `{}` | JSON object of run inputs. Validated against the run's Schema on the Worker side. |
 | `mode` | no | `fire-and-forget` | **V0 supports `fire-and-forget` only.** Passing `await` fails the step — await mode is deferred to V1 (see [`specs/pm/plan.md` § 2](../../specs/pm/plan.md)). |
-| `check-name` | no | `flare-dispatch/<run>` | Overrides the check-run name. |
 | `installation-id` | no | `0` | GitHub App installation id for the target repo. Optional — a Dispatcher that has already seen this repo resolves it server-side from the App's webhook-registered installation map. |
 
 ## Outputs

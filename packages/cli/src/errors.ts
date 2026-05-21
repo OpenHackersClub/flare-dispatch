@@ -27,6 +27,16 @@ export class BadMode extends Schema.TaggedError<BadMode>()(
 ) {}
 
 /**
+ * `INPUT_ENDPOINT` did not parse as a URL with an http(s) scheme. Rejected
+ * before any network call so a hostile or typo'd endpoint (e.g. `file://`,
+ * `data:`, `ftp:`) can't be reached by `fetch` at all. Security review M1.
+ */
+export class InvalidEndpoint extends Schema.TaggedError<InvalidEndpoint>()(
+  "InvalidEndpoint",
+  { endpoint: Schema.String, reason: Schema.String },
+) {}
+
+/**
  * A non-retryable HTTP response (401/400/404). The body is whatever the
  * Dispatcher returned — surfaced in the `::error::` line.
  *

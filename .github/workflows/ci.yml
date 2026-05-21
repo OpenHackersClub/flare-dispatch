@@ -35,3 +35,14 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Verify the committed `actions/flare-dispatch-action/dist/index.js`
+      # matches a fresh build from `packages/cli/src/`. JS Actions execute the
+      # committed bundle verbatim — without this gate, a PR can edit `dist/`
+      # directly (or skip a rebuild after a source change) and the Action
+      # runs code the unit tests never see. Security review H1 / code M2.
+      - name: Verify action bundle matches source
+        run: pnpm --filter @flare-dispatch/cli build
+
+      - name: Fail if action bundle is out of date
+        run: git diff --exit-code -- actions/flare-dispatch-action/dist/

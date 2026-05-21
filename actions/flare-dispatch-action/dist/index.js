@@ -28421,6 +28421,11 @@ var BadMode = class extends Schema_exports.TaggedError()(
   { mode: Schema_exports.String }
 ) {
 };
+var InvalidEndpoint = class extends Schema_exports.TaggedError()(
+  "InvalidEndpoint",
+  { endpoint: Schema_exports.String, reason: Schema_exports.String }
+) {
+};
 var PermanentFailure = class extends Schema_exports.TaggedError()(
   "PermanentFailure",
   {
@@ -28451,6 +28456,9 @@ var BadResponse = class extends Schema_exports.TaggedError()(
 };
 
 // src/dispatch.ts
+var escapeCmd = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+var truncateForLog = (s, max6 = 500) => s.length <= max6 ? s : `${s.slice(0, max6)}\u2026 (truncated)`;
+var safeForCmd = (s) => escapeCmd(truncateForLog(s));
 var readInput = (env, name) => {
   const ghaCanonical = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
   const underscored = `INPUT_${name.replace(/ /g, "_").replace(/-/g, "_").toUpperCase()}`;
@@ -28564,7 +28572,22 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
   const endpointRaw = yield* requireInput(env, "endpoint");
   const secret2 = yield* requireInput(env, "hmac-secret");
   const endpoint = stripTrailingSlash(endpointRaw);
-  const url2 = `${endpoint}/v1/dispatch/${run3}`;
+  const parsedEndpoint = yield* Effect_exports.try({
+    try: () => new URL(endpoint),
+    catch: (cause3) => new InvalidEndpoint({
+      endpoint,
+      reason: cause3 instanceof Error ? `not a valid URL: ${cause3.message}` : "not a valid URL"
+    })
+  });
+  if (parsedEndpoint.protocol !== "https:" && parsedEndpoint.protocol !== "http:") {
+    return yield* Effect_exports.fail(
+      new InvalidEndpoint({
+        endpoint,
+        reason: `unsupported scheme ${parsedEndpoint.protocol} \u2014 only http(s) allowed`
+      })
+    );
+  }
+  const url2 = `${endpoint}/v1/dispatch/${encodeURIComponent(run3)}`;
   const body = buildBody(env);
   const bytes = new TextEncoder().encode(JSON.stringify(body));
   const signature = signBytes(secret2, bytes);
@@ -28604,7 +28627,7 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
   });
   const executionId = parsed !== null && typeof parsed === "object" && "executionId" in parsed && typeof parsed.executionId === "string" ? parsed.executionId : "";
   yield* Console_exports.log(
-    `FlareDispatch: dispatched '${run3}' \u2014 executionId=${executionId}`
+    `FlareDispatch: dispatched '${safeForCmd(run3)}' \u2014 executionId=${safeForCmd(executionId)}`
   );
   const outputFile = env.GITHUB_OUTPUT;
   if (outputFile) {
@@ -28620,7 +28643,7 @@ var reportFailure = (e) => Match_exports.value(e).pipe(
     "BadMode",
     ({ mode }) => Effect_exports.gen(function* () {
       yield* Console_exports.error(
-        `::error::mode='${mode}' \u2014 await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md \xA7 2). Use mode: fire-and-forget.`
+        `::error::mode='${safeForCmd(mode)}' \u2014 await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md \xA7 2). Use mode: fire-and-forget.`
       );
       return yield* Effect_exports.die(e);
     })
@@ -28628,7 +28651,16 @@ var reportFailure = (e) => Match_exports.value(e).pipe(
   Match_exports.tag(
     "MissingInput",
     ({ name }) => Effect_exports.gen(function* () {
-      yield* Console_exports.error(`::error::'${name}' input is required`);
+      yield* Console_exports.error(`::error::'${safeForCmd(name)}' input is required`);
+      return yield* Effect_exports.die(e);
+    })
+  ),
+  Match_exports.tag(
+    "InvalidEndpoint",
+    ({ endpoint, reason }) => Effect_exports.gen(function* () {
+      yield* Console_exports.error(
+        `::error::'endpoint' input is invalid (${safeForCmd(reason)}): ${safeForCmd(endpoint)}`
+      );
       return yield* Effect_exports.die(e);
     })
   ),
@@ -28636,17 +28668,19 @@ var reportFailure = (e) => Match_exports.value(e).pipe(
     "PermanentFailure",
     ({ status, body, localFingerprint, dispatcherFingerprint }) => Effect_exports.gen(function* () {
       yield* Console_exports.error(
-        `::error::FlareDispatch dispatch failed (HTTP ${status}): ${body}`
+        `::error::FlareDispatch dispatch failed (HTTP ${status}): ${safeForCmd(body)}`
       );
       if (status === 401 && localFingerprint !== void 0) {
         yield* Console_exports.error(
           "::error::HMAC drift between flare-dispatch-action and Dispatcher Worker."
         );
         yield* Console_exports.error(
-          `  local secret fingerprint      = ${localFingerprint}`
+          `  local secret fingerprint      = ${safeForCmd(localFingerprint)}`
         );
         yield* Console_exports.error(
-          `  dispatcher secret fingerprint = ${dispatcherFingerprint ?? "<not provided>"}`
+          `  dispatcher secret fingerprint = ${safeForCmd(
+            dispatcherFingerprint ?? "<not provided>"
+          )}`
         );
         yield* Console_exports.error(
           "  \u2192 if they differ, re-sync the secret on the mismatching side"
@@ -28662,7 +28696,7 @@ var reportFailure = (e) => Match_exports.value(e).pipe(
     "TransientFailure",
     ({ status, body, attempt }) => Effect_exports.gen(function* () {
       yield* Console_exports.error(
-        `::error::FlareDispatch dispatch failed after ${attempt} attempts (HTTP ${status}): ${body}`
+        `::error::FlareDispatch dispatch failed after ${attempt} attempts (HTTP ${status}): ${safeForCmd(body)}`
       );
       return yield* Effect_exports.die(e);
     })
@@ -28671,7 +28705,7 @@ var reportFailure = (e) => Match_exports.value(e).pipe(
     "BadResponse",
     ({ reason, body }) => Effect_exports.gen(function* () {
       yield* Console_exports.error(
-        `::error::FlareDispatch dispatch failed (bad response): ${reason} \u2014 body=${body}`
+        `::error::FlareDispatch dispatch failed (bad response): ${safeForCmd(reason)} \u2014 body=${safeForCmd(body)}`
       );
       return yield* Effect_exports.die(e);
     })

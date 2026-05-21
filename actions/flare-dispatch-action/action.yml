@@ -32,10 +32,6 @@ inputs:
     description: "Dispatch mode. V0 supports 'fire-and-forget' only; 'await' is deferred to V1."
     required: false
     default: fire-and-forget
-  check-name:
-    description: Overrides the check-run name (default flare-dispatch/<run>).
-    required: false
-    default: ""
   installation-id:
     description: >-
       GitHub App installation id for the target repo. Optional — when omitted,

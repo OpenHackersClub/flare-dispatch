@@ -19,10 +19,36 @@ import { Console, Effect, Match, Schedule } from "effect";
 import {
   BadMode,
   BadResponse,
+  InvalidEndpoint,
   MissingInput,
   PermanentFailure,
   TransientFailure,
 } from "./errors.js";
+
+/**
+ * Percent-encode `%`, `\r`, `\n` for safe interpolation into a GitHub Actions
+ * workflow-command line (`::error::...`, `::warning::...`, etc.). Without
+ * this, a Dispatcher response body containing `\n::set-output ...` would
+ * inject a second workflow command into the runner. Encoding `%` FIRST is
+ * load-bearing so we don't double-encode our own `%0A` / `%0D`. Matches
+ * `@actions/core`'s `escapeData()` from `core/src/command.ts`.
+ *
+ * Security review H2 / L1 / L2.
+ */
+const escapeCmd = (s: string): string =>
+  s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
+/**
+ * Cap any user/dispatcher-controlled string at 500 chars before it lands in
+ * a runner log. A buggy or hostile Worker that returns a 50-KiB body would
+ * otherwise spam the annotation and bury the actual error. Security
+ * review M2.
+ */
+const truncateForLog = (s: string, max = 500): string =>
+  s.length <= max ? s : `${s.slice(0, max)}… (truncated)`;
+
+/** Compose escape + truncate — the only thing the reporter should inline. */
+const safeForCmd = (s: string): string => escapeCmd(truncateForLog(s));
 
 /** Shape of the dispatch body — must match what `dispatch.sh` emits. */
 export interface DispatchBody {
@@ -229,7 +255,6 @@ const defaultFetch: FetchLike = async (url, init) => {
 export interface DispatchDeps {
   readonly env: DispatchEnv;
   readonly fetch?: FetchLike;
-  readonly now?: () => number;
 }
 
 /**
@@ -276,7 +301,12 @@ export const runDispatch = (
   deps: DispatchDeps,
 ): Effect.Effect<
   { executionId: string },
-  BadMode | MissingInput | PermanentFailure | TransientFailure | BadResponse
+  | BadMode
+  | MissingInput
+  | InvalidEndpoint
+  | PermanentFailure
+  | TransientFailure
+  | BadResponse
 > =>
   Effect.gen(function* () {
     const env = deps.env;
@@ -294,8 +324,39 @@ export const runDispatch = (
     const endpointRaw = yield* requireInput(env, "endpoint");
     const secret = yield* requireInput(env, "hmac-secret");
 
+    // Validate scheme BEFORE any network attempt — keeps `file://`, `data:`,
+    // `ftp:`, and cloud-metadata-only URLs from reaching `fetch`. Security
+    // review M1. We accept `http:` too (for `wrangler dev` smokes); operator
+    // hygiene around clear-text is documented separately.
     const endpoint = stripTrailingSlash(endpointRaw);
-    const url = `${endpoint}/v1/dispatch/${run}`;
+    const parsedEndpoint = yield* Effect.try({
+      try: () => new URL(endpoint),
+      catch: (cause) =>
+        new InvalidEndpoint({
+          endpoint,
+          reason:
+            cause instanceof Error
+              ? `not a valid URL: ${cause.message}`
+              : "not a valid URL",
+        }),
+    });
+    if (
+      parsedEndpoint.protocol !== "https:" &&
+      parsedEndpoint.protocol !== "http:"
+    ) {
+      return yield* Effect.fail(
+        new InvalidEndpoint({
+          endpoint,
+          reason: `unsupported scheme ${parsedEndpoint.protocol} — only http(s) allowed`,
+        }),
+      );
+    }
+
+    // `encodeURIComponent(run)` keeps a path-traversal `..` or query-injection
+    // `?` from rewriting the request. The HMAC is over the body, not the URL,
+    // so a path rewrite would otherwise let a hostile workflow author pivot
+    // the (signed) request to a different endpoint. Security review M4.
+    const url = `${endpoint}/v1/dispatch/${encodeURIComponent(run)}`;
 
     const body = buildBody(env);
     // Serialize ONCE — those exact bytes are what we sign AND what we send
@@ -343,8 +404,6 @@ export const runDispatch = (
 
     const result = yield* attemptOnce.pipe(Effect.retry(retrySchedule));
 
-    // Parse executionId from the 202 body. A 202 without an executionId is a
-    // BadResponse — we'd rather fail loudly than write an empty output.
     const parsed: unknown = yield* Effect.try({
       try: () => JSON.parse(result.body),
       catch: (cause) =>
@@ -365,11 +424,12 @@ export const runDispatch = (
         ? (parsed as { executionId: string }).executionId
         : "";
 
+    // `safeForCmd` keeps a hostile `run` or `executionId` from injecting a
+    // second workflow command into the runner log (security review H2/L1).
     yield* Console.log(
-      `FlareDispatch: dispatched '${run}' — executionId=${executionId}`,
+      `FlareDispatch: dispatched '${safeForCmd(run)}' — executionId=${safeForCmd(executionId)}`,
     );
 
-    // GHA writes outputs to `$GITHUB_OUTPUT`; absent outside a runner.
     const outputFile = env.GITHUB_OUTPUT;
     if (outputFile) {
       yield* Effect.sync(() =>
@@ -388,6 +448,7 @@ export const reportFailure = (
   e:
     | BadMode
     | MissingInput
+    | InvalidEndpoint
     | PermanentFailure
     | TransientFailure
     | BadResponse,
@@ -396,14 +457,22 @@ export const reportFailure = (
     Match.tag("BadMode", ({ mode }) =>
       Effect.gen(function* () {
         yield* Console.error(
-          `::error::mode='${mode}' — await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md § 2). Use mode: fire-and-forget.`,
+          `::error::mode='${safeForCmd(mode)}' — await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md § 2). Use mode: fire-and-forget.`,
         );
         return yield* Effect.die(e);
       }),
     ),
     Match.tag("MissingInput", ({ name }) =>
       Effect.gen(function* () {
-        yield* Console.error(`::error::'${name}' input is required`);
+        yield* Console.error(`::error::'${safeForCmd(name)}' input is required`);
+        return yield* Effect.die(e);
+      }),
+    ),
+    Match.tag("InvalidEndpoint", ({ endpoint, reason }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `::error::'endpoint' input is invalid (${safeForCmd(reason)}): ${safeForCmd(endpoint)}`,
+        );
         return yield* Effect.die(e);
       }),
     ),
@@ -412,22 +481,23 @@ export const reportFailure = (
       ({ status, body, localFingerprint, dispatcherFingerprint }) =>
         Effect.gen(function* () {
           yield* Console.error(
-            `::error::FlareDispatch dispatch failed (HTTP ${status}): ${body}`,
+            `::error::FlareDispatch dispatch failed (HTTP ${status}): ${safeForCmd(body)}`,
           );
           // 401 → HMAC drift between flare-dispatch-action and the Worker.
           // Print both fingerprints so the operator can pinpoint which side
-          // holds the wrong secret (issue #24).
+          // holds the wrong secret (issue #24). Fingerprints are
+          // sha256(secret)[:8] — escape anyway as defense-in-depth.
           if (status === 401 && localFingerprint !== undefined) {
             yield* Console.error(
               "::error::HMAC drift between flare-dispatch-action and Dispatcher Worker.",
             );
             yield* Console.error(
-              `  local secret fingerprint      = ${localFingerprint}`,
+              `  local secret fingerprint      = ${safeForCmd(localFingerprint)}`,
             );
             yield* Console.error(
-              `  dispatcher secret fingerprint = ${
-                dispatcherFingerprint ?? "<not provided>"
-              }`,
+              `  dispatcher secret fingerprint = ${safeForCmd(
+                dispatcherFingerprint ?? "<not provided>",
+              )}`,
             );
             yield* Console.error(
               "  → if they differ, re-sync the secret on the mismatching side",
@@ -442,7 +512,7 @@ export const reportFailure = (
     Match.tag("TransientFailure", ({ status, body, attempt }) =>
       Effect.gen(function* () {
         yield* Console.error(
-          `::error::FlareDispatch dispatch failed after ${attempt} attempts (HTTP ${status}): ${body}`,
+          `::error::FlareDispatch dispatch failed after ${attempt} attempts (HTTP ${status}): ${safeForCmd(body)}`,
         );
         return yield* Effect.die(e);
       }),
@@ -450,7 +520,7 @@ export const reportFailure = (
     Match.tag("BadResponse", ({ reason, body }) =>
       Effect.gen(function* () {
         yield* Console.error(
-          `::error::FlareDispatch dispatch failed (bad response): ${reason} — body=${body}`,
+          `::error::FlareDispatch dispatch failed (bad response): ${safeForCmd(reason)} — body=${safeForCmd(body)}`,
         );
         return yield* Effect.die(e);
       }),
