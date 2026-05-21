@@ -128,7 +128,7 @@ export const productDemo = defineRun({
     {
       cron: "0 14 * * *",
       idempotencyKey: ({ firedAt }) =>
-        `product-demo:${new Date(firedAt).toISOString().slice(0, 10)}`,
+        `product-demo-${new Date(firedAt).toISOString().slice(0, 10)}`,
       inputs: () => ({
         repo: "OWNER/REPO",
         sha: "main",
