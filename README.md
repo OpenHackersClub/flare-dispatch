@@ -23,9 +23,16 @@ flowchart LR
 
 A GHA workflow calls the **flare-dispatch-action**, which HMAC-signs a dispatch body and POSTs it to your **Dispatcher Worker**. The Dispatcher instantiates a Cloudflare **Workflow** that runs the job in a **Container**, streams logs to **R2**, and reports the result back to the PR as a GitHub **check-run**. The GHA step finishes in seconds; zero GitHub minutes are spent on the execution itself.
 
-## V0 — the walking skeleton
+## Status
 
-V0 ships the `offload-test` run: a `pnpm test` executing in a CF Sandbox that reports green/red to a PR check. See [`specs/pm/plan.md`](specs/pm/plan.md) for the full roadmap.
+Live at HEAD:
+
+- **Runs** — `offload-test` (V0, `pnpm test` → green/red check), `cdp-acceptance` (V2, boot app + CDP assertions), `product-demo` (V3, AI-driven demo over a deployed URL).
+- **Trigger modes** — **Action** (HMAC POST from the [bundled JS Action](actions/flare-dispatch-action/README.md)) and **Schedule** (Cloudflare Cron Triggers → Dispatcher `scheduled()` handler). **Webhook** mode (`POST /v1/webhooks/github`) is Planned (V1).
+- **GitHub App** — manifest-creation install flow (`POST /v1/github/app/manifest` + callback) ships the operator's one-click App setup; the webhook receiver itself is Planned (V1).
+- **DSL** — six run-author capabilities (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) and six primitives (`workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`) all wired against Cloudflare Containers / Browser Rendering / R2 / D1 / KV. `step.waitForEvent`, `step.sleepUntil`, `io.priorExecution`, and the `github` read capability are stubbed → Planned.
+
+Implementation has skipped around the V0–V4 roadmap deliberately — each run / capability lands when the underlying platform plumbing composes without new infra. See [`specs/pm/plan.md`](specs/pm/plan.md) for the full roadmap and [`specs/02-runs.md`](specs/02-runs.md) for the per-run status.
 
 ## Quickstart
 
@@ -81,18 +88,17 @@ Then add the Action to a workflow:
 
 The Action HMAC-signs the dispatch and POSTs it; the run's result lands on the PR as the `flare-dispatch/offload-test` check-run. Require **that check-run** in branch protection — not the GHA job. Action reference: [`actions/flare-dispatch-action/`](actions/flare-dispatch-action/README.md).
 
-> V0 ships **fire-and-forget** mode only. `await` mode is deferred to V1.
+> The Action ships **fire-and-forget** mode only at HEAD. `await` mode (poll until terminal + propagate the run's exit) is Planned (V1).
 
 ## Repository layout
 
 ```
 flare-dispatch/
-├── apps/dispatcher/         Dispatcher Worker — HMAC verify, routes, RunWorkflow
-├── packages/                @flare-dispatch/{core,runtime-cf,github-app}
-├── runs/                    offload-test (the V0 run)
-├── actions/                 flare-dispatch-action — composite GHA Action
-├── infra/                   D1 schema, container Dockerfile, App manifest
-└── specs/                   the contract — architecture, DSL, GHA, BYOC, PM plan
+├── apps/dispatcher/         Dispatcher Worker — HMAC verify, routes (dispatch, artifacts, scheduled, github), RunWorkflow
+├── packages/                @flare-dispatch/{core,runtime-cf,github-app,cli}
+├── runs/                    offload-test, cdp-acceptance, product-demo
+├── actions/                 flare-dispatch-action — bundled JS Action (wraps @flare-dispatch/cli)
+├── recipes/                 starter `.github/workflows/*.yml` per run
+├── infra/                   D1 schema, container Dockerfiles, App manifest
+└── specs/                   the contract — architecture, runs, DSL, GHA, BYOC, cost, trust model, PM plan
 ```
-
-**Status** — V0 walking skeleton.

@@ -2,6 +2,8 @@
 
 Project-management reference for FlareDispatch: the phased delivery roadmap, then the detailed V0 walking-skeleton build plan. The run catalog is in [02-runs](../02-runs.md); the product framing is in [PRD](../PRD.md).
 
+> **Implementation status (HEAD).** V0 has shipped and implementation has continued out of strict V order. **Live**: `offload-test` (V0), `cdp-acceptance` (V2), `product-demo` (V3); Action mode + Schedule mode trigger surfaces; the GitHub App manifest-creation install flow; the JS-bundled flare-dispatch-action; six run-author capabilities + six primitives over Containers / Browser Rendering / R2 / D1 / KV. **Still Planned**: matrix fan-out (V1), Webhook mode + `IDEMPOTENCY_KV` (V1), Action `await` mode (V1), browser-pooled `playwright-e2e` (V2), `/v1/admin/*` + `step.waitForEvent` (V2/V3), `security-scan` + `custom-sandbox` (V3), OpenTelemetry / Logpush / `init` CLI (V4). Per-section Status callouts in [01-architecture](../01-architecture.md), [02-runs](../02-runs.md), [03-dsl](../03-dsl.md), [04-gha-integration](../04-gha-integration.md), and [05-byoc](../05-byoc.md) carry the detailed pinning.
+
 ## Roadmap
 
 Delivery phasing — what ships in each version and the exit criterion that closes it. **V0 is the slice that proves the model**; V1–V4 are incremental and independently shippable.

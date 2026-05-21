@@ -80,7 +80,7 @@ After that, each PR fires runs against the team's own Cloudflare bill. The proje
 
 ## Success criteria
 
-V0 is the slice that proves the model — a `pnpm test` executing in CF Sandbox reports green/red to a PR check. Everything after is incremental and independently shippable: V1 adds fan-out + cache + artifacts, V2 browser e2e + acceptance, V3 long-running + security scans, V4 polish (OpenTelemetry, retention, an `init` CLI).
+V0 — the slice that proves the model, a `pnpm test` executing in CF Sandbox reporting green/red to a PR check — has shipped. Implementation has continued out of strict V order: `cdp-acceptance` (V2, browser acceptance) and `product-demo` (V3, AI demo in Action + Schedule mode) are live alongside the V0 `offload-test`. Still incremental and independently shippable: V1 adds matrix fan-out + Webhook mode + `await` mode + the cache/artifact polish on top of already-wired primitives; V2 adds the browser-pool `playwright-e2e`; V3 the human-in-loop surface and security scans; V4 polish (OpenTelemetry, retention, an `init` CLI). See [pm/plan § Implementation status](pm/plan.md#flaredispatch--roadmap--v0-plan).
 
 Project-management detail lives under [`pm/`](pm/): the phased roadmap — scope, runs shipped, and the exit criterion that closes each phase — and the 7-PR V0 build sequence are both in [pm/plan.md](pm/plan.md).
 
