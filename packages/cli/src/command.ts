@@ -5,12 +5,15 @@
 // `flare-dispatch` binary (`main.ts`) is the only consumer of this file.
 
 import * as Command from "@effect/cli/Command";
-import { Effect } from "effect";
+import * as Options from "@effect/cli/Options";
+import { Console, Effect, Match } from "effect";
 import {
   type DispatchEnv,
   reportFailure,
   runDispatch,
 } from "./dispatch.js";
+import { InvalidEndpoint, MissingInput } from "./errors.js";
+import { runGithubAppCreateFromOption } from "./github-app.js";
 
 /**
  * The `dispatch` subcommand. Takes no flags — every input is an env var,
@@ -21,4 +24,50 @@ export const dispatchCommand = Command.make("dispatch", {}, () =>
     Effect.asVoid,
     Effect.catchAll(reportFailure),
   ),
+);
+
+/**
+ * Render a `MissingInput` / `InvalidEndpoint` from the `github-app create`
+ * flow as a plain stderr line + non-zero exit. (The GHA-style `::error::`
+ * format is only useful inside a GitHub Actions runner; the `flare-dispatch`
+ * binary is invoked interactively by humans, so plain prose + non-zero exit
+ * is the right shape here.)
+ */
+const reportGithubAppFailure = (
+  e: MissingInput | InvalidEndpoint,
+): Effect.Effect<never, never, never> =>
+  Match.value(e).pipe(
+    Match.tag("MissingInput", ({ name }) =>
+      Effect.gen(function* () {
+        yield* Console.error(`error: '--${name}' is required`);
+        return yield* Effect.die(e);
+      }),
+    ),
+    Match.tag("InvalidEndpoint", ({ endpoint, reason }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `error: '--endpoint' is invalid (${reason}): ${endpoint}`,
+        );
+        return yield* Effect.die(e);
+      }),
+    ),
+    Match.exhaustive,
+  );
+
+/**
+ * The `github-app create` subcommand — opens the manifest-creation flow on a
+ * deployed Dispatcher. Sits under a `github-app` group so future commands
+ * (`github-app delete`, `github-app rotate-secret`) can join the same family.
+ */
+const githubAppCreateCommand = Command.make(
+  "create",
+  { endpoint: Options.text("endpoint") },
+  ({ endpoint }) =>
+    runGithubAppCreateFromOption(endpoint).pipe(
+      Effect.catchAll(reportGithubAppFailure),
+    ),
+);
+
+export const githubAppCommand = Command.make("github-app", {}).pipe(
+  Command.withSubcommands([githubAppCreateCommand]),
 );

@@ -13,10 +13,10 @@
 import * as Command from "@effect/cli/Command";
 import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
-import { dispatchCommand } from "./command.js";
+import { dispatchCommand, githubAppCommand } from "./command.js";
 
 const root = Command.make("flare-dispatch").pipe(
-  Command.withSubcommands([dispatchCommand]),
+  Command.withSubcommands([dispatchCommand, githubAppCommand]),
 );
 
 const cli = Command.run(root, {
