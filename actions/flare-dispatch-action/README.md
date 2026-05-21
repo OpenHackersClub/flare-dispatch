@@ -50,5 +50,13 @@ the moment the dispatch is accepted (`202`).
 Per [`specs/04-gha-integration.md` § Failure handling](../../specs/04-gha-integration.md):
 
 - **Dispatcher unreachable / `429` / `5xx`** — retried up to 3× with backoff, then the step fails.
-- **`401`** (HMAC rejected) — config bug; the step fails immediately, no retry.
+- **`401`** (HMAC rejected) — config bug; the step fails immediately, no retry. The job log prints two 8-char fingerprints (`sha256(secret)[:8]`):
+
+  ```
+  HMAC drift between flare-dispatch-action and Dispatcher Worker.
+    local secret fingerprint      = 1f3a9c2e
+    dispatcher secret fingerprint = 1f3a9c2f
+  ```
+
+  Compare them — if they differ, re-sync the secret on the mismatching side (`gh secret set FLAREDISPATCH_HMAC` or `wrangler secret put HMAC_SECRET`). A trailing newline pasted into one side and not the other is the dominant cause. If they match, the canonicalization contract has drifted (file a bug).
 - **`400`** (inputs fail the run Schema) / **`404`** (unknown run) — the step fails immediately with the Dispatcher's error inlined.

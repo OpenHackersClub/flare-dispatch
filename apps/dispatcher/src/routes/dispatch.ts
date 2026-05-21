@@ -24,7 +24,7 @@
 import { Either, ParseResult, Schema } from "effect";
 import type { ParseError } from "effect/ParseResult";
 import type { Env } from "../env";
-import { SIGNATURE_HEADER, verify } from "../hmac";
+import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
 import { lookupRun } from "../registry";
 import { ulid } from "../ulid";
 
@@ -85,11 +85,21 @@ export const handleDispatch = async (
   const rawBody = await request.arrayBuffer();
 
   // 2. HMAC-verify the raw bytes. Missing/mismatched → 401, no retry.
+  //
+  // The 401 body carries `dispatcher_secret_fingerprint` — sha256(HMAC_SECRET)[:8]
+  // — so an operator can match it against the caller-side fingerprint printed
+  // by the GHA Action and pinpoint which side has the wrong value (issue #24).
+  // Non-secret: 32 bits of pre-image after SHA-256 truncation is useless as a
+  // credential, same shape as a git short-SHA.
   const signature = request.headers.get(SIGNATURE_HEADER);
   const signatureOk = await verify(env.HMAC_SECRET, signature, rawBody);
   if (!signatureOk) {
     return json(
-      { error: "unauthorized", message: "HMAC signature missing or invalid" },
+      {
+        error: "unauthorized",
+        message: "HMAC signature missing or invalid",
+        dispatcher_secret_fingerprint: await fingerprint(env.HMAC_SECRET),
+      },
       401,
     );
   }

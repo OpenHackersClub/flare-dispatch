@@ -12,7 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { sign, verify } from "./hmac";
+import { fingerprint, sign, verify } from "./hmac";
 
 const SECRET = "test-hmac-secret-32-bytes-aaaaaaa";
 const SAMPLE_BODY = JSON.stringify({
@@ -56,6 +56,27 @@ describe("dispatch.sh ↔ hmac.ts HMAC cross-check", () => {
     );
 
     expect(ok).toBe(true);
+  });
+
+  it("fingerprint() equals the openssl|xxd|cut pipeline dispatch.sh prints on 401", async () => {
+    // The whole point of the 401 fingerprint (issue #24) is that the operator
+    // compares two strings: one printed by dispatch.sh from the local secret
+    // (`openssl dgst -sha256 -binary | xxd -p -c 256 | cut -c1-8`), one
+    // returned by the Dispatcher from its own secret (`fingerprint()`). If
+    // those pipelines ever diverge, the diagnostic lies. Lock them.
+    const opensslDigest = execFileSync(
+      "openssl",
+      ["dgst", "-sha256", "-binary"],
+      { input: SECRET },
+    );
+    const opensslFp = execFileSync("xxd", ["-p", "-c", "256"], {
+      input: opensslDigest,
+    })
+      .toString()
+      .trim()
+      .slice(0, 8);
+
+    expect(await fingerprint(SECRET)).toBe(opensslFp);
   });
 
   it("verify() rejects a MAC computed over a different body", async () => {

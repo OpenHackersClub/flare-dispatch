@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from "vitest";
 import { handleRequest } from "./router";
-import { sign } from "./hmac";
+import { fingerprint, sign } from "./hmac";
 import { makeFakeEnv, makeFakeR2, makeFakeWorkflow } from "./test-helpers";
 
 const HMAC_SECRET = "acceptance-test-secret-please-rotate";
@@ -120,6 +120,30 @@ describe("POST /v1/dispatch/:run — HMAC", () => {
     });
     const res = await handleRequest(req, env);
     expect(res.status).toBe(401);
+  });
+
+  it("401 body carries `dispatcher_secret_fingerprint` for drift diagnosis (issue #24)", async () => {
+    // Locks the diagnostic contract: a 401 always surfaces the dispatcher's
+    // own sha256(HMAC_SECRET)[:8] so the caller-side GHA Action can print a
+    // matching/non-matching pair. Without this, drift between
+    // FLAREDISPATCH_HMAC and HMAC_SECRET is silent and burns operator hours.
+    const { env } = fixture();
+    const bodyText = JSON.stringify(validBody);
+    const req = await dispatchRequest("offload-test", bodyText, {
+      signWith: "the-wrong-secret",
+    });
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(401);
+    const payload = (await res.json()) as {
+      error: string;
+      message: string;
+      dispatcher_secret_fingerprint: string;
+    };
+    expect(payload.error).toBe("unauthorized");
+    expect(payload.dispatcher_secret_fingerprint).toBe(
+      await fingerprint(HMAC_SECRET),
+    );
+    expect(payload.dispatcher_secret_fingerprint).toMatch(/^[0-9a-f]{8}$/);
   });
 });
 
