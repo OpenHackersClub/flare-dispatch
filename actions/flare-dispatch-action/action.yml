@@ -1,8 +1,15 @@
-# FlareDispatch composite Action — specs/04-gha-integration.md § Action mode.
+# FlareDispatch JS Action — specs/04-gha-integration.md § Action mode.
 #
 # HMAC-signs a dispatch body and POSTs it to a FlareDispatch Dispatcher. The
-# run executes asynchronously on Cloudflare; the result is reported back to the
-# PR via a GitHub check-run, not via this step. V0 ships fire-and-forget only.
+# run executes asynchronously on Cloudflare; the result is reported back to
+# the PR via a GitHub check-run, not via this step. V0 ships fire-and-forget
+# only — the CLI rejects any other `mode` before touching the network.
+#
+# Runtime: Node 20 JS Action. The `dist/index.js` bundle is produced by
+# `pnpm --filter @flare-dispatch/cli build` from
+# `packages/cli/src/action-entry.ts`. The bundle is committed to the repo
+# because JS Actions are consumed by ref — the runner does NOT `npm install`,
+# so anything not in `dist/` won't be available at runtime.
 name: FlareDispatch
 description: Dispatch a FlareDispatch run — HMAC-signs the request and POSTs it to your Dispatcher.
 author: OpenHackersClub
@@ -25,10 +32,6 @@ inputs:
     description: "Dispatch mode. V0 supports 'fire-and-forget' only; 'await' is deferred to V1."
     required: false
     default: fire-and-forget
-  check-name:
-    description: Overrides the check-run name (default flare-dispatch/<run>).
-    required: false
-    default: ""
   installation-id:
     description: >-
       GitHub App installation id for the target repo. Optional — when omitted,
@@ -40,27 +43,7 @@ inputs:
 outputs:
   execution-id:
     description: ULID of the execution on Cloudflare — returned by the Dispatcher in the 202.
-    value: ${{ steps.dispatch.outputs.execution-id }}
 
 runs:
-  using: composite
-  steps:
-    - name: Validate mode
-      shell: bash
-      run: |
-        if [ "${{ inputs.mode }}" != "fire-and-forget" ]; then
-          echo "::error::mode='${{ inputs.mode }}' — await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md § 2). Use mode: fire-and-forget."
-          exit 1
-        fi
-
-    - name: Dispatch
-      id: dispatch
-      shell: bash
-      run: bash "${{ github.action_path }}/dispatch.sh"
-      env:
-        INPUT_RUN: ${{ inputs.run }}
-        INPUT_ENDPOINT: ${{ inputs.endpoint }}
-        INPUT_HMAC_SECRET: ${{ inputs.hmac-secret }}
-        INPUT_INPUTS: ${{ inputs.inputs }}
-        INPUT_CHECK_NAME: ${{ inputs.check-name }}
-        INPUT_INSTALLATION_ID: ${{ inputs.installation-id }}
+  using: node20
+  main: dist/index.js

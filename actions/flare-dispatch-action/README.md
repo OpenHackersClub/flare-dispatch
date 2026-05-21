@@ -1,13 +1,16 @@
 # flare-dispatch-action
 
-Composite GitHub Action that dispatches a [FlareDispatch](../../README.md) run.
-It HMAC-signs a dispatch body and POSTs it to your Dispatcher Worker; the run
-executes asynchronously on Cloudflare and reports its result back to the PR via
-a GitHub **check-run** — not via this step.
+Node 20 JavaScript Action that dispatches a [FlareDispatch](../../README.md)
+run. It HMAC-signs a dispatch body and POSTs it to your Dispatcher Worker; the
+run executes asynchronously on Cloudflare and reports its result back to the
+PR via a GitHub **check-run** — not via this step.
 
-This is a thin wrapper around a ~30-line bash script ([`dispatch.sh`](./dispatch.sh)):
-sign the request, POST it, parse `executionId`. It runs in seconds on a normal
-hosted runner — no `self-hosted`, no PAT.
+The runtime is a single bundled JS file at [`dist/index.js`](./dist/index.js),
+produced from `@flare-dispatch/cli`
+(`packages/cli/src/action-entry.ts`) via
+`pnpm --filter @flare-dispatch/cli build`. The bundle is committed because
+JS Actions are consumed by ref — the runner does NOT `npm install`. It
+runs in seconds on a normal hosted runner — no `self-hosted`, no PAT.
 
 ## Usage
 
@@ -36,7 +39,6 @@ the moment the dispatch is accepted (`202`).
 | `hmac-secret` | yes | — | Shared HMAC secret. Same value as the Worker's `HMAC_SECRET`. |
 | `inputs` | no | `{}` | JSON object of run inputs. Validated against the run's Schema on the Worker side. |
 | `mode` | no | `fire-and-forget` | **V0 supports `fire-and-forget` only.** Passing `await` fails the step — await mode is deferred to V1 (see [`specs/pm/plan.md` § 2](../../specs/pm/plan.md)). |
-| `check-name` | no | `flare-dispatch/<run>` | Overrides the check-run name. |
 | `installation-id` | no | `0` | GitHub App installation id for the target repo. Optional — a Dispatcher that has already seen this repo resolves it server-side from the App's webhook-registered installation map. |
 
 ## Outputs
