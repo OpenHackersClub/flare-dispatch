@@ -37,8 +37,8 @@ describe("handleScheduled", () => {
 
     expect(workflow.calls).toHaveLength(1);
     const call = workflow.calls[0]!;
-    // idempotencyKey = `product-demo:${isoDate(firedAt)}`
-    expect(call.id).toBe("product-demo:2026-05-20");
+    // idempotencyKey = `product-demo-${isoDate(firedAt)}`
+    expect(call.id).toBe("product-demo-2026-05-20");
     const params = call.params as {
       run: string;
       executionId: string;
@@ -46,7 +46,7 @@ describe("handleScheduled", () => {
       inputs: { repo: string; sha: string; deployedUrl: string };
     };
     expect(params.run).toBe("product-demo");
-    expect(params.executionId).toBe("product-demo:2026-05-20");
+    expect(params.executionId).toBe("product-demo-2026-05-20");
     // GitHub block synthesized from the run's input.
     expect(params.github.repo).toBe("OWNER/REPO");
     expect(params.inputs.deployedUrl).toBe(
