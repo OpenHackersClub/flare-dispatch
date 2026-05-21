@@ -84,6 +84,16 @@ export interface Env {
   readonly GITHUB_WEBHOOK_SECRET?: string;
 
   /**
+   * Admin bearer token — Worker secret. Gates `POST /v1/admin/events/:wf_id`
+   * (the `step.waitForEvent` signalling surface, specs/03-dsl.md
+   * § Human-in-the-loop). Production deploys put Cloudflare Access in front
+   * of the route and let CF Access enforce the SSO; the bearer token is the
+   * cheap-and-correct fallback for deploys without CF Access. Absent → the
+   * admin route refuses (`503 admin_not_configured`).
+   */
+  readonly ADMIN_TOKEN?: string;
+
+  /**
    * Browser Rendering CDP `/connect` WebSocket URL — Worker secret. The
    * `cdp-acceptance` run hands this (with `BROWSER_CDP_API_TOKEN` appended) to
    * the container's Playwright process. Absent, the runtime degrades to the

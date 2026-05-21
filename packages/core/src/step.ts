@@ -96,14 +96,13 @@ const stepImpl = <A, E>(
   Effect.flatMap(StepRunner, (runner) => runner.run(name, body, opts));
 
 const waitForEvent = <P>(
-  _name: string,
-  _opts: {
+  name: string,
+  opts: {
     type: string;
     timeout: Duration.Duration | string;
     payloadSchema: Schema.Schema<P, unknown>;
   },
 ): Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext> =>
-  // V0 stub — human-in-the-loop is deferred (specs/pm/plan.md § 2).
-  Effect.die("step.waitForEvent: not implemented in V0");
+  Effect.flatMap(StepRunner, (runner) => runner.waitForEvent(name, opts));
 
 export const step: StepFn = Object.assign(stepImpl, { waitForEvent });

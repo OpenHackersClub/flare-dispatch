@@ -96,6 +96,8 @@ export {
   StepRunnerInline,
   makeStepRunnerInline,
   DEFAULT_TEST_EXECUTION_ID,
+  enqueueInlineEvent,
+  type InlineEventQueue,
 } from "./fakes/step-runner-inline";
 
 /**
@@ -128,6 +130,8 @@ export type CFRuntimeTestHandles = {
   readonly io: IOFakeState;
   readonly checks: ChecksFakeState;
   readonly executions: ExecutionsFakeState;
+  /** The inline runner's event queue — feed `step.waitForEvent` from tests. */
+  readonly eventQueue: import("./fakes/step-runner-inline").InlineEventQueue;
 };
 
 export type CFRuntimeTestOptions = {
@@ -141,6 +145,14 @@ export type CFRuntimeTestOptions = {
   readonly executionId?: string;
   /** IO fake clock options. */
   readonly io?: Parameters<typeof makeIOFake>[0];
+  /**
+   * Event queue `step.waitForEvent` resolves against. Tests pre-populate it
+   * with `enqueueInlineEvent(queue, type, payload)`; an empty queue causes
+   * the run's `waitForEvent` to fail with `ApprovalTimedOut` immediately
+   * (the inline runner does not sleep). The same queue is returned in
+   * `handles.eventQueue` so a test can inject AFTER constructing the runtime.
+   */
+  readonly eventQueue?: import("./fakes/step-runner-inline").InlineEventQueue;
 };
 
 /**
@@ -157,7 +169,11 @@ export const makeCFRuntimeTest = (
   const io = makeIOFake(opts.io);
   const checks = makeChecksFake();
   const executions = makeExecutionsFake();
-  const stepRunner = makeStepRunnerInline({ executionId: opts.executionId });
+  const eventQueue = opts.eventQueue ?? new Map<string, unknown[]>();
+  const stepRunner = makeStepRunnerInline({
+    executionId: opts.executionId,
+    eventQueue,
+  });
 
   const layer = Layer.mergeAll(
     sandbox.layer,
@@ -180,6 +196,7 @@ export const makeCFRuntimeTest = (
       io: io.state,
       checks: checks.state,
       executions: executions.state,
+      eventQueue,
     },
   };
 };

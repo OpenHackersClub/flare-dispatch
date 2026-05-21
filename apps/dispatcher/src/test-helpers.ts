@@ -15,28 +15,49 @@ import type { Env } from "./env";
 /** A recorded `RUNS_WORKFLOW.create({ id, params })` call. */
 export type WorkflowCreateCall = { readonly id: string; readonly params: unknown };
 
-/** A fake `RUNS_WORKFLOW` that records every `create` call. */
+/** A recorded `RUNS_WORKFLOW.get(id).sendEvent({type, payload})` call. */
+export type WorkflowSendEventCall = {
+  readonly wfId: string;
+  readonly type: string;
+  readonly payload: unknown;
+};
+
+/** A fake `RUNS_WORKFLOW` that records create + sendEvent calls. */
 export interface FakeWorkflow {
   readonly binding: Env["RUNS_WORKFLOW"];
   readonly calls: WorkflowCreateCall[];
+  readonly events: WorkflowSendEventCall[];
 }
 
-export const makeFakeWorkflow = (): FakeWorkflow => {
+export const makeFakeWorkflow = (
+  opts: { rejectSendEventFor?: ReadonlySet<string> } = {},
+): FakeWorkflow => {
   const calls: WorkflowCreateCall[] = [];
+  const events: WorkflowSendEventCall[] = [];
+  const reject = opts.rejectSendEventFor ?? new Set<string>();
   const binding = {
     create: async (options?: { id?: string; params?: unknown }) => {
       calls.push({
         id: options?.id ?? "",
         params: options?.params,
       });
-      // Return a minimal WorkflowInstance-shaped object.
       return {
         id: options?.id ?? "",
         status: async () => ({ status: "queued" }),
       };
     },
+    get: (id: string) => ({
+      id,
+      status: async () => ({ status: "running" }),
+      sendEvent: async (e: { type: string; payload: unknown }) => {
+        if (reject.has(id)) {
+          throw new Error(`unknown_instance: ${id}`);
+        }
+        events.push({ wfId: id, type: e.type, payload: e.payload });
+      },
+    }),
   } as unknown as Env["RUNS_WORKFLOW"];
-  return { binding, calls };
+  return { binding, calls, events };
 };
 
 /** A stored object in the fake R2 bucket. */
@@ -118,6 +139,7 @@ export const makeFakeEnv = (opts: {
   storage: FakeR2;
   idempotencyKv?: KVNamespace;
   githubWebhookSecret?: string;
+  adminToken?: string;
 }): Env =>
   ({
     HMAC_SECRET: opts.hmacSecret,
@@ -129,6 +151,7 @@ export const makeFakeEnv = (opts: {
     ...(opts.githubWebhookSecret !== undefined
       ? { GITHUB_WEBHOOK_SECRET: opts.githubWebhookSecret }
       : {}),
+    ...(opts.adminToken !== undefined ? { ADMIN_TOKEN: opts.adminToken } : {}),
     // Not exercised by PR5 routes — cast away.
     RUNS_SANDBOX: {} as Env["RUNS_SANDBOX"],
     RUNS_METADATA: {} as Env["RUNS_METADATA"],

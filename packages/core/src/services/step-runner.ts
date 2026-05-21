@@ -22,9 +22,9 @@
 //
 // Spec: specs/03-dsl.md § step + § The runEffect boundary shim.
 
-import { Context, type Effect } from "effect";
+import { Context, type Duration, type Effect, type Schema } from "effect";
 import type { RunContext } from "../context";
-import type { StepFailed } from "../errors";
+import type { ApprovalTimedOut, EventPayloadInvalid, StepFailed } from "../errors";
 import type { StepOpts } from "../step-opts";
 
 /**
@@ -32,6 +32,13 @@ import type { StepOpts } from "../step-opts";
  * name, the lazily-constructed body Effect, and the step options; it is
  * responsible for the durable checkpoint (or, in the test runtime, for running
  * the body inline) and for the `ExecutionsService` lifecycle records.
+ *
+ * `waitForEvent` is the human-in-the-loop checkpoint: hibernates the run until
+ * an external signal arrives via `env.RUNS_WORKFLOW.get(wfId).sendEvent(...)`,
+ * or times out with `ApprovalTimedOut`. Decoded payload mismatches surface as
+ * `EventPayloadInvalid`. The Dispatcher signal route is
+ * `POST /v1/admin/events/:wf_id` (specs/04-gha-integration.md, gated by
+ * Cloudflare Access in production).
  *
  * The body's environment is `RunContext` — the runner threads the ambient
  * context through. The result Effect's environment is also `RunContext`
@@ -44,6 +51,15 @@ export interface StepRunnerService {
     body: () => Effect.Effect<A, E, RunContext>,
     opts?: StepOpts,
   ) => Effect.Effect<A, E | StepFailed, RunContext>;
+
+  readonly waitForEvent: <P>(
+    name: string,
+    opts: {
+      type: string;
+      timeout: Duration.Duration | string;
+      payloadSchema: Schema.Schema<P, unknown>;
+    },
+  ) => Effect.Effect<P, ApprovalTimedOut | EventPayloadInvalid, RunContext>;
 }
 
 /** Context.Tag — the step-execution strategy a run carries until a Layer binds it. */

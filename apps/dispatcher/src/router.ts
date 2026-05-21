@@ -20,6 +20,7 @@
 // Spec: specs/pm/plan.md § PR5, specs/05-byoc.md § GitHub App setup.
 
 import type { Env } from "./env";
+import { handleAdminEvent } from "./routes/admin-events";
 import { handleArtifact } from "./routes/artifacts";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
@@ -72,6 +73,19 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleGithubWebhook(request, env);
+  }
+
+  // POST /v1/admin/events/:wf_id — signal a Workflow paused on step.waitForEvent.
+  if (
+    segments.length === 4 &&
+    segments[0] === "v1" &&
+    segments[1] === "admin" &&
+    segments[2] === "events"
+  ) {
+    if (request.method !== "POST") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleAdminEvent(request, env, decodeURIComponent(segments[3]!));
   }
 
   // GET /v1/artifacts/:execution/:name

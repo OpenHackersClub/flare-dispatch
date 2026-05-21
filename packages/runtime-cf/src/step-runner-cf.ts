@@ -32,7 +32,8 @@
 //
 // Spec: specs/03-dsl.md § step + § The runEffect boundary shim, plan § PR4.
 
-import { Cause, Effect, Exit, Layer, Option } from "effect";
+import { ApprovalTimedOut, EventPayloadInvalid } from "@flare-dispatch/core";
+import { Cause, Duration, Effect, Exit, Layer, Option, Schema } from "effect";
 import {
   Executions,
   type ExecutionsService,
@@ -45,9 +46,17 @@ import {
   type StepRunnerService,
 } from "@flare-dispatch/core";
 
-/** The minimal `WorkflowStep` surface the runner needs — `do(name, cb)`. */
+/**
+ * The minimal `WorkflowStep` surface the runner needs. CF's full type covers
+ * many more methods; the runner uses only `do` for normal step checkpoints
+ * and `waitForEvent` for human-in-the-loop hibernation.
+ */
 type WorkflowStepLike = {
   readonly do: <T>(name: string, callback: () => Promise<T>) => Promise<T>;
+  readonly waitForEvent?: (
+    name: string,
+    opts: { type: string; timeout: string | number },
+  ) => Promise<{ type: string; payload: unknown }>;
 };
 
 /** A thrown error carrying an Effect `Cause` — produced by `runEffect`. */
@@ -174,6 +183,70 @@ export const makeStepRunnerCloudflare = (
                   .pipe(Effect.andThen(reFail));
               },
             });
+          }),
+
+        // `step.waitForEvent` (specs/03-dsl.md § Human-in-the-loop):
+        //   - Pre-flight: if the platform doesn't expose `waitForEvent`,
+        //     fail with `ApprovalTimedOut` immediately (better than dying
+        //     mid-Workflow on a stale Workers runtime).
+        //   - On settle: decode the inbound `event.payload` against the
+        //     run's `payloadSchema`; mismatch → `EventPayloadInvalid`.
+        //   - On reject: read GitHub-shaped "timeout" rejections as
+        //     `ApprovalTimedOut`; anything else surfaces as
+        //     `EventPayloadInvalid` (the safer choice — a corrupted event
+        //     surface in production is a bug, not a wait-longer condition).
+        waitForEvent: (name, { type, timeout, payloadSchema }) =>
+          Effect.suspend(() => {
+            if (typeof workflowStep.waitForEvent !== "function") {
+              const timeoutMs = Duration.toMillis(
+                Duration.decode(timeout as Duration.DurationInput),
+              );
+              return Effect.fail(
+                new ApprovalTimedOut({ eventName: type, timeoutMs }),
+              );
+            }
+            const timeoutMs = Duration.toMillis(
+              Duration.decode(timeout as Duration.DurationInput),
+            );
+            // CF Workflows `waitForEvent` accepts either an ISO-8601 duration
+            // string or a number-of-seconds. Pass ms-converted-to-seconds for
+            // unambiguous behaviour across runtime versions.
+            return Effect.tryPromise({
+              try: () =>
+                workflowStep.waitForEvent!(name, {
+                  type,
+                  timeout: Math.max(1, Math.ceil(timeoutMs / 1000)),
+                }),
+              catch: (cause) => {
+                const message =
+                  cause instanceof Error ? cause.message : String(cause);
+                if (/timeout|timed[- ]?out/i.test(message)) {
+                  return new ApprovalTimedOut({
+                    eventName: type,
+                    timeoutMs,
+                  }) as ApprovalTimedOut | EventPayloadInvalid;
+                }
+                return new EventPayloadInvalid({
+                  eventName: type,
+                  reason: message,
+                });
+              },
+            }).pipe(
+              Effect.flatMap((event) => {
+                const decoded = Schema.decodeUnknownEither(payloadSchema)(
+                  event.payload,
+                );
+                if (decoded._tag === "Left") {
+                  return Effect.fail(
+                    new EventPayloadInvalid({
+                      eventName: type,
+                      reason: "decode failed",
+                    }),
+                  );
+                }
+                return Effect.succeed(decoded.right);
+              }),
+            );
           }),
       };
 
