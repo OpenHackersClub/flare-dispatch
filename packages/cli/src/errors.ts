@@ -15,6 +15,18 @@ export class MissingInput extends Schema.TaggedError<MissingInput>()(
 ) {}
 
 /**
+ * `INPUT_MODE` was anything other than `fire-and-forget`. V0 only supports
+ * fire-and-forget; `await` mode is deferred to V1 (specs/pm/plan.md § 2).
+ * The Action used to enforce this in a separate composite "Validate mode"
+ * step — folded into the CLI here so the JS-Action entry can reject it
+ * before doing any work.
+ */
+export class BadMode extends Schema.TaggedError<BadMode>()(
+  "BadMode",
+  { mode: Schema.String },
+) {}
+
+/**
  * A non-retryable HTTP response (401/400/404). The body is whatever the
  * Dispatcher returned — surfaced in the `::error::` line.
  */

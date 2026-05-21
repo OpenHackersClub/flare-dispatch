@@ -7,6 +7,11 @@ dist/
 build/
 .wrangler/
 
+# Exception: JS Actions are consumed by ref and the GitHub Actions runner does
+# NOT `npm install`. The bundle MUST be committed for the Action to work.
+!actions/flare-dispatch-action/dist/
+!actions/flare-dispatch-action/dist/**
+
 # Local config
 .dev.vars
 .env

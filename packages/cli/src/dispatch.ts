@@ -13,11 +13,11 @@
 //   * 401/400/404 fail immediately; transient (000/429/5xx) retry up to 3
 //     attempts total with `attempt * backoffMs` backoff (5s, 10s by default).
 
-import * as Command from "@effect/cli/Command";
 import { createHmac } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { Console, Effect, Match, Schedule } from "effect";
 import {
+  BadMode,
   BadResponse,
   MissingInput,
   PermanentFailure,
@@ -48,6 +48,10 @@ export interface DispatchEnv {
   readonly INPUT_HMAC_SECRET?: string;
   readonly INPUT_INPUTS?: string;
   readonly INPUT_INSTALLATION_ID?: string;
+  // `INPUT_MODE` defaults to `fire-and-forget` in action.yml. The CLI also
+  // treats absent/empty as `fire-and-forget` so non-Action callers don't have
+  // to set it explicitly.
+  readonly INPUT_MODE?: string;
   readonly GITHUB_REPOSITORY?: string;
   readonly GITHUB_REF?: string;
   readonly GITHUB_SHA?: string;
@@ -210,11 +214,21 @@ export const runDispatch = (
   deps: DispatchDeps,
 ): Effect.Effect<
   { executionId: string },
-  MissingInput | PermanentFailure | TransientFailure | BadResponse
+  BadMode | MissingInput | PermanentFailure | TransientFailure | BadResponse
 > =>
   Effect.gen(function* () {
     const env = deps.env;
     const fetchImpl = deps.fetch ?? defaultFetch;
+
+    // V0 only supports fire-and-forget mode. Reject anything else before
+    // touching the network — same message the composite "Validate mode" step
+    // emitted, now folded into the JS-Action entry.
+    const mode = env.INPUT_MODE && env.INPUT_MODE.length > 0
+      ? env.INPUT_MODE
+      : "fire-and-forget";
+    if (mode !== "fire-and-forget") {
+      return yield* Effect.fail(new BadMode({ mode }));
+    }
 
     const run = yield* requireInput(env, "INPUT_RUN", "run");
     const endpointRaw = yield* requireInput(env, "INPUT_ENDPOINT", "endpoint");
@@ -306,10 +320,23 @@ export const runDispatch = (
  * Render a tagged failure as the GitHub-Actions error annotation + non-zero
  * exit. Matches the `::error::` lines `dispatch.sh` emits.
  */
-const reportFailure = (
-  e: MissingInput | PermanentFailure | TransientFailure | BadResponse,
+export const reportFailure = (
+  e:
+    | BadMode
+    | MissingInput
+    | PermanentFailure
+    | TransientFailure
+    | BadResponse,
 ): Effect.Effect<never, never, never> =>
   Match.value(e).pipe(
+    Match.tag("BadMode", ({ mode }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `::error::mode='${mode}' — await mode is not implemented in V0 (deferred to V1, see specs/pm/plan.md § 2). Use mode: fire-and-forget.`,
+        );
+        return yield* Effect.die(e);
+      }),
+    ),
     Match.tag("MissingInput", ({ name }) =>
       Effect.gen(function* () {
         yield* Console.error(`::error::'${name}' input is required`);
@@ -343,13 +370,7 @@ const reportFailure = (
     Match.exhaustive,
   );
 
-/**
- * The `@effect/cli` `dispatch` subcommand. Takes no flags — every input is
- * an env var, matching the GHA Action contract.
- */
-export const dispatchCommand = Command.make("dispatch", {}, () =>
-  runDispatch({ env: process.env as DispatchEnv }).pipe(
-    Effect.asVoid,
-    Effect.catchAll(reportFailure),
-  ),
-);
+// The `@effect/cli` `dispatch` subcommand lives in `./command.ts` so that
+// the JS-Action entry (`action-entry.ts`) — which doesn't need an argv
+// parser — can pull in `runDispatch` + `reportFailure` without dragging
+// `@effect/cli` into the bundle.

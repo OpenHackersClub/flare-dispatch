@@ -7,13 +7,13 @@
 //
 // The CLI is the migration target for `actions/flare-dispatch-action/
 // dispatch.sh` per CLAUDE.md § CI & Test Tooling — Prefer Effect-TS CLI Over
-// Inline Shell. The Action's `action.yml` continues to call dispatch.sh until
-// a follow-up PR flips the wiring.
+// Inline Shell. The Action itself runs the bundled `action-entry.ts` directly
+// (no argv parser); this binary is the human-facing equivalent.
 
 import * as Command from "@effect/cli/Command";
 import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
-import { dispatchCommand } from "./dispatch.js";
+import { dispatchCommand } from "./command.js";
 
 const root = Command.make("flare-dispatch").pipe(
   Command.withSubcommands([dispatchCommand]),

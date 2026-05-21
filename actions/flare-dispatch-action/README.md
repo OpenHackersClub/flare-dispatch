@@ -1,13 +1,16 @@
 # flare-dispatch-action
 
-Composite GitHub Action that dispatches a [FlareDispatch](../../README.md) run.
-It HMAC-signs a dispatch body and POSTs it to your Dispatcher Worker; the run
-executes asynchronously on Cloudflare and reports its result back to the PR via
-a GitHub **check-run** — not via this step.
+Node 20 JavaScript Action that dispatches a [FlareDispatch](../../README.md)
+run. It HMAC-signs a dispatch body and POSTs it to your Dispatcher Worker; the
+run executes asynchronously on Cloudflare and reports its result back to the
+PR via a GitHub **check-run** — not via this step.
 
-This is a thin wrapper around a ~30-line bash script ([`dispatch.sh`](./dispatch.sh)):
-sign the request, POST it, parse `executionId`. It runs in seconds on a normal
-hosted runner — no `self-hosted`, no PAT.
+The runtime is a single bundled JS file at [`dist/index.js`](./dist/index.js),
+produced from `@flare-dispatch/cli`
+(`packages/cli/src/action-entry.ts`) via
+`pnpm --filter @flare-dispatch/cli build`. The bundle is committed because
+JS Actions are consumed by ref — the runner does NOT `npm install`. It
+runs in seconds on a normal hosted runner — no `self-hosted`, no PAT.
 
 ## Usage
 

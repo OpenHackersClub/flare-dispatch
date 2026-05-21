@@ -290,4 +290,42 @@ describe("runDispatch", () => {
       expect(pretty).toContain("run");
     }
   });
+
+  it("INPUT_MODE='await' → BadMode failure with no network call", async () => {
+    // The composite "Validate mode" step is folded into the CLI; the JS
+    // Action entry must reject `await` before touching the network.
+    const env = baseEnv({ INPUT_MODE: "await" });
+    const { fetch, calls } = mockFetch([]);
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const pretty = JSON.stringify(exit.cause);
+      expect(pretty).toContain("BadMode");
+      expect(pretty).toContain("await");
+    }
+    // No HTTP attempt should be made.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("INPUT_MODE='fire-and-forget' is accepted (default behavior)", async () => {
+    const { fetch } = mockFetch([
+      { status: 202, body: '{"executionId":"01OK"}' },
+    ]);
+    const env = baseEnv({ INPUT_MODE: "fire-and-forget" });
+
+    const result = await Effect.runPromise(runDispatch({ env, fetch }));
+    expect(result.executionId).toBe("01OK");
+  });
+
+  it("INPUT_MODE unset is treated as fire-and-forget", async () => {
+    const { fetch } = mockFetch([
+      { status: 202, body: '{"executionId":"01DEF"}' },
+    ]);
+    const env = baseEnv({ INPUT_MODE: undefined });
+
+    const result = await Effect.runPromise(runDispatch({ env, fetch }));
+    expect(result.executionId).toBe("01DEF");
+  });
 });
