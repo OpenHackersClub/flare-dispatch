@@ -15,6 +15,7 @@ import {
   deploySmoke,
   matrixFanout,
   offloadTest,
+  playwrightDemo,
   playwrightE2E,
   productDemo,
 } from "@flare-dispatch/runs";
@@ -27,6 +28,7 @@ export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
   [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
   [productDemo.name]: productDemo as Run<unknown, unknown>,
+  [playwrightDemo.name]: playwrightDemo as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */
