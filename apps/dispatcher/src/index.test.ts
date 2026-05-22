@@ -195,10 +195,13 @@ describe("POST /v1/dispatch/:run — validation", () => {
 
   it("valid HMAC + body failing the envelope Schema → 400", async () => {
     const { env } = fixture();
-    // `github.installation_id` is required by the envelope; drop it.
+    // `github.sha` is required by the envelope; drop it. (`installation_id`
+    // used to be exercised here, but it is now optional — see the
+    // "installation_id is optional" + "installation_id: 0 → 400" tests
+    // below.)
     const badEnvelope = {
       run: "offload-test",
-      github: { repo: "owner/x", sha: "deadbeef" },
+      github: { repo: "owner/x", installation_id: 12345 },
       inputs: validBody.inputs,
     };
     const bodyText = JSON.stringify(badEnvelope);
@@ -206,6 +209,28 @@ describe("POST /v1/dispatch/:run — validation", () => {
     const res = await handleRequest(req, env);
     expect(res.status).toBe(400);
     expect(await errorOf(res)).toBe("invalid_body");
+  });
+
+  it("github.installation_id = 0 → 400 with a clear message", async () => {
+    // 0 is the default the GHA Action's `installation-id` input sends when
+    // unset. Used to flow through and either die at `getInstallationToken(0)`
+    // (App secrets present) or silently no-op the `Checks` Layer (App secrets
+    // absent). Reject it at the gate so misconfigured callers see the failure
+    // in the GHA log on the very first run.
+    const { env, workflow } = fixture();
+    const badEnvelope = {
+      ...validBody,
+      github: { ...validBody.github, installation_id: 0 },
+    };
+    const bodyText = JSON.stringify(badEnvelope);
+    const req = await dispatchRequest("offload-test", bodyText);
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(400);
+    const payload = (await res.json()) as { error: string; detail: string };
+    expect(payload.error).toBe("invalid_body");
+    expect(payload.detail).toContain("installation_id");
+    expect(payload.detail).toContain("positive");
+    expect(workflow.calls).toHaveLength(0);
   });
 
   it("valid HMAC + non-JSON body → 400", async () => {
@@ -297,6 +322,32 @@ describe("POST /v1/dispatch/:run — success", () => {
       installation_id: 12345,
     });
     expect("pr_number" in params.github).toBe(false);
+  });
+
+  it("installation_id is optional — omitted means 'no check-run', body accepted", async () => {
+    // Mirrors the no-op-Checks path in packages/runtime-cf/src/checks-github.ts:
+    // omitting installation_id is the right shape for local dev, ad-hoc curl
+    // dispatches, or repos where the FlareDispatch App isn't installed yet.
+    const { env, workflow } = fixture();
+    const body = {
+      run: "offload-test",
+      github: { repo: "owner/test-repo", sha: "abc123def456" },
+      inputs: validBody.inputs,
+    };
+    const bodyText = JSON.stringify(body);
+    const req = await dispatchRequest("offload-test", bodyText);
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(202);
+
+    const params = workflow.calls[0]!.params as {
+      github: Record<string, unknown>;
+    };
+    expect(params.github).toEqual({
+      repo: "owner/test-repo",
+      ref: "refs/heads/main",
+      sha: "abc123def456",
+    });
+    expect("installation_id" in params.github).toBe(false);
   });
 });
 
