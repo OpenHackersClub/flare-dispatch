@@ -1,0 +1,37 @@
+{
+  "name": "@flare-dispatch/demo-agent",
+  "version": "0.0.0",
+  "description": "AI-driven demo agent CLI baked into the flare-dispatch-demo container image.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "demo-agent": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "demo-agent": "tsx src/main.ts",
+    "build": "esbuild src/bundle-entry.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/demo-agent.cjs --banner:js=\"#!/usr/bin/env node\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/ai": "^0.35.0",
+    "@effect/ai-openai": "^0.39.2",
+    "@effect/cli": "^0.75.1",
+    "@effect/platform": "^0.96.0",
+    "@effect/platform-node": "^0.106.0",
+    "effect": "^3.21.0",
+    "puppeteer-core": "^24.13.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "0.14.9",
+    "@types/node": "^22.19.19",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.22.3",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

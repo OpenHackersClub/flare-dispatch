@@ -1,0 +1,70 @@
+# Reference sandbox image with the `demo-agent` layer for the `product-demo` recipe.
+#
+# DROP THIS INTO YOUR OWN `Dockerfile.sandbox` (the one referenced by your
+# `wrangler.jsonc` `containers[].image` — for a fresh BYOC deploy that's
+# `infra/Dockerfile.sandbox`). FlareDispatch has ONE container binding per
+# Worker — the sandbox image — so adding `demo-agent` to that image is the
+# whole integration. There is no `flare-dispatch-demo` registry pull and no
+# separate image to maintain.
+#
+# What it does
+#   * Inherits the canonical sandbox base (`docker.io/cloudflare/sandbox`),
+#     same as `infra/Dockerfile.sandbox`. The `@cloudflare/sandbox` SDK's
+#     Sandbox DO RPCs an in-container server baked into THIS base; a bare
+#     Node image would deadlock every `sandbox.exec`.
+#   * Builds the `demo-agent` CJS bundle from `packages/demo-agent` in the
+#     `FD_REF` ref of `openhackersclub/flare-dispatch` and installs it at
+#     `/usr/local/bin/demo-agent`.
+#   * Smoke-tests the binary at image-build time — surfaces a broken bundle
+#     before the image ships, not at first `sandbox.exec`.
+#
+# Pinning
+#   * `FD_REF` selects the flare-dispatch ref the agent is built from
+#     (default `main`). Pin a tag (`v0.3.1`) or commit sha when you want
+#     reproducible image builds across redeploys.
+#   * Same `cloudflare/sandbox` tag as `infra/Dockerfile.sandbox` — bump
+#     both together.
+
+ARG FD_REF=main
+ARG CLOUDFLARE_SANDBOX_TAG=0.10.1
+
+# ---------------------------------------------------------------------------
+# Stage 1 — bundle demo-agent.
+
+FROM node:22-bookworm-slim AS demo-agent-builder
+ARG FD_REF
+ENV PNPM_HOME=/pnpm
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@11.1.3 --activate
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+# Sparse + shallow clone — only `packages/demo-agent` is needed to bundle.
+RUN git init . \
+ && git remote add origin https://github.com/OpenHackersClub/flare-dispatch.git \
+ && git fetch --depth=1 origin "${FD_REF}" \
+ && git config core.sparseCheckout true \
+ && printf 'package.json\npnpm-lock.yaml\npnpm-workspace.yaml\ntsconfig.base.json\npackages/demo-agent/\n' \
+      > .git/info/sparse-checkout \
+ && git checkout FETCH_HEAD
+
+RUN pnpm install --frozen-lockfile --filter @flare-dispatch/demo-agent...
+RUN pnpm --filter @flare-dispatch/demo-agent build
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime sandbox image with demo-agent on PATH.
+
+FROM docker.io/cloudflare/sandbox:${CLOUDFLARE_SANDBOX_TAG}
+
+COPY --from=demo-agent-builder \
+     /build/packages/demo-agent/dist/demo-agent.cjs \
+     /usr/local/bin/demo-agent
+RUN chmod +x /usr/local/bin/demo-agent \
+ && demo-agent --help > /dev/null
+
+# Add the rest of your sandbox-image layers below this line — clones, system
+# packages, language toolchains, etc. — exactly as you would in a stock
+# `Dockerfile.sandbox`. The `demo-agent` binary is the only addition this
+# recipe requires.

@@ -34,6 +34,7 @@ import {
   config,
   io,
 } from "@flare-dispatch/core";
+import { loadSecrets } from "@flare-dispatch/core/primitives";
 
 // A user story is just a name + prose. The agent reads the prose, decides
 // the next browser action, applies it over the live CDP session, captures
@@ -96,10 +97,13 @@ const Output = Schema.Struct({
 export const productDemo = defineRun({
   name: "product-demo",
   version: "1.0.0",
-  // `demo-agent` lives in this image — model loop, CDP-driver glue, and
-  // the Browser Run REST client for pulling rrweb events. See README.md
-  // § The demo agent.
-  image: "registry.cloudflare.com/openhackersclub/flare-dispatch-demo:latest",
+  // The operator's sandbox image (the one bound to `RUNS_SANDBOX` via
+  // `wrangler.jsonc`) MUST include the `demo-agent` binary on PATH — model
+  // loop, CDP-driver glue, and the Browser Run recording REST client.
+  // FlareDispatch has one container binding per Worker, pinned by
+  // `infra/Dockerfile.sandbox`; drop the `demo-agent` layer from
+  // `recipes/product-demo/Dockerfile.example` into your own sandbox image
+  // to enable this run.
   inputs: Input,
   outputs: Output,
   // Stories run SEQUENTIALLY against one CDP session so the rrweb timeline
@@ -114,6 +118,29 @@ export const productDemo = defineRun({
     Effect.gen(function* () {
       const viewport = input.viewportPreset ?? "desktop";
       const perStorySec = input.maxDurationSecPerStory ?? 180;
+
+      // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
+      //    container holds NO ambient credentials. The agent is
+      //    provider-agnostic on `@effect/ai`'s `LanguageModel` Tag and speaks
+      //    the OpenAI wire format, so the same three keys point at OpenAI,
+      //    Anthropic-via-compat, Workers AI, Bedrock-via-compat, Ollama, or
+      //    any AI Gateway URL.
+      //      * `MODEL_BASE_URL`         — OpenAI-compatible endpoint URL.
+      //        AI Gateway's `/v1/<account>/<gateway>/compat` is the
+      //        recommended production value.
+      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
+      //        Rendering session.
+      //      * `CLOUDFLARE_API_TOKEN`   — recording REST fetch auth.
+      //      * `MODEL_API_KEY` (optional) — direct credential when not using
+      //        gateway BYOK.
+      const requiredAgentEnv = yield* loadSecrets(
+        ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        { prefix: "product-demo.secret/", required: true },
+      );
+      const optionalAgentEnv = yield* loadSecrets(["MODEL_API_KEY"], {
+        prefix: "product-demo.secret/",
+      });
+      const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };
 
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
       //    checkout, no app boot — the site is already live. The dispatcher's
@@ -149,7 +176,25 @@ export const productDemo = defineRun({
             "--viewport", viewport,
             "--session-id-out", sessionIdPath,
           ],
+          env: agentEnv,
         }),
+      );
+
+      // 2.5. Resolve per-step model ids through CONFIG_KV — same seam as
+      //      `pr-review`. Both required; no provider-specific default lives
+      //      in code (a default like `claude-opus-4-7` is meaningless if the
+      //      gateway is pointed at OpenAI / Workers AI / Bedrock). Unset
+      //      keys die loudly.
+      const playModel = yield* step("resolve-play-model", () =>
+        config.get("product-demo.model.play").pipe(
+          Effect.flatMap((v) =>
+            v !== undefined && v !== ""
+              ? Effect.succeed(v)
+              : Effect.die(
+                  "CONFIG_KV missing required key: product-demo.model.play",
+                ),
+          ),
+        ),
       );
 
       // 3. Walk the stories in order. Each `demo-agent play` reads the
@@ -170,7 +215,9 @@ export const productDemo = defineRun({
                 "--prose", story.prose,
                 "--screenshots", screenshotsDir,
                 "--max-sec", String(perStorySec),
+                "--model", playModel,
               ],
+              env: agentEnv,
               timeoutSec: perStorySec + 30,
             }),
           { concurrency: 1 },
@@ -191,6 +238,7 @@ export const productDemo = defineRun({
             "--session-id-in", sessionIdPath,
             "--out", replayJsonPath,
           ],
+          env: agentEnv,
         }),
       );
 
@@ -248,16 +296,19 @@ export const productDemo = defineRun({
         ),
       );
 
-      // 8. Resolve the summary model + docs-site base through the control
-      //    plane. Mirrors the `pr-review` pattern (recipes/ai-code-review) —
-      //    an operator can repoint `product-demo.model.summary` or
-      //    `product-demo.docsBase` in KV without redeploying. Default model
-      //    `opus`; default docsBase the FlareDispatch docs site. Neither is
-      //    a hard failure (config is `tuning`, not `gating` — see
-      //    specs/03-dsl.md § config).
-      const summaryModel = yield* step("resolve-model", () =>
+      // 8. Resolve the summary model id (required, same shape as
+      //    `product-demo.model.play` above) and the docs-site base. Docs
+      //    base IS tuning, not gating, so it keeps a default; the model id
+      //    has no provider-neutral default and dies loudly when unset.
+      const summaryModel = yield* step("resolve-summary-model", () =>
         config.get("product-demo.model.summary").pipe(
-          Effect.map((override) => override ?? "opus"),
+          Effect.flatMap((v) =>
+            v !== undefined && v !== ""
+              ? Effect.succeed(v)
+              : Effect.die(
+                  "CONFIG_KV missing required key: product-demo.model.summary",
+                ),
+          ),
         ),
       );
       const docsBase = yield* step("resolve-docs-base", () =>
@@ -289,6 +340,7 @@ export const productDemo = defineRun({
             "--out", storiesJsonPath,
             "--data", JSON.stringify({ stories, replayUri, replayJsonUri }),
           ],
+          env: agentEnv,
         }),
       );
 
@@ -317,6 +369,7 @@ export const productDemo = defineRun({
                 "--out", "/tmp/demo/previous.md",
                 "--data", p.output.summaryMd,
               ],
+              env: agentEnv,
             }).pipe(Effect.as(["--previous", "/tmp/demo/previous.md"] as const)),
           ),
       });
@@ -333,6 +386,7 @@ export const productDemo = defineRun({
             "--out", summaryPath,
             ...previousArgs,
           ],
+          env: agentEnv,
         }),
       );
 
