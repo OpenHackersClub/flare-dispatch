@@ -97,10 +97,13 @@ const Output = Schema.Struct({
 export const productDemo = defineRun({
   name: "product-demo",
   version: "1.0.0",
-  // `demo-agent` lives in this image — model loop, CDP-driver glue, and
-  // the Browser Run REST client for pulling rrweb events. See README.md
-  // § The demo agent.
-  image: "registry.cloudflare.com/openhackersclub/flare-dispatch-demo:latest",
+  // The operator's sandbox image (the one bound to `RUNS_SANDBOX` via
+  // `wrangler.jsonc`) MUST include the `demo-agent` binary on PATH — model
+  // loop, CDP-driver glue, and the Browser Run recording REST client.
+  // FlareDispatch has one container binding per Worker, pinned by
+  // `infra/Dockerfile.sandbox`; drop the `demo-agent` layer from
+  // `recipes/product-demo/Dockerfile.example` into your own sandbox image
+  // to enable this run.
   inputs: Input,
   outputs: Output,
   // Stories run SEQUENTIALLY against one CDP session so the rrweb timeline
@@ -119,12 +122,20 @@ export const productDemo = defineRun({
       // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
       //    container holds NO ambient credentials — every `sandbox.exec` is
       //    explicit about which env vars cross the boundary. The agent fails
-      //    fast if any of ANTHROPIC_API_KEY / CLOUDFLARE_ACCOUNT_ID /
-      //    CLOUDFLARE_API_TOKEN is unset (model call / recording REST fetch).
-      const agentEnv = yield* loadSecrets(
-        ["ANTHROPIC_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+      //    fast if any of AI_GATEWAY_URL / CLOUDFLARE_ACCOUNT_ID /
+      //    CLOUDFLARE_API_TOKEN is unset. Anthropic itself is hit via the
+      //    operator's Cloudflare AI Gateway (BYOK); the upstream model key
+      //    lives in the gateway settings, never in the container.
+      //    `AI_GATEWAY_TOKEN` is loaded optionally — only required when the
+      //    gateway is set to "Authenticated Gateway".
+      const requiredAgentEnv = yield* loadSecrets(
+        ["AI_GATEWAY_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
+      const optionalAgentEnv = yield* loadSecrets(["AI_GATEWAY_TOKEN"], {
+        prefix: "product-demo.secret/",
+      });
+      const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };
 
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
       //    checkout, no app boot — the site is already live. The dispatcher's

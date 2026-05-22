@@ -10,10 +10,30 @@
 // (the snapshot is invalidated each step, but the system prompt + story prose
 // stay cached for the duration of the story).
 //
+// Transport — Cloudflare AI Gateway
+// ---------------------------------
+// We do NOT hit api.anthropic.com directly. The Anthropic SDK is pointed at
+// the operator's Cloudflare AI Gateway via `baseURL` so that:
+//
+//   * the upstream Anthropic key lives in the gateway's BYOK settings, not
+//     in any env var on the container — the container never sees it;
+//   * gateway-level caching, rate-limit shaping, retries, and provider
+//     failover come for free, with the same shape the Workers AI / pr-review
+//     gateway pages already aggregate;
+//   * an optional `AI_GATEWAY_TOKEN` (the gateway's authenticated-gateway
+//     `cf-aig-authorization` header) gates third-party use of the URL.
+//
+// Required env:
+//   * AI_GATEWAY_URL    — the per-provider gateway URL, e.g.
+//                         `https://gateway.ai.cloudflare.com/v1/<account>/<gateway-id>/anthropic`.
+//                         Missing → MissingEnv at the first model call.
+//   * AI_GATEWAY_TOKEN  — optional. Sent as `cf-aig-authorization: Bearer …`
+//                         when set; gateways without "Authenticated Gateway"
+//                         enabled don't need this.
+//
 // Model IDs:
-//   * Default action model: `claude-opus-4-7` (the latest Opus; user picked
-//     "computer-use style multi-action loop", which benefits from a strong
-//     planner).
+//   * Default action model: `claude-opus-4-7` (the latest Opus; matches the
+//     "computer-use style multi-action loop" the planner runs).
 //   * Default summary model: resolved by the run from
 //     `config.get("product-demo.model.summary")`; the agent honours whatever
 //     name lands in `--model`, mapping `opus` / `sonnet` / `haiku` to the
@@ -151,11 +171,32 @@ export const summarizeStories = (
 
 const clientFromEnv: Effect.Effect<Anthropic, MissingEnv> = Effect.gen(
   function* () {
-    const key = process.env.ANTHROPIC_API_KEY;
-    if (key === undefined || key === "") {
-      return yield* Effect.fail(new MissingEnv({ name: "ANTHROPIC_API_KEY" }));
+    const gatewayUrl = process.env.AI_GATEWAY_URL;
+    if (gatewayUrl === undefined || gatewayUrl === "") {
+      return yield* Effect.fail(new MissingEnv({ name: "AI_GATEWAY_URL" }));
     }
-    return new Anthropic({ apiKey: key });
+    const gatewayToken = process.env.AI_GATEWAY_TOKEN;
+    // The Anthropic SDK constructor requires `apiKey` to be a non-empty
+    // string. The gateway holds the real upstream key (BYOK), so the value we
+    // pass here is a placeholder — it never reaches Anthropic. If the
+    // operator chose a pass-through gateway instead of BYOK, they can stash
+    // the real key in `ANTHROPIC_API_KEY` and it will ride along.
+    const apiKey =
+      process.env.ANTHROPIC_API_KEY !== undefined &&
+      process.env.ANTHROPIC_API_KEY !== ""
+        ? process.env.ANTHROPIC_API_KEY
+        : "byok-via-ai-gateway";
+    return new Anthropic({
+      apiKey,
+      baseURL: gatewayUrl,
+      ...(gatewayToken !== undefined && gatewayToken !== ""
+        ? {
+            defaultHeaders: {
+              "cf-aig-authorization": `Bearer ${gatewayToken}`,
+            },
+          }
+        : {}),
+    });
   },
 );
 

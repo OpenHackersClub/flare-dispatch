@@ -27,7 +27,7 @@ A GHA workflow calls the **flare-dispatch-action**, which HMAC-signs a dispatch 
 
 Live at HEAD:
 
-- **Runs** — `offload-test` (V0, `pnpm test` → green/red check), `cdp-acceptance` (V2, boot app + CDP assertions), `playwright-demo` (V2, hand-authored Playwright spec → signed R2 tarball), `product-demo` (V3, AI-driven demo over a deployed URL — Claude-driven CDP loop in the bundled `flare-dispatch-demo` image, secrets via `loadSecrets`).
+- **Runs** — `offload-test` (V0, `pnpm test` → green/red check), `cdp-acceptance` (V2, boot app + CDP assertions), `playwright-demo` (V2, hand-authored Playwright spec → signed R2 tarball), `product-demo` (V3, AI-driven demo over a deployed URL — Claude-driven CDP loop via the operator's own sandbox image + a [drop-in `Dockerfile` layer](recipes/product-demo/Dockerfile.example), Anthropic transported through Cloudflare AI Gateway).
 - **Trigger modes** — **Action** (HMAC POST from the [bundled JS Action](actions/flare-dispatch-action/README.md)) and **Schedule** (Cloudflare Cron Triggers → Dispatcher `scheduled()` handler). **Webhook** mode (`POST /v1/webhooks/github`) is Planned (V1).
 - **GitHub App** — manifest-creation install flow (`POST /v1/github/app/manifest` + callback) ships the operator's one-click App setup; the webhook receiver itself is Planned (V1).
 - **DSL** — six run-author capabilities (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) and six primitives (`workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`) all wired against Cloudflare Containers / Browser Rendering / R2 / D1 / KV. `step.waitForEvent`, `step.sleepUntil`, `io.priorExecution`, and the `github` read capability are stubbed → Planned.

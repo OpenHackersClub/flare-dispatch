@@ -2,15 +2,21 @@
 # Verify every Worker Secret + CONFIG_KV entry the `product-demo` run needs.
 #
 # Touch points
-#   * Worker Secrets — the recording REST fetch and the live `browser` Layer
-#     read these from `env`. Set with `wrangler secret put <NAME>`.
+#   * Worker Secrets — the live `browser` Layer reads these from `env`.
+#     Set with `wrangler secret put <NAME>`.
 #       - BROWSER_CDP_CONNECT_URL   — Browser Rendering CDP WS endpoint
 #       - BROWSER_CDP_API_TOKEN     — token auth for the CDP connect
 #   * CONFIG_KV entries — `loadSecrets` resolves these into the env record
 #     handed to `sandbox.exec`. Set with `wrangler kv key put --binding=CONFIG_KV`.
-#       - product-demo.secret/ANTHROPIC_API_KEY
+#     Three required + one optional, all namespaced under `product-demo.secret/`:
+#       Required
+#       - product-demo.secret/AI_GATEWAY_URL         (Cloudflare AI Gateway URL
+#                                                    for Anthropic; BYOK)
 #       - product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 #       - product-demo.secret/CLOUDFLARE_API_TOKEN
+#       Optional
+#       - product-demo.secret/AI_GATEWAY_TOKEN       (only when the gateway has
+#                                                    "Authenticated Gateway" on)
 #
 # Usage
 #   ./scripts/check-product-demo-secrets.sh                 # check default env
@@ -50,19 +56,32 @@ require_kv_key() {
   fi
 }
 
+optional_kv_key() {
+  local key=$1
+  if wrangler kv key get --binding=CONFIG_KV "$key" "${ENV_ARGS[@]}" >/dev/null 2>&1; then
+    ok "CONFIG_KV: $key (optional, present)"
+  else
+    note "CONFIG_KV: $key (optional, unset — only required if your AI Gateway has Authenticated Gateway on)"
+  fi
+}
+
 echo "Worker Secrets"
 require_secret BROWSER_CDP_CONNECT_URL
 require_secret BROWSER_CDP_API_TOKEN
 
 echo
-echo "CONFIG_KV entries (product-demo.secret/)"
-require_kv_key product-demo.secret/ANTHROPIC_API_KEY
+echo "CONFIG_KV entries (product-demo.secret/, required)"
+require_kv_key product-demo.secret/AI_GATEWAY_URL
 require_kv_key product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 require_kv_key product-demo.secret/CLOUDFLARE_API_TOKEN
 
 echo
+echo "CONFIG_KV entries (product-demo.secret/, optional)"
+optional_kv_key product-demo.secret/AI_GATEWAY_TOKEN
+
+echo
 if [[ $missing -eq 0 ]]; then
-  green "All product-demo secrets present."
+  green "All required product-demo secrets present."
 else
   red "$missing missing — set the values above before dispatching product-demo."
   note "After setting, re-run this script to confirm."
