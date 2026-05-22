@@ -9,8 +9,9 @@
 //     `screenshot` explicitly;
 //   * `chapterStartMs` / `chapterEndMs` are measured relative to `attachedAtMs`.
 //
-// The real CDP + Anthropic are mocked — we inject a fake `CdpSession` and a
-// fake `pickAction` so the suite runs without a browser or an API key.
+// The real CDP + `LanguageModel` are mocked — we inject a fake `CdpSession`
+// and a fake `pickAction` so the suite runs without a browser or any model
+// provider configured.
 
 import { describe, expect, it } from "vitest";
 import { Effect, Layer } from "effect";

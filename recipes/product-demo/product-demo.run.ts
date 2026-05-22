@@ -180,6 +180,23 @@ export const productDemo = defineRun({
         }),
       );
 
+      // 2.5. Resolve per-step model ids through CONFIG_KV — same seam as
+      //      `pr-review`. Both required; no provider-specific default lives
+      //      in code (a default like `claude-opus-4-7` is meaningless if the
+      //      gateway is pointed at OpenAI / Workers AI / Bedrock). Unset
+      //      keys die loudly.
+      const playModel = yield* step("resolve-play-model", () =>
+        config.get("product-demo.model.play").pipe(
+          Effect.flatMap((v) =>
+            v !== undefined && v !== ""
+              ? Effect.succeed(v)
+              : Effect.die(
+                  "CONFIG_KV missing required key: product-demo.model.play",
+                ),
+          ),
+        ),
+      );
+
       // 3. Walk the stories in order. Each `demo-agent play` reads the
       //    prose, applies actions over the SAME CDP session (so the rrweb
       //    timeline stays continuous), captures key screenshots into
@@ -198,6 +215,7 @@ export const productDemo = defineRun({
                 "--prose", story.prose,
                 "--screenshots", screenshotsDir,
                 "--max-sec", String(perStorySec),
+                "--model", playModel,
               ],
               env: agentEnv,
               timeoutSec: perStorySec + 30,
@@ -278,16 +296,19 @@ export const productDemo = defineRun({
         ),
       );
 
-      // 8. Resolve the summary model + docs-site base through the control
-      //    plane. Mirrors the `pr-review` pattern (recipes/ai-code-review) —
-      //    an operator can repoint `product-demo.model.summary` or
-      //    `product-demo.docsBase` in KV without redeploying. Default model
-      //    `opus`; default docsBase the FlareDispatch docs site. Neither is
-      //    a hard failure (config is `tuning`, not `gating` — see
-      //    specs/03-dsl.md § config).
-      const summaryModel = yield* step("resolve-model", () =>
+      // 8. Resolve the summary model id (required, same shape as
+      //    `product-demo.model.play` above) and the docs-site base. Docs
+      //    base IS tuning, not gating, so it keeps a default; the model id
+      //    has no provider-neutral default and dies loudly when unset.
+      const summaryModel = yield* step("resolve-summary-model", () =>
         config.get("product-demo.model.summary").pipe(
-          Effect.map((override) => override ?? "opus"),
+          Effect.flatMap((v) =>
+            v !== undefined && v !== ""
+              ? Effect.succeed(v)
+              : Effect.die(
+                  "CONFIG_KV missing required key: product-demo.model.summary",
+                ),
+          ),
         ),
       );
       const docsBase = yield* step("resolve-docs-base", () =>

@@ -23,11 +23,7 @@ import {
   fetchRecording,
 } from "./recorder.js";
 import { runPlayLoop } from "./play.js";
-import {
-  makeLanguageModelLayer,
-  resolveModelId,
-  summarizeStories,
-} from "./model.js";
+import { makeLanguageModelLayer, summarizeStories } from "./model.js";
 import {
   type AgentError,
   CdpAttachFailed,
@@ -81,7 +77,9 @@ const storiesJsonOption = Options.text("stories-json").pipe(
   Options.withDescription("Path to the stories.json the summarizer reads."),
 );
 const modelOption = Options.text("model").pipe(
-  Options.withDescription("Model alias (opus|sonnet|haiku) or full Claude model id."),
+  Options.withDescription(
+    "Provider model id (e.g. `gpt-4o`, `claude-opus-4-7`, `@cf/meta/llama-3.1-70b-instruct`). The string passes through to the configured `LanguageModel` layer verbatim.",
+  ),
 );
 const previousOption = Options.text("previous").pipe(
   Options.optional,
@@ -161,7 +159,7 @@ const playCommand = Command.make(
     prose: proseOption,
     screenshots: screenshotsOption,
     maxSec: maxSecOption,
-    model: modelOption.pipe(Options.optional),
+    model: modelOption,
   },
   ({ cdpWs, name, prose, screenshots, maxSec, model }) =>
     Effect.gen(function* () {
@@ -176,13 +174,7 @@ const playCommand = Command.make(
           attachedAtMs,
         },
         { session: attached.session },
-      ).pipe(
-        Effect.provide(
-          makeLanguageModelLayer(
-            resolveModelId(model._tag === "Some" ? model.value : "opus"),
-          ),
-        ),
-      );
+      ).pipe(Effect.provide(makeLanguageModelLayer(model)));
       yield* attached.session.close();
       yield* Console.log(JSON.stringify(result));
     }).pipe(Effect.catchAll(reportAndDie)),
@@ -222,7 +214,7 @@ const summarizeCommand = Command.make(
         replayUri: decoded.right.replayUri,
         replayJsonUri: decoded.right.replayJsonUri,
         previous: previousMd,
-      }).pipe(Effect.provide(makeLanguageModelLayer(resolveModelId(model))));
+      }).pipe(Effect.provide(makeLanguageModelLayer(model)));
       yield* writeFile(out, md);
       yield* Console.log(md);
     }).pipe(Effect.catchAll(reportAndDie)),

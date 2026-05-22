@@ -2,11 +2,12 @@
 //
 // The whole agent is provider-agnostic by construction: every model call goes
 // through the abstract `LanguageModel` Tag from `@effect/ai`; the concrete
-// provider (OpenAI / Anthropic / Bedrock / Google / Workers AI / Ollama / any
-// OpenAI-compatible gateway) is supplied as a Layer at the run boundary
-// (`makeLanguageModelLayer` below). Operators swap providers by changing
-// `MODEL_NAME` (and pointing `MODEL_BASE_URL` at the right gateway path) — no
-// code edit.
+// provider (OpenAI / Workers AI / a BYOK AI Gateway / Bedrock-via-compat /
+// Ollama / any OpenAI-compatible endpoint) is supplied as a Layer at the run
+// boundary (`makeLanguageModelLayer` below). Operators swap providers by
+// pointing `MODEL_BASE_URL` at the right endpoint and putting the matching
+// provider model id in the `product-demo.model.*` CONFIG_KV keys. No code
+// edit.
 //
 // Two call sites:
 //
@@ -192,15 +193,13 @@ export const makeLanguageModelLayer = (
 
 // ---------------------------------------------------------------------------
 // pickNextAction
-
-const MODEL_ALIASES: Readonly<Record<string, string>> = {
-  // OpenAI defaults — `MODEL_BASE_URL` is the seam, not the model id.
-  opus: "claude-opus-4-7",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5-20251001",
-};
-export const resolveModelId = (name: string): string =>
-  MODEL_ALIASES[name] ?? name;
+//
+// Model id passes through verbatim — the operator names the upstream model
+// in CONFIG_KV (`product-demo.model.play` / `.summary`) and the same string
+// flows through `--model` into `OpenAiLanguageModel.layer({ model })`.
+// Provider-specific names live in the operator's config, not in this code,
+// so swapping providers (`gpt-4o`, `claude-opus-4-7`, `@cf/meta/llama-3.1-70b-instruct`, …)
+// is a CONFIG_KV edit.
 
 export type PickActionInput = {
   readonly prose: string;

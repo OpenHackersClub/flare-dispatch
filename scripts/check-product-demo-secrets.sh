@@ -74,14 +74,19 @@ require_secret BROWSER_CDP_CONNECT_URL
 require_secret BROWSER_CDP_API_TOKEN
 
 echo
-echo "CONFIG_KV entries (product-demo.secret/, required)"
+echo "CONFIG_KV — transport secrets (product-demo.secret/, required)"
 require_kv_key product-demo.secret/MODEL_BASE_URL
 require_kv_key product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 require_kv_key product-demo.secret/CLOUDFLARE_API_TOKEN
 
 echo
-echo "CONFIG_KV entries (product-demo.secret/, optional)"
+echo "CONFIG_KV — transport secrets (product-demo.secret/, optional)"
 optional_kv_key product-demo.secret/MODEL_API_KEY
+
+echo
+echo "CONFIG_KV — model ids (required; no provider-neutral default)"
+require_kv_key product-demo.model.play
+require_kv_key product-demo.model.summary
 
 echo
 if [[ $missing -eq 0 ]]; then

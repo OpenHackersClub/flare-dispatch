@@ -49,7 +49,11 @@ export class RecordingFetchFailed extends Schema.TaggedError<RecordingFetchFaile
   },
 ) {}
 
-/** The Anthropic API call failed or returned an unparseable response. */
+/**
+ * The upstream model call failed or returned an unparseable response.
+ * Provider-agnostic — works for any `@effect/ai` provider Layer
+ * (OpenAI-compatible endpoint, Workers AI, an AI Gateway with BYOK, …).
+ */
 export class ModelCallFailed extends Schema.TaggedError<ModelCallFailed>()(
   "ModelCallFailed",
   {
@@ -66,7 +70,7 @@ export class ModelCallFailed extends Schema.TaggedError<ModelCallFailed>()(
   },
 ) {}
 
-/** A required environment variable is missing (e.g. ANTHROPIC_API_KEY). */
+/** A required environment variable is missing (e.g. MODEL_BASE_URL). */
 export class MissingEnv extends Schema.TaggedError<MissingEnv>()(
   "MissingEnv",
   {

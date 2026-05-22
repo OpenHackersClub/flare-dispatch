@@ -63,13 +63,21 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
    wrangler secret put BROWSER_CDP_CONNECT_URL    # wss://api.cloudflare.com/.../connect?recording=true
    wrangler secret put BROWSER_CDP_API_TOKEN      # Cloudflare API token, Browser Rendering edit
 
-   # CONFIG_KV — read by `loadSecrets` and passed as env to every demo-agent exec.
+   # CONFIG_KV transport secrets — read by `loadSecrets`, passed as env to every demo-agent exec.
    # MODEL_BASE_URL is required; MODEL_API_KEY only if your endpoint needs a
    # direct credential (AI Gateway BYOK = leave unset).
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_BASE_URL        https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_API_KEY         <optional: direct provider key when not using BYOK>
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_ACCOUNT_ID <account-id>
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_API_TOKEN  <token-with-browser-rendering-read>
+
+   # CONFIG_KV model ids — resolved per-execution by the run via `config.get`,
+   # so you can repoint models in seconds (no redeploy). REQUIRED — there is no
+   # provider-neutral default (a `gpt-4o` default would only work on an OpenAI
+   # gateway; a `claude-opus-4-7` default only on Anthropic). Pick the model
+   # id that matches the upstream behind your `MODEL_BASE_URL`.
+   wrangler kv key put --binding=CONFIG_KV product-demo.model.play     gpt-4o-mini          # or claude-haiku-4-5-20251001 / @cf/meta/llama-3.1-70b-instruct / ...
+   wrangler kv key put --binding=CONFIG_KV product-demo.model.summary  gpt-4o               # or claude-opus-4-7 / @cf/meta/llama-3.1-405b-instruct / ...
    ```
 
    Verify with [`scripts/check-product-demo-secrets.sh`](../../scripts/check-product-demo-secrets.sh).

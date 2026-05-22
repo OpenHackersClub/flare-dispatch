@@ -6,7 +6,7 @@
 //                          session — Date.now() at attach time);
 //   loop until done | max-actions | max-sec:
 //     snapshot accessibility tree
-//     ask Claude: next action?
+//     ask the model (via @effect/ai's LanguageModel): next action?
 //     apply via CDP
 //     append to history (oldest first)
 //     if the model said "screenshot", save it as the key screenshot path
