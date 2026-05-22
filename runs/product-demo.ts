@@ -40,6 +40,7 @@ import {
   config,
   io,
 } from "@flare-dispatch/core";
+import { loadSecrets } from "@flare-dispatch/core/primitives";
 
 // A user story is just a name + prose. The agent reads the prose, decides
 // the next browser action, applies it over the live CDP session, captures
@@ -150,6 +151,25 @@ export const productDemo = defineRun({
       const viewport = input.viewportPreset ?? "desktop";
       const perStorySec = input.maxDurationSecPerStory ?? 180;
 
+      // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
+      //    container holds NO ambient credentials — every `sandbox.exec` is
+      //    explicit about which env vars cross the boundary. Three required
+      //    keys (`required: true` so a misconfigured deploy fails fast at
+      //    this step, not deep inside the model loop):
+      //      * `ANTHROPIC_API_KEY`      — the model API key used by play +
+      //        summarize. The agent fails with `MissingEnv` if absent.
+      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
+      //        Rendering session; the recorder REST URL keys off this.
+      //      * `CLOUDFLARE_API_TOKEN`   — same token shape as
+      //        `BROWSER_CDP_API_TOKEN` on the Worker. Authorises the
+      //        recording REST fetch.
+      //    All three live under `product-demo.secret/` so the operator can
+      //    namespace them away from feature-flag keys.
+      const agentEnv = yield* loadSecrets(
+        ["ANTHROPIC_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        { prefix: "product-demo.secret/", required: true },
+      );
+
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
       //    checkout, no app boot — the site is already live. The dispatcher's
       //    `newCDPSession` primitive composes the connect URL with
@@ -184,6 +204,7 @@ export const productDemo = defineRun({
             "--viewport", viewport,
             "--session-id-out", sessionIdPath,
           ],
+          env: agentEnv,
         }),
       );
 
@@ -206,6 +227,7 @@ export const productDemo = defineRun({
                 "--screenshots", screenshotsDir,
                 "--max-sec", String(perStorySec),
               ],
+              env: agentEnv,
               timeoutSec: perStorySec + 30,
             }),
           { concurrency: 1 },
@@ -226,6 +248,7 @@ export const productDemo = defineRun({
             "--session-id-in", sessionIdPath,
             "--out", replayJsonPath,
           ],
+          env: agentEnv,
         }),
       );
 
@@ -330,6 +353,7 @@ export const productDemo = defineRun({
             "--out", storiesJsonPath,
             "--data", JSON.stringify({ stories, replayUri, replayJsonUri }),
           ],
+          env: agentEnv,
         }),
       );
 
@@ -358,6 +382,7 @@ export const productDemo = defineRun({
                 "--out", "/tmp/demo/previous.md",
                 "--data", p.output.summaryMd,
               ],
+              env: agentEnv,
             }).pipe(Effect.as(["--previous", "/tmp/demo/previous.md"] as const)),
           ),
       });
@@ -374,6 +399,7 @@ export const productDemo = defineRun({
             "--out", summaryPath,
             ...previousArgs,
           ],
+          env: agentEnv,
         }),
       );
 

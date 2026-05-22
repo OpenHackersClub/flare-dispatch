@@ -53,5 +53,19 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 1. Deploy FlareDispatch and install the GitHub App — see [specs/05-byoc.md](../../specs/05-byoc.md).
 2. Add `product-demo.run.ts` to your repo's `runs/` directory.
 3. Copy `ci.yml` into `.github/workflows/`. Set `vars.PREVIEW_URL` (or adjust the inline URL convention) so the `pull_request` trigger knows where to drive the demo.
-4. Require the `flare-dispatch/product-demo` check-run in branch protection (NOT the GHA job — the GHA step succeeds at dispatch time; the actual demo result lives on the check-run).
-5. Open a PR; the check-run summary lands with the rrweb replay URL (`replayUri`) and the per-story chapter markers (`chapterStartMs` / `chapterEndMs` on the rrweb timeline).
+4. **Configure the demo-agent's runtime credentials.** Two Worker Secrets + three `CONFIG_KV` entries (the agent reads zero ambient env vars; every credential flows in through `loadSecrets`):
+
+   ```sh
+   # Worker Secrets — read by the live `browser` Layer for the CDP attach.
+   wrangler secret put BROWSER_CDP_CONNECT_URL    # wss://api.cloudflare.com/.../connect?recording=true
+   wrangler secret put BROWSER_CDP_API_TOKEN      # Cloudflare API token with Browser Rendering edit
+
+   # CONFIG_KV — read by `loadSecrets` and passed as env to every demo-agent exec.
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/ANTHROPIC_API_KEY      sk-ant-...
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_ACCOUNT_ID  <account-id>
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_API_TOKEN   <token-with-browser-rendering-read>
+   ```
+
+   Verify with [`scripts/check-product-demo-secrets.sh`](../../scripts/check-product-demo-secrets.sh).
+5. Require the `flare-dispatch/product-demo` check-run in branch protection (NOT the GHA job — the GHA step succeeds at dispatch time; the actual demo result lives on the check-run).
+6. Open a PR; the check-run summary lands with the rrweb replay URL (`replayUri`) and the per-story chapter markers (`chapterStartMs` / `chapterEndMs` on the rrweb timeline).

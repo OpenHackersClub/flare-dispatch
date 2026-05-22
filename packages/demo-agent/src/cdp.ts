@@ -1,0 +1,196 @@
+// @flare-dispatch/demo-agent — CDP attach + low-level browser ops.
+//
+// The agent attaches via puppeteer-core's `Browser.connect({ browserWSEndpoint })`
+// against the WebSocket URL the run hands it. The run gets that URL from the
+// dispatcher's `browser.newCDPSession` primitive, which already appends
+// `?recording=true` so the Browser Rendering session emits rrweb events the
+// whole time we're attached.
+//
+// This module is the only place that imports `puppeteer-core` so the LLM loop
+// and the recorder stay easy to unit-test (they take a `CdpSession`
+// interface, not a Puppeteer instance).
+//
+// Spec: specs/03-dsl.md § browser, packages/runtime-cf/src/browser-cf.ts.
+
+import { Effect } from "effect";
+import puppeteer, { type Browser, type Page } from "puppeteer-core";
+import { CdpAttachFailed, CdpCommandFailed } from "./errors.js";
+import { VIEWPORTS, type ViewportPreset } from "./schemas.js";
+
+/**
+ * Minimal surface the play loop + recorder need from a live CDP session.
+ * Exposed as an interface so tests can inject a fake without spinning up a
+ * real WebSocket; the live impl is `attachCdp` below.
+ */
+export interface CdpSession {
+  /** Navigate the active page; resolves when the navigation commits. */
+  readonly goto: (url: string) => Effect.Effect<void, CdpCommandFailed>;
+  /** Click an element by accessibility node id or CSS selector. */
+  readonly click: (target: string) => Effect.Effect<void, CdpCommandFailed>;
+  /** Focus an element and type a string into it. */
+  readonly type: (
+    target: string,
+    text: string,
+  ) => Effect.Effect<void, CdpCommandFailed>;
+  /** Dispatch a single keyboard event by CDP key name. */
+  readonly key: (key: string) => Effect.Effect<void, CdpCommandFailed>;
+  /** Wait `ms` milliseconds (clamped to 5_000 by the caller). */
+  readonly wait: (ms: number) => Effect.Effect<void, never>;
+  /** Capture a PNG screenshot to the absolute path. */
+  readonly screenshot: (
+    path: string,
+  ) => Effect.Effect<void, CdpCommandFailed>;
+  /**
+   * Snapshot the accessibility tree of the current page — the input the model
+   * picks its next action from. Returns a compact JSON-stringified tree.
+   */
+  readonly accessibilitySnapshot: () => Effect.Effect<
+    string,
+    CdpCommandFailed
+  >;
+  /** Browser Rendering session id — what the recording REST API keys on. */
+  readonly sessionId: () => Effect.Effect<string, CdpCommandFailed>;
+  /** Close the page + disconnect the browser. */
+  readonly close: () => Effect.Effect<void, never>;
+}
+
+const classifyAttachError = (e: unknown): CdpAttachFailed["reason"] => {
+  const msg = e instanceof Error ? e.message.toLowerCase() : String(e);
+  if (msg.includes("invalid url") || msg.includes("invalid-url")) return "invalid-url";
+  if (msg.includes("econnrefused")) return "connect-refused";
+  if (msg.includes("401") || msg.includes("403") || msg.includes("unauthor"))
+    return "auth-failed";
+  if (msg.includes("timeout") || msg.includes("etimedout")) return "timeout";
+  return "unknown";
+};
+
+const wrapCmd = <T>(
+  method: string,
+  thunk: () => Promise<T>,
+): Effect.Effect<T, CdpCommandFailed> =>
+  Effect.tryPromise({
+    try: thunk,
+    catch: (e) =>
+      new CdpCommandFailed({
+        method,
+        message: e instanceof Error ? e.message : String(e),
+      }),
+  });
+
+/** Apply the viewport preset via Emulation.setDeviceMetricsOverride. */
+export const applyViewport = (
+  page: Page,
+  preset: ViewportPreset,
+): Effect.Effect<void, CdpCommandFailed> => {
+  const dims = VIEWPORTS[preset];
+  return wrapCmd("Emulation.setDeviceMetricsOverride", () =>
+    page.setViewport({
+      width: dims.width,
+      height: dims.height,
+      deviceScaleFactor: dims.deviceScaleFactor,
+      isMobile: dims.mobile,
+    }),
+  );
+};
+
+/**
+ * Attach to Browser Rendering over CDP at `wsEndpoint`. Resolves once the
+ * default page is connected; the returned `CdpSession` carries an `accessor`
+ * for the underlying puppeteer `Browser` so tests + the live recorder can
+ * extract the session id.
+ */
+export const attachCdp = (
+  wsEndpoint: string,
+): Effect.Effect<
+  { readonly browser: Browser; readonly page: Page; readonly session: CdpSession },
+  CdpAttachFailed
+> =>
+  Effect.gen(function* () {
+    if (!/^wss?:\/\//.test(wsEndpoint)) {
+      return yield* Effect.fail(
+        new CdpAttachFailed({
+          wsEndpoint,
+          reason: "invalid-url",
+          message: `--cdp-ws must start with ws:// or wss:// (got: ${wsEndpoint})`,
+        }),
+      );
+    }
+
+    const browser = yield* Effect.tryPromise({
+      try: () =>
+        puppeteer.connect({
+          browserWSEndpoint: wsEndpoint,
+          defaultViewport: null,
+        }),
+      catch: (e) =>
+        new CdpAttachFailed({
+          wsEndpoint,
+          reason: classifyAttachError(e),
+          message: e instanceof Error ? e.message : String(e),
+        }),
+    });
+
+    const page = yield* Effect.tryPromise({
+      try: async () => {
+        const existing = await browser.pages();
+        return existing.length > 0 && existing[0] !== undefined
+          ? existing[0]
+          : await browser.newPage();
+      },
+      catch: (e) =>
+        new CdpAttachFailed({
+          wsEndpoint,
+          reason: "unknown",
+          message: e instanceof Error ? e.message : String(e),
+        }),
+    });
+
+    const session: CdpSession = {
+      goto: (url) =>
+        wrapCmd("Page.navigate", () =>
+          page.goto(url, { waitUntil: "domcontentloaded" }).then(() => undefined),
+        ),
+      click: (target) =>
+        wrapCmd("Input.click", () => page.click(target).then(() => undefined)),
+      type: (target, text) =>
+        wrapCmd("Input.type", async () => {
+          await page.focus(target);
+          await page.type(target, text);
+        }),
+      key: (key) =>
+        wrapCmd("Input.keyboard", () => page.keyboard.press(key as never)),
+      wait: (ms) => Effect.sleep(`${Math.min(Math.max(ms, 0), 5_000)} millis`),
+      screenshot: (path) =>
+        wrapCmd("Page.captureScreenshot", () =>
+          page
+            .screenshot({ path: path as `${string}.png`, type: "png" })
+            .then(() => undefined),
+        ),
+      accessibilitySnapshot: () =>
+        wrapCmd("Accessibility.getFullAXTree", async () => {
+          const tree = await page.accessibility.snapshot({ interestingOnly: true });
+          return JSON.stringify(tree ?? { role: "WebArea", children: [] });
+        }),
+      sessionId: () =>
+        wrapCmd("Browser.sessionId", async () => {
+          // Browser Rendering exposes the session id via the target's
+          // `_session._sessionId` on the default page. Puppeteer abstracts
+          // this; we read it through CDPSession.id() on the page's primary
+          // CDP session.
+          const cdp = await page.createCDPSession();
+          const id = cdp.id();
+          await cdp.detach();
+          return id;
+        }),
+      close: () =>
+        Effect.tryPromise({
+          try: async () => {
+            await page.close().catch(() => undefined);
+            await browser.disconnect();
+          },
+          catch: () => undefined,
+        }).pipe(Effect.ignore),
+    };
+
+    return { browser, page, session };
+  });

@@ -1,0 +1,90 @@
+# FlareDispatch — publish container images to Cloudflare's registry.
+#
+# Trigger: a push to `main` that touches `infra/Dockerfile.demo`,
+# `packages/demo-agent/**`, or this workflow itself. Also exposed as
+# `workflow_dispatch` for manual reissue without a source change (e.g.
+# pinning a new base image tag).
+#
+# What it does: builds `infra/Dockerfile.demo`, tags it `:latest` AND `:${sha}`
+# (so a regression is reverted by retagging, not rebuilding), and pushes to
+# `registry.cloudflare.com/openhackersclub/flare-dispatch-demo`. Cloudflare
+# Containers pulls from that registry directly; the `product-demo` run's
+# `image:` field references `:latest`.
+#
+# Credentials
+# -----------
+# `registry.cloudflare.com` accepts a Cloudflare API token with the
+# `Cloudflare Containers — Edit` permission as the registry password.
+# Two repo secrets:
+#
+#   * CLOUDFLARE_ACCOUNT_ID      — the account that owns the registry path
+#   * CF_REGISTRY_TOKEN          — the scoped Containers API token
+#
+# Gated on those being set so a fork without registry credentials gets a
+# clear "skipped" notice instead of a hard failure (mirrors `ci.yml`'s
+# `FLAREDISPATCH_ENDPOINT` gating).
+#
+# The `demo-agent` bundle the Dockerfile copies is built inside the image,
+# not on the runner — keeps the runner steps minimal and the build
+# reproducible inside the container.
+
+name: push-image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/Dockerfile.demo"
+      - "packages/demo-agent/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/push-image.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: push-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  demo-image:
+    name: flare-dispatch-demo:latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Registry credentials not configured — skipping
+        if: vars.CLOUDFLARE_ACCOUNT_ID == '' || secrets.CF_REGISTRY_TOKEN == ''
+        run: |
+          echo "::notice::push-image skipped — repo variable CLOUDFLARE_ACCOUNT_ID and secret CF_REGISTRY_TOKEN must both be set."
+          echo "Set them once on the repo (Settings → Secrets and variables → Actions) to enable image publishing."
+
+      - name: Set up Docker Buildx
+        if: vars.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CF_REGISTRY_TOKEN != ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry.cloudflare.com
+        if: vars.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CF_REGISTRY_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cloudflare.com
+          # The username field is the Cloudflare account id; the password is
+          # the Containers-scoped API token.
+          username: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          password: ${{ secrets.CF_REGISTRY_TOKEN }}
+
+      - name: Build + push flare-dispatch-demo
+        if: vars.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CF_REGISTRY_TOKEN != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile.demo
+          push: true
+          # Tag both the commit SHA (immutable rollback target) and `:latest`
+          # (what `runs/product-demo.ts` `image:` references).
+          tags: |
+            registry.cloudflare.com/openhackersclub/flare-dispatch-demo:latest
+            registry.cloudflare.com/openhackersclub/flare-dispatch-demo:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

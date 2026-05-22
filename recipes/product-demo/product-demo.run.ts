@@ -34,6 +34,7 @@ import {
   config,
   io,
 } from "@flare-dispatch/core";
+import { loadSecrets } from "@flare-dispatch/core/primitives";
 
 // A user story is just a name + prose. The agent reads the prose, decides
 // the next browser action, applies it over the live CDP session, captures
@@ -115,6 +116,16 @@ export const productDemo = defineRun({
       const viewport = input.viewportPreset ?? "desktop";
       const perStorySec = input.maxDurationSecPerStory ?? 180;
 
+      // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
+      //    container holds NO ambient credentials — every `sandbox.exec` is
+      //    explicit about which env vars cross the boundary. The agent fails
+      //    fast if any of ANTHROPIC_API_KEY / CLOUDFLARE_ACCOUNT_ID /
+      //    CLOUDFLARE_API_TOKEN is unset (model call / recording REST fetch).
+      const agentEnv = yield* loadSecrets(
+        ["ANTHROPIC_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        { prefix: "product-demo.secret/", required: true },
+      );
+
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
       //    checkout, no app boot — the site is already live. The dispatcher's
       //    `newCDPSession` primitive composes the connect URL with
@@ -149,6 +160,7 @@ export const productDemo = defineRun({
             "--viewport", viewport,
             "--session-id-out", sessionIdPath,
           ],
+          env: agentEnv,
         }),
       );
 
@@ -171,6 +183,7 @@ export const productDemo = defineRun({
                 "--screenshots", screenshotsDir,
                 "--max-sec", String(perStorySec),
               ],
+              env: agentEnv,
               timeoutSec: perStorySec + 30,
             }),
           { concurrency: 1 },
@@ -191,6 +204,7 @@ export const productDemo = defineRun({
             "--session-id-in", sessionIdPath,
             "--out", replayJsonPath,
           ],
+          env: agentEnv,
         }),
       );
 
@@ -289,6 +303,7 @@ export const productDemo = defineRun({
             "--out", storiesJsonPath,
             "--data", JSON.stringify({ stories, replayUri, replayJsonUri }),
           ],
+          env: agentEnv,
         }),
       );
 
@@ -317,6 +332,7 @@ export const productDemo = defineRun({
                 "--out", "/tmp/demo/previous.md",
                 "--data", p.output.summaryMd,
               ],
+              env: agentEnv,
             }).pipe(Effect.as(["--previous", "/tmp/demo/previous.md"] as const)),
           ),
       });
@@ -333,6 +349,7 @@ export const productDemo = defineRun({
             "--out", summaryPath,
             ...previousArgs,
           ],
+          env: agentEnv,
         }),
       );
 
