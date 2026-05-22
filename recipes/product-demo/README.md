@@ -43,7 +43,7 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 - **One continuous replay across all stories.** Playwright's `recordVideo` on GHA is per-`BrowserContext` — one story = one .webm, with no clean way to stitch them. FlareDispatch shares ONE Browser Run session across every story, and Browser Run's native recording emits ONE rrweb event stream that covers the whole walkthrough; the run records per-story `chapterStartMs` / `chapterEndMs` offsets so a reviewer can scrub straight to a chapter.
 - **rrweb DOM fidelity, not pixels.** Browser Run records DOM mutations + events via rrweb, not a video file. The replay is searchable, copy-pasteable, and orders of magnitude smaller than a webm — and the same recording supports console-error inspection, network-call observation, and per-element timing on the replay page. GHA + Playwright can only produce a flat video.
 - **Warm browser pool — no `playwright install`.** A cold GHA runner pays ~30–45 s of `checkout` + `setup-node` + `pnpm install` + ~60–90 s of `playwright install --with-deps chromium` before the first frame. FlareDispatch attaches to Browser Run over CDP — there's no chromium install on the path at all.
-- **Agent CLI inside the image, model key in AI Gateway — zero credentials on the runner.** `demo-agent` lives in the operator's sandbox image; the Anthropic key sits in the operator's Cloudflare AI Gateway (BYOK), so the container only sees a gateway URL. On the GHA baseline, `ANTHROPIC_API_KEY` is exposed to every step in the job, every postinstall script, and every third-party action you use.
+- **Agent CLI inside the image, model provider chosen at deploy — zero credentials on the runner.** `demo-agent` lives in the operator's sandbox image; it talks to any OpenAI-compatible endpoint (Cloudflare AI Gateway with BYOK, OpenAI direct, Workers AI, Bedrock-via-compat, Ollama, …) via `@effect/ai`'s provider-agnostic `LanguageModel`. The container only sees a gateway URL; the upstream API key lives in the gateway. On the GHA baseline, model API keys are exposed to every step in the job, every postinstall script, and every third-party action you use.
 - **Scale-to-zero between deploys.** Stories run sequentially because the browser is shared; the model round-trip per story is a wall-clock wait. On GHA you pay runner minutes while the model thinks. FlareDispatch only bills CPU actually used.
 - **Signed R2 URLs for PR embedding.** GitHub PR comments cannot embed video — the GHA artifact UI hands you a download link that requires unzip-and-watch-locally. FlareDispatch's `artifact.upload` returns a 30-day signed R2 URL to the rrweb event JSON, and the run also returns a `replayUri` that opens the rrweb player on the docs site so reviewers can scrub the recording inline.
 - **Live model routing via `config`.** The summary model resolves through `config.get("product-demo.model.summary")` ([`03-dsl § config`](../../specs/03-dsl.md#config)) — flip to a fallback provider in seconds, no redeploy. Mirrors the `pr-review` pattern in [recipes/ai-code-review](../ai-code-review/).
@@ -55,7 +55,7 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 2. Add `product-demo.run.ts` to your repo's `runs/` directory.
 3. Copy `ci.yml` into `.github/workflows/`. Set `vars.PREVIEW_URL` (or adjust the inline URL convention) so the `pull_request` trigger knows where to drive the demo.
 4. **Bake the `demo-agent` binary into your sandbox image.** Open [`Dockerfile.example`](Dockerfile.example) — it's a two-stage layer pair (build `demo-agent` from a pinned `flare-dispatch` ref, copy the bundle into a stock `cloudflare/sandbox` runtime). Paste the two stages into your own `Dockerfile.sandbox` (the one referenced by `wrangler.jsonc` `containers[].image`); `wrangler deploy` does the rest. No registry credentials, no `flare-dispatch-demo` pull — your sandbox image IS the integration. Pin `FD_REF` to a tag for reproducible builds.
-5. **Set up Cloudflare AI Gateway for the model transport.** Create an AI Gateway in the dashboard, attach Anthropic with your upstream key (BYOK so the container never holds it), copy the per-provider URL (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic`).
+5. **Pick a model provider.** The agent talks to any OpenAI-compatible endpoint via `@effect/ai`'s provider-agnostic `LanguageModel`; the operator picks the upstream by what they put in `MODEL_BASE_URL`. Recommended: a Cloudflare AI Gateway with BYOK so the container never holds an upstream key. Other valid targets — OpenAI directly, Workers AI's OpenAI-compatible endpoint, an Anthropic-via-compat gateway, Bedrock-via-compat, Ollama or vLLM for self-hosted models.
 6. **Configure the run's runtime credentials.** Two Worker Secrets + a small set of `CONFIG_KV` entries (the agent reads zero ambient env vars; every credential flows in through `loadSecrets`):
 
    ```sh
@@ -64,10 +64,10 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
    wrangler secret put BROWSER_CDP_API_TOKEN      # Cloudflare API token, Browser Rendering edit
 
    # CONFIG_KV — read by `loadSecrets` and passed as env to every demo-agent exec.
-   # AI_GATEWAY_URL is required; AI_GATEWAY_TOKEN only if your gateway has
-   # "Authenticated Gateway" turned on.
-   wrangler kv key put --binding=CONFIG_KV product-demo.secret/AI_GATEWAY_URL        https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic
-   wrangler kv key put --binding=CONFIG_KV product-demo.secret/AI_GATEWAY_TOKEN      <optional: gateway auth token>
+   # MODEL_BASE_URL is required; MODEL_API_KEY only if your endpoint needs a
+   # direct credential (AI Gateway BYOK = leave unset).
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_BASE_URL        https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_API_KEY         <optional: direct provider key when not using BYOK>
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_ACCOUNT_ID <account-id>
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_API_TOKEN  <token-with-browser-rendering-read>
    ```

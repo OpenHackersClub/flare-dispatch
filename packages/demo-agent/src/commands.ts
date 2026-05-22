@@ -13,7 +13,7 @@
 
 import * as Command from "@effect/cli/Command";
 import * as Options from "@effect/cli/Options";
-import { Console, Effect, Match } from "effect";
+import { Console, Effect, Layer, Match } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { attachCdp, applyViewport } from "./cdp.js";
@@ -23,7 +23,11 @@ import {
   fetchRecording,
 } from "./recorder.js";
 import { runPlayLoop } from "./play.js";
-import { summarizeStories } from "./anthropic.js";
+import {
+  makeLanguageModelLayer,
+  resolveModelId,
+  summarizeStories,
+} from "./model.js";
 import {
   type AgentError,
   CdpAttachFailed,
@@ -157,9 +161,7 @@ const playCommand = Command.make(
     prose: proseOption,
     screenshots: screenshotsOption,
     maxSec: maxSecOption,
-    model: modelOption.pipe(
-      Options.optional,
-    ),
+    model: modelOption.pipe(Options.optional),
   },
   ({ cdpWs, name, prose, screenshots, maxSec, model }) =>
     Effect.gen(function* () {
@@ -172,9 +174,14 @@ const playCommand = Command.make(
           screenshotsDir: screenshots,
           maxSec,
           attachedAtMs,
-          model: model._tag === "Some" ? model.value : undefined,
         },
         { session: attached.session },
+      ).pipe(
+        Effect.provide(
+          makeLanguageModelLayer(
+            resolveModelId(model._tag === "Some" ? model.value : "opus"),
+          ),
+        ),
       );
       yield* attached.session.close();
       yield* Console.log(JSON.stringify(result));
@@ -215,8 +222,7 @@ const summarizeCommand = Command.make(
         replayUri: decoded.right.replayUri,
         replayJsonUri: decoded.right.replayJsonUri,
         previous: previousMd,
-        model,
-      });
+      }).pipe(Effect.provide(makeLanguageModelLayer(resolveModelId(model))));
       yield* writeFile(out, md);
       yield* Console.log(md);
     }).pipe(Effect.catchAll(reportAndDie)),

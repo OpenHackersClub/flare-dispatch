@@ -156,27 +156,31 @@ export const productDemo = defineRun({
 
       // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
       //    container holds NO ambient credentials — every `sandbox.exec` is
-      //    explicit about which env vars cross the boundary. Three required
-      //    keys (`required: true` so a misconfigured deploy fails fast at
-      //    this step, not deep inside the model loop), one optional key:
-      //      * `AI_GATEWAY_URL`         — the operator's Cloudflare AI Gateway
-      //        URL for Anthropic (BYOK in the gateway). The container never
-      //        sees the upstream Anthropic key.
+      //    explicit about which env vars cross the boundary. The agent's
+      //    model transport is provider-agnostic (built on `@effect/ai`'s
+      //    `LanguageModel` Tag over the OpenAI wire protocol), so the same
+      //    three keys point at OpenAI, Anthropic-via-compat, Workers AI,
+      //    Bedrock-via-compat, Ollama, or any AI Gateway URL — the operator
+      //    picks the upstream by what they configure on the gateway.
+      //      * `MODEL_BASE_URL`         — OpenAI-compatible endpoint URL.
+      //        For production use Cloudflare AI Gateway's
+      //        `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`
+      //        so upstream credentials stay in gateway BYOK.
       //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
       //        Rendering session; the recorder REST URL keys off this.
       //      * `CLOUDFLARE_API_TOKEN`   — same token shape as
       //        `BROWSER_CDP_API_TOKEN` on the Worker. Authorises the
       //        recording REST fetch.
-      //      * `AI_GATEWAY_TOKEN` (optional) — only set when the operator's
-      //        AI Gateway has "Authenticated Gateway" turned on. Loaded with
-      //        `required: false` and merged with the required set.
+      //      * `MODEL_API_KEY` (optional) — set when the operator's chosen
+      //        endpoint requires a direct credential (going around BYOK).
+      //        Empty / unset is fine for the BYOK-via-gateway path.
       //    All keys live under `product-demo.secret/` so the operator can
       //    namespace them away from feature-flag keys.
       const requiredAgentEnv = yield* loadSecrets(
-        ["AI_GATEWAY_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
-      const optionalAgentEnv = yield* loadSecrets(["AI_GATEWAY_TOKEN"], {
+      const optionalAgentEnv = yield* loadSecrets(["MODEL_API_KEY"], {
         prefix: "product-demo.secret/",
       });
       const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };

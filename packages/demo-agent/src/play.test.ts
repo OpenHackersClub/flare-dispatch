@@ -13,13 +13,23 @@
 // fake `pickAction` so the suite runs without a browser or an API key.
 
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
+import { LanguageModel } from "@effect/ai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runPlayLoop } from "./play.js";
 import type { CdpSession } from "./cdp.js";
 import type { ModelAction } from "./schemas.js";
+
+// Stub `LanguageModel` Layer the tests provide. Every test in this file
+// injects `pickAction` directly so the stub's `generateText` is never
+// actually invoked — but the type system still requires the Tag in context
+// after the model.ts refactor, hence the Layer.
+const stubLanguageModelLayer = Layer.succeed(
+  LanguageModel.LanguageModel,
+  null as unknown as LanguageModel.Service,
+);
 
 // Mutable mirror of CdpSession used only in tests so a specific test can
 // monkey-patch one method (e.g. force `click` to fail). The interface itself
@@ -90,7 +100,6 @@ describe("runPlayLoop", () => {
           screenshotsDir: mkTmp(),
           maxSec: 60,
           attachedAtMs: start,
-          model: "opus",
         },
         {
           session,
@@ -100,7 +109,7 @@ describe("runPlayLoop", () => {
             return now;
           },
         },
-      ),
+      ).pipe(Effect.provide(stubLanguageModelLayer)),
     );
     expect(result.status).toBe("passed");
     expect(result.narrative).toContain("dashboard");
@@ -145,7 +154,7 @@ describe("runPlayLoop", () => {
           attachedAtMs: 0,
         },
         { session, pickAction: pickAction as never },
-      ),
+      ).pipe(Effect.provide(stubLanguageModelLayer)),
     );
     expect(result.status).toBe("failed");
     expect(result.narrative).toMatch(/click failed/);
@@ -175,7 +184,7 @@ describe("runPlayLoop", () => {
           attachedAtMs: 0,
         },
         { session, pickAction: pickAction as never },
-      ),
+      ).pipe(Effect.provide(stubLanguageModelLayer)),
     );
     expect(result.keyScreenshotPath).toMatch(/no-key-frame\..*\.png$/);
     expect(session.calls.some((c) => c.method === "screenshot")).toBe(true);
@@ -198,7 +207,7 @@ describe("runPlayLoop", () => {
           attachedAtMs: 0,
         },
         { session, pickAction: pickAction as never },
-      ),
+      ).pipe(Effect.provide(stubLanguageModelLayer)),
     );
     expect(result.status).toBe("failed");
     expect(session.calls.filter((c) => c.method === "wait").length).toBe(3);

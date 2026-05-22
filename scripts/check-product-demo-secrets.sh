@@ -8,15 +8,19 @@
 #       - BROWSER_CDP_API_TOKEN     — token auth for the CDP connect
 #   * CONFIG_KV entries — `loadSecrets` resolves these into the env record
 #     handed to `sandbox.exec`. Set with `wrangler kv key put --binding=CONFIG_KV`.
+#     The agent is provider-agnostic on `@effect/ai`'s LanguageModel Tag over
+#     the OpenAI wire protocol; the choice of provider lives in MODEL_BASE_URL.
 #     Three required + one optional, all namespaced under `product-demo.secret/`:
 #       Required
-#       - product-demo.secret/AI_GATEWAY_URL         (Cloudflare AI Gateway URL
-#                                                    for Anthropic; BYOK)
+#       - product-demo.secret/MODEL_BASE_URL         (OpenAI-compatible endpoint —
+#                                                    AI Gateway `/v1/<acct>/<id>/compat`
+#                                                    is the recommended default)
 #       - product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 #       - product-demo.secret/CLOUDFLARE_API_TOKEN
 #       Optional
-#       - product-demo.secret/AI_GATEWAY_TOKEN       (only when the gateway has
-#                                                    "Authenticated Gateway" on)
+#       - product-demo.secret/MODEL_API_KEY          (only when the chosen endpoint
+#                                                    needs a direct credential; with
+#                                                    AI Gateway BYOK this stays unset)
 #
 # Usage
 #   ./scripts/check-product-demo-secrets.sh                 # check default env
@@ -71,13 +75,13 @@ require_secret BROWSER_CDP_API_TOKEN
 
 echo
 echo "CONFIG_KV entries (product-demo.secret/, required)"
-require_kv_key product-demo.secret/AI_GATEWAY_URL
+require_kv_key product-demo.secret/MODEL_BASE_URL
 require_kv_key product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 require_kv_key product-demo.secret/CLOUDFLARE_API_TOKEN
 
 echo
 echo "CONFIG_KV entries (product-demo.secret/, optional)"
-optional_kv_key product-demo.secret/AI_GATEWAY_TOKEN
+optional_kv_key product-demo.secret/MODEL_API_KEY
 
 echo
 if [[ $missing -eq 0 ]]; then

@@ -120,19 +120,24 @@ export const productDemo = defineRun({
       const perStorySec = input.maxDurationSecPerStory ?? 180;
 
       // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
-      //    container holds NO ambient credentials — every `sandbox.exec` is
-      //    explicit about which env vars cross the boundary. The agent fails
-      //    fast if any of AI_GATEWAY_URL / CLOUDFLARE_ACCOUNT_ID /
-      //    CLOUDFLARE_API_TOKEN is unset. Anthropic itself is hit via the
-      //    operator's Cloudflare AI Gateway (BYOK); the upstream model key
-      //    lives in the gateway settings, never in the container.
-      //    `AI_GATEWAY_TOKEN` is loaded optionally — only required when the
-      //    gateway is set to "Authenticated Gateway".
+      //    container holds NO ambient credentials. The agent is
+      //    provider-agnostic on `@effect/ai`'s `LanguageModel` Tag and speaks
+      //    the OpenAI wire format, so the same three keys point at OpenAI,
+      //    Anthropic-via-compat, Workers AI, Bedrock-via-compat, Ollama, or
+      //    any AI Gateway URL.
+      //      * `MODEL_BASE_URL`         — OpenAI-compatible endpoint URL.
+      //        AI Gateway's `/v1/<account>/<gateway>/compat` is the
+      //        recommended production value.
+      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
+      //        Rendering session.
+      //      * `CLOUDFLARE_API_TOKEN`   — recording REST fetch auth.
+      //      * `MODEL_API_KEY` (optional) — direct credential when not using
+      //        gateway BYOK.
       const requiredAgentEnv = yield* loadSecrets(
-        ["AI_GATEWAY_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
-      const optionalAgentEnv = yield* loadSecrets(["AI_GATEWAY_TOKEN"], {
+      const optionalAgentEnv = yield* loadSecrets(["MODEL_API_KEY"], {
         prefix: "product-demo.secret/",
       });
       const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };

@@ -16,11 +16,12 @@
 // The CdpSession interface keeps the loop unit-testable — `runPlayLoop` takes
 // a fake session in tests, a real puppeteer-backed one in the CLI entry.
 
+import type { LanguageModel } from "@effect/ai";
 import { Effect, Match } from "effect";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { CdpSession } from "./cdp.js";
-import { pickNextAction } from "./anthropic.js";
+import { pickNextAction } from "./model.js";
 import { FsFailed, type AgentError } from "./errors.js";
 import type { ModelAction, PlayOutput } from "./schemas.js";
 
@@ -33,15 +34,13 @@ export type PlayInput = {
   readonly maxActions?: number;
   /** Wall-clock at session attach time — chapter offsets ride off this. */
   readonly attachedAtMs: number;
-  /** Model alias / id forwarded to `pickNextAction`. Default `claude-opus-4-7`. */
-  readonly model?: string;
 };
 
 export type PlayDeps = {
   readonly session: CdpSession;
   /**
    * Inject the action picker for tests. Defaults to the live `pickNextAction`
-   * which calls Anthropic.
+   * which calls the configured `LanguageModel` provider Layer.
    */
   readonly pickAction?: typeof pickNextAction;
   /** Current wall-clock; defaults to `Date.now`. */
@@ -60,7 +59,7 @@ const FINAL_KEY_SCREENSHOT_FALLBACK = "final.png";
 export const runPlayLoop = (
   input: PlayInput,
   deps: PlayDeps,
-): Effect.Effect<PlayOutput, FsFailed> =>
+): Effect.Effect<PlayOutput, FsFailed, LanguageModel.LanguageModel> =>
   Effect.gen(function* () {
     const now = deps.now ?? (() => Date.now());
     const pick = deps.pickAction ?? pickNextAction;
@@ -103,7 +102,6 @@ export const runPlayLoop = (
         snapshot: snapshotResult.right,
         history: [...history],
         secsRemaining,
-        model: input.model,
       }).pipe(Effect.either);
 
       if (actionResult._tag === "Left") {
