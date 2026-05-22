@@ -117,6 +117,13 @@ type DispatchPayload = Schema.Schema.Type<typeof DispatchPayload>;
  * Resolve the `Checks` Layer config from `env` + the dispatch payload, or
  * `undefined` when any of the three required pieces (App id, PEM, installation
  * id) is absent — `undefined` selects the no-op `Checks` Layer.
+ *
+ * `installation_id <= 0` is treated as "absent": the dispatch route already
+ * rejects 0 with a 400, but the scheduled-mode cron path and any direct
+ * Workflow instantiation feed in raw numbers — guarding here too means a stray
+ * 0 degrades to "no check-run posted" instead of dying inside
+ * `getInstallationToken(0)`. Loud failure lives at the dispatch boundary; the
+ * runtime stays resilient.
  */
 const resolveChecksConfig = (
   env: Env,
@@ -125,7 +132,8 @@ const resolveChecksConfig = (
   if (
     env.GITHUB_APP_ID === undefined ||
     env.GITHUB_APP_PRIVATE_KEY === undefined ||
-    github.installation_id === undefined
+    github.installation_id === undefined ||
+    github.installation_id <= 0
   ) {
     return undefined;
   }

@@ -52,10 +52,27 @@ const json = (body: unknown, status: number): Response =>
 
 /**
  * The `github` context a dispatch carries — specs/04-gha-integration.md
- * § Dispatch body. `installation_id` is REQUIRED here (and forwarded into the
- * Workflow `params`) even though PR5 does not consume it: PR6's check-run
- * callback needs it to mint an installation token. `pr_number` / `actor` are
- * optional metadata.
+ * § Dispatch body. `installation_id` is the GitHub App installation id PR6's
+ * check-run callback needs to mint an installation token; it is **optional**
+ * but, when present, MUST be a positive integer.
+ *
+ * The optionality matches the graceful-degradation contract in
+ * `packages/runtime-cf/src/checks-github.ts` (`makeChecksGithubLive(undefined)`
+ * returns a no-op `Checks` service): omitting `installation_id` means "do not
+ * post a check-run — execute and record D1/R2 only". This is the right shape
+ * for local dev, ad-hoc curl dispatches, and CI on repos where the App isn't
+ * installed yet.
+ *
+ * `0` is explicitly rejected (a positive-integer refinement) because the
+ * upstream JS Action defaults the `installation-id` input to `"0"` when unset,
+ * which used to silently flow through to `getInstallationToken(0)` →
+ * `Effect.orDie` (or worse, silently no-op when App secrets were absent),
+ * leaving the PR with no `flare-dispatch/*` check-run even though the
+ * dispatch step reported green. Rejecting 0 at the gate surfaces the
+ * misconfig as a 400 the operator can see in the GHA log on the very first
+ * run, instead of as a missing check-run discovered hours later.
+ *
+ * `pr_number` / `actor` are optional metadata that don't affect execution.
  */
 const GithubContext = Schema.Struct({
   repo: Schema.String,
@@ -65,7 +82,14 @@ const GithubContext = Schema.Struct({
   sha: Schema.String,
   pr_number: Schema.optional(Schema.Number),
   actor: Schema.optional(Schema.String),
-  installation_id: Schema.Number,
+  installation_id: Schema.optional(
+    Schema.Number.pipe(
+      Schema.positive({
+        message: () =>
+          'installation_id must be a positive GitHub App installation id (got 0). Either pass the `installation-id` action input — resolve via `gh api orgs/<org>/installations` — or omit the field entirely to dispatch without posting a check-run.',
+      }),
+    ),
+  ),
 });
 
 /**
@@ -215,7 +239,9 @@ export const handleDispatch = async (
       repo: body.github.repo,
       ref: body.github.ref,
       sha: body.github.sha,
-      installation_id: body.github.installation_id,
+      ...(body.github.installation_id !== undefined
+        ? { installation_id: body.github.installation_id }
+        : {}),
       ...(body.github.pr_number !== undefined
         ? { pr_number: body.github.pr_number }
         : {}),
