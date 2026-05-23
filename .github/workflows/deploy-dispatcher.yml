@@ -1,0 +1,81 @@
+# FlareDispatch Dispatcher Worker — auto-deploy on push to `main`.
+#
+# Why this exists: previously the Worker only redeployed when someone ran
+# `pnpm --filter @flare-dispatch/dispatcher deploy` locally. That makes prod
+# drift from `main` invisibly between manual deploys. This workflow closes the
+# gap so a merged PR reaches prod without a human in the loop.
+#
+# Trigger model:
+#   * push → main, path-filtered to inputs the Worker actually bundles
+#     (apps/dispatcher/**, the workspace packages it depends on, runs/**, the
+#     root wrangler.jsonc, and the Container image / D1 schema under infra/).
+#   * workflow_dispatch — manual replay (re-run a deploy after a secret rotate
+#     or a Cloudflare-side incident without needing an empty commit).
+#
+# Forks / PRs do NOT run this (no Cloudflare secrets, no production target).
+# Cloudflare auth: account-scoped CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+# repo secrets, matching deploy-docs.yml.
+
+name: Deploy dispatcher
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/dispatcher/**
+      - packages/core/**
+      - packages/runtime-cf/**
+      - runs/**
+      - wrangler.jsonc
+      - infra/Dockerfile.sandbox
+      - infra/d1-schema.sql
+      - pnpm-lock.yaml
+      - .github/workflows/deploy-dispatcher.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize deploys on the same ref; do NOT cancel an in-flight deploy — a
+# partially-applied `wrangler deploy` (Workflows + Container + D1 migrations)
+# is worse than queueing the next one.
+concurrency:
+  group: deploy-dispatcher-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: wrangler deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Cheap deterministic guardrail — fail before touching Cloudflare if the
+      # Worker no longer typechecks. ci.yml already runs this on the PR; this
+      # is the belt-and-braces check at deploy time in case `main` is being
+      # deployed via workflow_dispatch from a non-CI state.
+      - name: Typecheck dispatcher
+        run: pnpm --filter @flare-dispatch/dispatcher typecheck
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # wrangler.jsonc lives at the repo root and points `main` at
+          # apps/dispatcher/src/index.ts. Run from the root so wrangler picks
+          # it up without --config.
+          command: deploy
