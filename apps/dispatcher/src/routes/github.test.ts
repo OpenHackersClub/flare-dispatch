@@ -59,8 +59,29 @@ describe("htmlEscape", () => {
 // `GET /v1/github/install/new`
 // ---------------------------------------------------------------------------
 
-describe("GET /v1/github/install/new", () => {
-  it("returns 200 text/html with auto-submitting form pointed at github.com", async () => {
+// Helper: parse the hidden `manifest` input from a rendered form page back
+// into its JSON object, reversing the HTML-entity escapes we know we produce.
+const extractManifest = (body: string) => {
+  const match = body.match(
+    /<input type="hidden" name="manifest" value="([^"]+)"/,
+  );
+  expect(match).not.toBeNull();
+  const escaped = match![1]!;
+  const json = escaped
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&");
+  return JSON.parse(json) as {
+    url: string;
+    hook_attributes: { url: string };
+    redirect_url: string;
+  };
+};
+
+describe("GET /v1/github/install/new (owner chooser)", () => {
+  it("renders the owner chooser when no `owner` query is supplied", async () => {
     const env = makeEnv();
     const res = await handleRequest(new Request(INSTALL_NEW_URL), env);
 
@@ -69,57 +90,18 @@ describe("GET /v1/github/install/new", () => {
       "text/html; charset=utf-8",
     );
     const body = await res.text();
-    // Form action lands at GitHub's manifest-create endpoint with a state.
-    expect(body).toMatch(
-      /<form[^>]+method="post"[^>]+action="https:\/\/github\.com\/settings\/apps\/new\?state=[^"]+"/,
-    );
-    // Auto-submit script + no-JS fallback button both present.
-    expect(body).toContain("document.getElementById('manifest-form').submit()");
-    expect(body).toContain("<noscript>");
-  });
-
-  it("substitutes the request origin into manifest url, hook_attributes.url, and redirect_url", async () => {
-    const env = makeEnv();
-    const res = await handleRequest(new Request(INSTALL_NEW_URL), env);
-    const body = await res.text();
-
-    // Extract the hidden manifest value — the HTML attribute is escaped, so
-    // we run the page output through reverse-escape on the captured group.
-    const match = body.match(
-      /<input type="hidden" name="manifest" value="([^"]+)"/,
-    );
-    expect(match).not.toBeNull();
-    const escaped = match![1]!;
-    // Reverse the entities we know we produce. `&quot;` is the load-bearing
-    // one for JSON; the rest are belt-and-braces.
-    const json = escaped
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&gt;/g, ">")
-      .replace(/&lt;/g, "<")
-      .replace(/&amp;/g, "&");
-    const manifest = JSON.parse(json) as {
-      url: string;
-      hook_attributes: { url: string };
-      redirect_url: string;
-    };
-
-    expect(manifest.url).toBe(ORIGIN);
-    expect(manifest.hook_attributes.url).toBe(`${ORIGIN}/v1/webhooks/github`);
-    expect(manifest.redirect_url).toBe(`${ORIGIN}/v1/github/installed`);
-    // The placeholder host MUST be gone from every URL.
-    expect(JSON.stringify(manifest)).not.toContain("runs.example.com");
-  });
-
-  it("works against a localhost origin (wrangler dev)", async () => {
-    // `handleInstallNew` is exported directly so we can unit-test the origin
-    // logic without the router's text-only assertions.
-    const res = handleInstallNew(
-      new Request("http://localhost:8787/v1/github/install/new"),
-    );
-    const body = await res.text();
-    expect(body).toContain("http://localhost:8787/v1/github/installed");
-    expect(body).toContain("http://localhost:8787/v1/webhooks/github");
+    // Two GET forms — one for personal (hidden empty `owner`), one for org
+    // (text input for the org login). Both target /install/new itself.
+    expect(body).toContain('action="/v1/github/install/new"');
+    expect(body).toContain('name="owner" value=""');
+    // Text input for the org login (attribute order isn't load-bearing — assert
+    // both attrs appear on the same `<input>` tag without pinning their order).
+    expect(body).toMatch(/<input\b[^>]*\btype="text"[^>]*\bname="owner"|<input\b[^>]*\bname="owner"[^>]*\btype="text"/);
+    // No auto-submit + no github.com action on the chooser — those are the
+    // next step, after a choice is made.
+    expect(body).not.toContain("document.getElementById('manifest-form')");
+    expect(body).not.toContain("github.com/settings/apps/new");
+    expect(body).not.toContain("github.com/organizations/");
   });
 
   it("405s a non-GET method", async () => {
@@ -129,6 +111,116 @@ describe("GET /v1/github/install/new", () => {
       env,
     );
     expect(res.status).toBe(405);
+  });
+});
+
+describe("GET /v1/github/install/new?owner= (personal account)", () => {
+  it("returns 200 text/html with auto-submitting form pointed at github.com/settings/apps/new", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(
+      new Request(`${INSTALL_NEW_URL}?owner=`),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "text/html; charset=utf-8",
+    );
+    const body = await res.text();
+    expect(body).toMatch(
+      /<form[^>]+method="post"[^>]+action="https:\/\/github\.com\/settings\/apps\/new\?state=[^"]+"/,
+    );
+    expect(body).toContain("document.getElementById('manifest-form').submit()");
+    expect(body).toContain("<noscript>");
+  });
+
+  it("substitutes the request origin into manifest url, hook_attributes.url, and redirect_url", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(
+      new Request(`${INSTALL_NEW_URL}?owner=`),
+      env,
+    );
+    const manifest = extractManifest(await res.text());
+
+    expect(manifest.url).toBe(ORIGIN);
+    expect(manifest.hook_attributes.url).toBe(`${ORIGIN}/v1/webhooks/github`);
+    expect(manifest.redirect_url).toBe(`${ORIGIN}/v1/github/installed`);
+    expect(JSON.stringify(manifest)).not.toContain("runs.example.com");
+  });
+
+  it("works against a localhost origin (wrangler dev)", async () => {
+    // `handleInstallNew` is exported directly so we can unit-test the origin
+    // logic without the router's text-only assertions.
+    const res = handleInstallNew(
+      new Request("http://localhost:8787/v1/github/install/new?owner="),
+    );
+    const body = await res.text();
+    expect(body).toContain("http://localhost:8787/v1/github/installed");
+    expect(body).toContain("http://localhost:8787/v1/webhooks/github");
+  });
+});
+
+describe("GET /v1/github/install/new?owner=<org> (org-owned)", () => {
+  it("renders an auto-submitting form pointed at /organizations/<org>/settings/apps/new", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(
+      new Request(`${INSTALL_NEW_URL}?owner=acme-corp`),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toMatch(
+      /<form[^>]+action="https:\/\/github\.com\/organizations\/acme-corp\/settings\/apps\/new\?state=[^"]+"/,
+    );
+    // Owner label surfaced in the body so the operator sees it before the
+    // browser auto-submits.
+    expect(body).toContain("<code>acme-corp</code>");
+    // Origin substitution still works (regression).
+    const manifest = extractManifest(body);
+    expect(manifest.url).toBe(ORIGIN);
+  });
+
+  it("URL-encodes the org login on the form action", () => {
+    // The validator excludes most URL-unsafe characters, but defense in depth:
+    // a hyphen-prefixed login is rejected upstream (LOGIN_RE requires a
+    // leading alphanumeric), so we test a digit-heavy login that's valid.
+    const res = handleInstallNew(
+      new Request(`${INSTALL_NEW_URL}?owner=A1-B2-C3`),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("400 JSON when `owner` fails the login grammar", async () => {
+    const env = makeEnv();
+    // Leading dash — invalid GitHub login.
+    const res = await handleRequest(
+      new Request(`${INSTALL_NEW_URL}?owner=-bad`),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    const payload = (await res.json()) as { error: string };
+    expect(payload.error).toBe("invalid_owner");
+  });
+
+  it("400 JSON when `owner` exceeds the 39-char cap", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(
+      new Request(`${INSTALL_NEW_URL}?owner=${"a".repeat(40)}`),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("400 JSON when `owner` contains an HTML metacharacter", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(
+      // Raw `<` would HTML-break the form action if it slipped past validation.
+      new Request(`${INSTALL_NEW_URL}?owner=${encodeURIComponent("<script>")}`),
+      env,
+    );
+    expect(res.status).toBe(400);
   });
 });
 
@@ -146,6 +238,7 @@ const validConversion = (overrides: Record<string, unknown> = {}) => ({
   pem: "-----BEGIN RSA PRIVATE KEY-----\nMIIE...keyline2...keyline3...\n-----END RSA PRIVATE KEY-----",
   client_id: "Iv1.abc123def456",
   client_secret: "client_secret_value",
+  owner: { login: "acme-corp" },
   ...overrides,
 });
 
@@ -176,6 +269,7 @@ describe("GET /v1/github/installed", () => {
     const body = await res.text();
     expect(body).toContain("flaredispatch-test"); // slug
     expect(body).toContain("FlareDispatch (test)"); // name
+    expect(body).toContain("acme-corp"); // owner.login surfaced
     expect(body).toContain("wrangler secret put GITHUB_APP_ID");
     expect(body).toContain("wrangler secret put GITHUB_WEBHOOK_SECRET");
     expect(body).toContain("wrangler secret put GITHUB_APP_PRIVATE_KEY");
