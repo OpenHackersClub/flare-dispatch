@@ -260,6 +260,8 @@ Deployments that use **only** the App-webhook trigger (no GHA Action, no externa
 
 ## GitHub App setup
 
+> **The GitHub App is BYOC too — there is no trusted central app.** Each operator creates their own FlareDispatch App in their own GitHub org via the App Manifest flow below. The App's PKCS#8 private key, webhook secret, and client secret are stored in the operator's own Cloudflare Worker Secrets and never leave their account — the FlareDispatch project ships only the *manifest template* (`infra/github-app-manifest.json`), not a shared App on the GitHub Marketplace. You install your App on your org/repos; trust ends at the operator's CF account. See [07-trust-model § Compromised GitHub App installation](07-trust-model.md#compromised-github-app-installation-leaked-app-private-key) for the resulting blast radius (it stops at one operator's installations).
+
 A manifest ships in `infra/github-app-manifest.json`:
 
 ```json

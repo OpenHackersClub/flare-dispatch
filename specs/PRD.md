@@ -64,12 +64,11 @@ flowchart LR
 A team installs runs by:
 
 1. Forking or cloning a template repo.
-2. Setting Workers Secrets (GitHub App key, HMAC secret).
-3. `wrangler deploy`.
-4. Installing the companion GitHub App on their org/repos.
-5. Adding `uses: openhackersclub/flare-dispatch-action@v1` to their workflow (Action mode), or just letting the App webhook fire runs (Webhook mode).
+2. `wrangler deploy` the Dispatcher into their own Cloudflare account.
+3. Visiting the Dispatcher's `/v1/github/install/new` to **create their own GitHub App** via the App Manifest flow (the project ships a manifest *template*, not a shared App on the Marketplace), then stashing the App's id / private key / webhook secret into Workers Secrets and installing that App on their org/repos.
+4. Adding `uses: openhackersclub/flare-dispatch-action@v1` to their workflow (Action mode), or just letting their App's webhook fire runs (Webhook mode — Planned V1).
 
-After that, each PR fires runs against the team's own Cloudflare bill. The project supplies the runs, the GHA Action, and the Effect-TS DSL packages. The team supplies the account. Full deploy guide in [05-byoc](05-byoc.md).
+After that, each PR fires runs against the team's own Cloudflare bill. The project supplies the runs, the GHA Action, the Effect-TS DSL packages, and the App manifest template. The team supplies the account *and* the App — both are BYOC; nothing routes through an openhackersclub-operated control plane. Full deploy guide in [05-byoc](05-byoc.md); trust posture in [07-trust-model](07-trust-model.md).
 
 ## Non-goals
 
