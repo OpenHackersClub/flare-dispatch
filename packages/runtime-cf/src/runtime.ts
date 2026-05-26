@@ -109,7 +109,11 @@ export const makeCFRuntimeLive = (
     currentExecutionId: opts.executionId,
   });
   const executions = makeD1ExecutionsLive(opts.db, opts.execution);
-  const artifact = makeR2ArtifactLive(opts.bucket, opts.executionId);
+  const artifact = makeR2ArtifactLive(
+    opts.bucket,
+    opts.executionId,
+    opts.sandboxNs,
+  );
   const sandbox = makeSandboxCloudflareLive(
     opts.sandboxNs,
     opts.bucket,
