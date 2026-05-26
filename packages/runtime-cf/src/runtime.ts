@@ -61,10 +61,16 @@ export type CFRuntimeLiveOptions = {
   /** repo/ref/sha/input the `executions` row requires. */
   readonly execution: ExecutionContext;
   /**
-   * GitHub App credentials + installation id for the `Checks` capability.
-   * `undefined` (no `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` secret, or a
-   * dispatch with no `installation_id`) selects the no-op `Checks` Layer —
-   * the execution still runs, only the PR check-run is skipped.
+   * GitHub App credentials + installation id for the `Checks` capability
+   * (PR check-run posting) AND the `Sandbox` capability's `gitClone`
+   * (private-repo HTTPS auth). `undefined` (no `GITHUB_APP_ID` /
+   * `GITHUB_APP_PRIVATE_KEY` secret, or a dispatch with no `installation_id`)
+   * selects the no-op `Checks` Layer + unauthenticated clone — the execution
+   * still runs against public repos, only the PR check-run is skipped.
+   *
+   * One config powers both capabilities: a dispatch that can post a check-run
+   * to a repo can also mint a fresh installation token for cloning the same
+   * repo, so a second field would diverge silently. Pass once.
    */
   readonly checks?: ChecksGithubConfig;
   /**
@@ -108,6 +114,7 @@ export const makeCFRuntimeLive = (
     opts.sandboxNs,
     opts.bucket,
     opts.executionId,
+    opts.checks,
   );
   const stepRunner = makeStepRunnerCloudflare(
     opts.workflowStep,

@@ -54,14 +54,14 @@ import {
   Sandbox as SandboxTag,
   type SandboxService,
 } from "@flare-dispatch/core";
+import { getInstallationToken } from "@flare-dispatch/github-app";
+import type { ChecksGithubConfig } from "./checks-github";
+import { authenticateCloneUrl, repoUrl } from "./sandbox-clone-url";
 
 /** Normalise a `command` (string | array) to a single shell string. */
 const asCommand = (command: string | readonly string[]): string =>
   typeof command === "string" ? command : command.join(" ");
 
-/** Build a clone URL from an `owner/name` slug. */
-const repoUrl = (repo: string): string =>
-  repo.startsWith("http") ? repo : `https://github.com/${repo}.git`;
 
 /**
  * Build the live `Sandbox` Layer bound to the Containers binding.
@@ -74,11 +74,17 @@ const repoUrl = (repo: string): string =>
  * @param ns           the `RUNS_SANDBOX` DurableObjectNamespace<Sandbox>.
  * @param bucket       the R2 binding — exec log NDJSON sink.
  * @param executionId  the current execution; the sandbox id + R2 log prefix.
+ * @param githubAuth   GitHub App credentials + installation id. When present,
+ *                     `gitClone` authenticates the GitHub HTTPS clone URL with
+ *                     a short-lived installation token so private repositories
+ *                     are reachable. When absent, clones are unauthenticated
+ *                     — the public-repo path is unchanged.
  */
 export const makeSandboxCloudflareLive = (
   ns: DurableObjectNamespace<Sandbox>,
   bucket: R2Bucket,
   executionId: string,
+  githubAuth?: ChecksGithubConfig,
 ): Layer.Layer<SandboxTag> => {
   // The per-execution sandbox client. `getSandbox` is cheap — the container is
   // provisioned lazily on first use — so resolving it once per Layer build is
@@ -125,7 +131,18 @@ export const makeSandboxCloudflareLive = (
       Effect.tryPromise({
         try: async () => {
           const targetDir = `/workspace/${repo.split("/").pop() ?? "repo"}`;
-          await box.gitCheckout(repoUrl(repo), { targetDir });
+          // Authenticate the clone URL when GitHub App credentials are wired
+          // (private-repo case). The token is short-lived (~1h) and never
+          // leaves the Worker — it is embedded in the URL passed to the
+          // sandbox's `gitCheckout`, which uses it once for the initial
+          // fetch. Public repos and operator-supplied custom URLs skip the
+          // rewrite (see `authenticateCloneUrl`).
+          let cloneUrl = repoUrl(repo);
+          if (githubAuth !== undefined) {
+            const token = await getInstallationToken(githubAuth);
+            cloneUrl = authenticateCloneUrl(cloneUrl, token);
+          }
+          await box.gitCheckout(cloneUrl, { targetDir });
           // `gitCheckout` clones a branch tip; pin the exact SHA so the run is
           // reproducible. A bare clone leaves the repo at the default branch.
           const checkout = await box.exec(`git checkout ${sha}`, {
