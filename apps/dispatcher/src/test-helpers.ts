@@ -30,19 +30,33 @@ export interface FakeWorkflow {
 }
 
 export const makeFakeWorkflow = (
-  opts: { rejectSendEventFor?: ReadonlySet<string> } = {},
+  opts: {
+    rejectSendEventFor?: ReadonlySet<string>;
+    /**
+     * Ids that `create` should reject with the same shape CF Workflows
+     * raises on duplicate-id creates: `Error: (instance.already_exists)
+     * Instance already exists`. Used to exercise the dispatcher's
+     * duplicate-create catch.
+     */
+    throwAlreadyExistsFor?: ReadonlySet<string>;
+  } = {},
 ): FakeWorkflow => {
   const calls: WorkflowCreateCall[] = [];
   const events: WorkflowSendEventCall[] = [];
   const reject = opts.rejectSendEventFor ?? new Set<string>();
+  const alreadyExists = opts.throwAlreadyExistsFor ?? new Set<string>();
   const binding = {
     create: async (options?: { id?: string; params?: unknown }) => {
+      const id = options?.id ?? "";
+      if (alreadyExists.has(id)) {
+        throw new Error(`(instance.already_exists) Instance already exists`);
+      }
       calls.push({
-        id: options?.id ?? "",
+        id,
         params: options?.params,
       });
       return {
-        id: options?.id ?? "",
+        id,
         status: async () => ({ status: "queued" }),
       };
     },

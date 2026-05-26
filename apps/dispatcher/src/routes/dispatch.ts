@@ -220,8 +220,8 @@ export const handleDispatch = async (
 
   // 7. Receiver-level dedup short-circuit. With IDEMPOTENCY_KV bound, a
   //    repeat delivery returns 202 immediately without touching Workflows.
-  //    Without the KV, dedup falls back to CF Workflows' duplicate-create
-  //    no-op (same end-state, one wasted RPC per redelivery).
+  //    Without the KV, the duplicate-create catch in step 8 supplies the
+  //    same end-state at the cost of one wasted Workflows RPC.
   if (env.IDEMPOTENCY_KV !== undefined) {
     const existing = await env.IDEMPOTENCY_KV.get(executionId);
     if (existing !== null) {
@@ -249,7 +249,17 @@ export const handleDispatch = async (
     inputs,
   };
 
-  await env.RUNS_WORKFLOW.create({ id: executionId, params });
+  // CF Workflows rejects a `create({id})` whose id has been seen before with
+  // `instance.already_exists` — including ids whose instances have since been
+  // terminated. The dispatcher's idempotency contract is "same {run, repo,
+  // sha} → same execution", so a duplicate create on a known id is the
+  // intended end-state and we swallow it. Any other failure must propagate.
+  try {
+    await env.RUNS_WORKFLOW.create({ id: executionId, params });
+  } catch (cause) {
+    const msg = cause instanceof Error ? cause.message : String(cause);
+    if (!/already_exists/i.test(msg)) throw cause;
+  }
 
   // 9. Record the dedup key AFTER the Workflow create succeeds — a failed
   //    create must remain retryable (the second attempt would otherwise be
