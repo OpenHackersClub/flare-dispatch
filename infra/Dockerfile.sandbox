@@ -16,3 +16,35 @@
 # Spec: specs/pm/plan.md § 6 "Sandbox / Containers binding API".
 
 FROM docker.io/cloudflare/sandbox:0.10.1
+
+# Node 24 (LTS) alongside the base image's Node.
+#
+# The base image (cloudflare/sandbox:0.10.1) ships Node 22, which the
+# `@cloudflare/sandbox` RPC server is compiled against. Modern monorepos that
+# pin `engines.node: ">=24"` (and other consumers that need newer V8 / built-in
+# globals) fail their `pnpm install` / `playwright test` when only Node 22 is on
+# PATH inside `sandbox.exec`.
+#
+# Strategy: install Node 24 into `/opt/node24` as a tarball (binary-only, no
+# package manager involvement) and prepend its `bin/` to PATH. The base image's
+# bundled Node stays exactly where it was — the sandbox RPC server keeps using
+# whichever Node it was built against — and user commands inside `sandbox.exec`
+# resolve `node`/`npm`/`npx` to Node 24 first.
+#
+# Multi-arch: Cloudflare Containers runs on linux/amd64; we still detect arch
+# at build time so the same Dockerfile works for local linux/arm64 development
+# (e.g. on Apple Silicon).
+ARG NODE24_VERSION=24.16.0
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+        x86_64) node_arch=linux-x64 ;; \
+        aarch64) node_arch=linux-arm64 ;; \
+        *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE24_VERSION}/node-v${NODE24_VERSION}-${node_arch}.tar.gz" -o /tmp/node24.tar.gz; \
+    mkdir -p /opt/node24; \
+    tar -xzf /tmp/node24.tar.gz -C /opt/node24 --strip-components=1; \
+    rm /tmp/node24.tar.gz; \
+    /opt/node24/bin/node --version
+ENV PATH=/opt/node24/bin:$PATH
