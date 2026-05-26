@@ -81,8 +81,15 @@ const errorOf = async (res: Response): Promise<string> => {
   return body.error ?? "";
 };
 
-const fixture = (opts: { withIdempotencyKv?: boolean } = {}) => {
-  const workflow = makeFakeWorkflow();
+const fixture = (
+  opts: {
+    withIdempotencyKv?: boolean;
+    throwAlreadyExistsFor?: ReadonlySet<string>;
+  } = {},
+) => {
+  const workflow = makeFakeWorkflow({
+    throwAlreadyExistsFor: opts.throwAlreadyExistsFor,
+  });
   const storage = makeFakeR2();
   const idempotencyKv = opts.withIdempotencyKv ? makeFakeKv() : undefined;
   const env = makeFakeEnv({
@@ -440,10 +447,45 @@ describe("POST /v1/dispatch/:run — dedup", () => {
     const bodyText = JSON.stringify(validBody);
     await handleRequest(await dispatchRequest("offload-test", bodyText), env);
     await handleRequest(await dispatchRequest("offload-test", bodyText), env);
-    // Two create calls, both with the same semantic id — CF Workflows dedups
-    // at the platform level. (Our fake doesn't simulate that.)
+    // Two create calls, both with the same semantic id — CF Workflows
+    // rejects the second with `instance.already_exists`, which the
+    // dispatcher catches and returns 202 for (covered by the next test
+    // — this one only exercises that the id derivation is stable).
     expect(workflow.calls).toHaveLength(2);
     expect(workflow.calls[0]!.id).toBe(workflow.calls[1]!.id);
+  });
+
+  it("Workflow.create raising instance.already_exists → 202, no error to caller", async () => {
+    const semanticId = "offload-test:owner_test-repo:abc123def456";
+    const { env, workflow } = fixture({
+      throwAlreadyExistsFor: new Set([semanticId]),
+    });
+    const bodyText = JSON.stringify(validBody);
+    const res = await handleRequest(
+      await dispatchRequest("offload-test", bodyText),
+      env,
+    );
+
+    expect(res.status).toBe(202);
+    const payload = (await res.json()) as { executionId: string };
+    expect(payload.executionId).toBe(semanticId);
+    // The throwing create attempt is not recorded as a successful call.
+    expect(workflow.calls).toHaveLength(0);
+  });
+
+  it("Workflow.create raising a non-already_exists error → propagates", async () => {
+    const { env } = fixture();
+    // Inject a workflow whose create always throws an unrelated error.
+    (env as unknown as { RUNS_WORKFLOW: unknown }).RUNS_WORKFLOW = {
+      create: async () => {
+        throw new Error("internal_storage_unavailable");
+      },
+    };
+
+    const bodyText = JSON.stringify(validBody);
+    await expect(
+      handleRequest(await dispatchRequest("offload-test", bodyText), env),
+    ).rejects.toThrow(/internal_storage_unavailable/);
   });
 });
 
