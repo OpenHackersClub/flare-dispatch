@@ -1,25 +1,60 @@
 // @flare-dispatch/runtime-cf — R2ArtifactLive: the live `artifact` capability.
 //
-// Backs `ArtifactService` with the R2 bucket binding. `artifact.upload({ name,
-// path })` takes a *source R2 key* in `path` — `offload-test` passes
-// `result.logPath`, the `logs/<execId>/<step>.ndjson` key that
-// `SandboxCloudflareLive.exec` already streamed the captured output to. Upload
-// copies that object to the stable `artifacts/<execId>/<name>` key and returns
-// a `/v1/artifacts/<execId>/<name>` URL.
+// Backs `ArtifactService` with the R2 bucket binding. Two upload modes:
+//
+//   1. **R2-source-key mode** — `artifact.upload({ name, path })` with no
+//      `container`. `path` is an existing R2 object key (e.g. the
+//      `logs/<execId>/<step>.ndjson` key `SandboxCloudflareLive.exec`
+//      streamed). The object is copied to the stable `artifacts/<execId>/<name>`
+//      key. This is the path `offload-test` rides on.
+//
+//   2. **Container-tar mode** — `artifact.upload({ name, path, container })`.
+//      `path` is a filesystem path inside the sandbox container (typically a
+//      directory: a Playwright `outputDir`, a built site, a coverage tree).
+//      The path is tarred + gzipped inside the container and the resulting
+//      bytes are streamed to R2 under the same stable key. This is the path
+//      `playwright-demo` and any run that wants to ship a directory of files
+//      from the sandbox rides on.
+//
+// Either way, the returned URL is `/v1/artifacts/<execId>/<name>` — a stable
+// path served by the Dispatcher's `GET /v1/artifacts/:execution/:name` route.
 //
 // --- Scope, documented (specs/pm/plan.md § 6 "Artifact endpoint scope") ------
 //
-// The returned URL is the *stable artifact path*, not yet a signed URL: the
-// `GET /v1/artifacts/:execution/:name` Dispatcher route that signs an R2 URL
-// and 302-redirects is PR5. A `/v1/artifacts/...`-shaped path is exactly what
-// PR4's plan calls for ("a stable `/v1/artifacts/...`-shaped path is fine — the
-// signing endpoint itself is PR5"). The check-run summary's "view logs" link
-// resolves once PR5 lands the route.
+// `signedUrlTTL` is accepted on the `upload` opts (the `ArtifactService`
+// interface declares it) but is **not yet enforced** by this layer — every
+// caller receives the same `/v1/artifacts/...` URL the dispatcher serves
+// without per-request TTL semantics. Wiring a signed-token query param +
+// TTL check on the artifact route is the natural next step; the current
+// behaviour matches the V0 commitment ("a stable `/v1/artifacts/...`-shaped
+// path is fine — the signing endpoint itself is PR5").
+//
+// --- Verification scope -------------------------------------------------------
+//
+// The container branch (`box.exec` for tar + `readFileStream` for upload)
+// cannot run in `vitest-pool-workers` — Miniflare has no container runtime,
+// same constraint as `sandbox-cf.ts` and `cache-r2.ts`. Pure helpers
+// (`splitTarPath`, `containerTarballPath`) live in `artifact-tar-path.ts`
+// with their own unit tests; the orchestration here is verified by typecheck
+// + `wrangler deploy --dry-run` + a `wrangler dev` acceptance.
 //
 // Spec: specs/03-dsl.md § artifact, specs/05-byoc.md § R2 layout, plan § PR4.
 
+// `getSandbox` is dynamically imported inside the container-tar branch so the
+// top-level module stays loadable under plain Node Vitest — the existing
+// R2-source-key tests in `artifact-r2.test.ts` would otherwise fail to import
+// the SDK's transitive `@cloudflare/containers` runtime. Same trick the rest
+// of `runtime-cf` avoids by colocating sandbox-bound code in `cache-r2.ts` /
+// `sandbox-cf.ts`; here both branches live in one file because they share the
+// `R2ArtifactLive` Service shape.
+import type { Sandbox } from "@cloudflare/sandbox";
 import { Effect, Layer } from "effect";
-import { Artifact, ArtifactUploadFailed, type ArtifactService } from "@flare-dispatch/core";
+import {
+  Artifact,
+  ArtifactUploadFailed,
+  type ArtifactService,
+} from "@flare-dispatch/core";
+import { containerTarballPath, splitTarPath } from "./artifact-tar-path";
 
 /** R2 key prefix for per-execution artifacts. */
 const artifactKey = (executionId: string, name: string): string =>
@@ -34,26 +69,74 @@ const artifactUrl = (executionId: string, name: string): string =>
  *
  * @param bucket       the R2 binding (`env.RUNS_STORAGE`).
  * @param executionId  the current execution — namespaces the artifact key.
+ * @param ns           the `RUNS_SANDBOX` DurableObjectNamespace<Sandbox>,
+ *                     supplied when a run might invoke container-tar mode
+ *                     (every production wire-up). `undefined` in unit tests
+ *                     that only exercise R2-source-key mode; a call into the
+ *                     container branch without `ns` fails with a clear error.
  */
 export const makeR2ArtifactLive = (
   bucket: R2Bucket,
   executionId: string,
+  ns?: DurableObjectNamespace<Sandbox>,
 ): Layer.Layer<Artifact> => {
   const service: ArtifactService = {
-    upload: ({ name, path, contentType }) =>
+    upload: ({ name, path, contentType, container }) =>
       Effect.tryPromise({
         try: async () => {
           const key = artifactKey(executionId, name);
-          // `path` is a source R2 key (the exec step's log). Read it and
-          // re-write it under the stable artifact key. A missing source is a
-          // genuine upload failure — surfaced as `ArtifactUploadFailed` below.
+
+          if (container !== undefined) {
+            // Container-tar mode — tar the on-disk `path` inside the sandbox
+            // and stream the archive into R2. Mirrors the cache-r2.ts pattern
+            // (`tar czf` + `readFileStream` + buffer + `bucket.put`).
+            if (ns === undefined) {
+              throw new Error(
+                "artifact.upload({ container }) called but no Sandbox namespace was wired into R2ArtifactLive — see makeR2ArtifactLive's `ns` argument",
+              );
+            }
+            const { getSandbox } = await import("@cloudflare/sandbox");
+            const box = getSandbox(ns, container.id);
+            const { parent, basename } = splitTarPath(path);
+            if (basename === "") {
+              throw new Error(
+                `artifact.upload: path "${path}" has no basename to tar`,
+              );
+            }
+            const tarballPath = containerTarballPath(
+              name,
+              crypto.randomUUID().slice(0, 8),
+            );
+            const tar = await box.exec(
+              `tar czf ${tarballPath} -C ${parent} ${basename}`,
+            );
+            if (tar.exitCode !== 0) {
+              throw new Error(
+                `tar czf exited ${tar.exitCode}: ${tar.stderr.trim()}`,
+              );
+            }
+            // R2 `put` requires a known length, so the archive is buffered.
+            // Container-emitted artifacts (a Playwright outputDir, a built
+            // site) are typically a few MB; well within a Worker's memory
+            // budget. For genuinely large artifacts a future revision can
+            // chunk via `bucket.createMultipartUpload`.
+            const stream = await box.readFileStream(tarballPath);
+            const body = await new Response(stream).arrayBuffer();
+            await bucket.put(key, body, {
+              httpMetadata: {
+                contentType: contentType ?? "application/gzip",
+              },
+            });
+            return artifactUrl(executionId, name);
+          }
+
+          // R2-source-key mode — `path` is an existing R2 object (a step log
+          // SandboxCloudflareLive.exec already streamed). Copy it to the
+          // stable artifact key.
           const source = await bucket.get(path);
           if (source === null) {
             throw new Error(`artifact source object not found at key "${path}"`);
           }
-          // Materialise the source bytes — R2 `put` rejects a raw
-          // `ReadableStream` of unknown length, and the V0 artifacts (step
-          // logs) are small enough to buffer.
           const body = await source.arrayBuffer();
           await bucket.put(key, body, {
             httpMetadata: {
