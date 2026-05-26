@@ -5,12 +5,26 @@
 // setup):
 //
 //   GET /v1/github/install/new
-//     Renders an HTML page with a self-submitting `<form>` POST to
-//     `https://github.com/settings/apps/new?state=<csrf>`. The form carries the
-//     `manifest` JSON pulled from `infra/github-app-manifest.json` with the
-//     placeholder `runs.example.com` URLs rewritten to the current Dispatcher's
-//     own origin (derived from `request.url`) — so the same code works on
-//     `*.workers.dev`, a custom domain, and `wrangler dev`.
+//     Without `?owner` — renders a chooser asking whether the App should be
+//     owned by the operator's personal account or by an org (text input for
+//     the org login). The chooser submits back to the same path with the
+//     `owner` query set.
+//
+//     With `?owner=` (empty) — renders a self-submitting `<form>` POST to
+//     `https://github.com/settings/apps/new?state=<csrf>` (personal owner).
+//
+//     With `?owner=<org>` — same shape but POSTs to
+//     `https://github.com/organizations/<org>/settings/apps/new?state=<csrf>`
+//     so the resulting App is owned by `<org>`, not by the signed-in user.
+//     Org-owned Apps survive a single admin leaving; personal-owned ones
+//     don't. Validated server-side against the GitHub login grammar
+//     (alphanumeric + single dashes, ≤39 chars); invalid → 400.
+//
+//     In every case the form carries the `manifest` JSON pulled from
+//     `infra/github-app-manifest.json` with the placeholder `runs.example.com`
+//     URLs rewritten to the current Dispatcher's own origin (derived from
+//     `request.url`) — so the same code works on `*.workers.dev`, a custom
+//     domain, and `wrangler dev`.
 //
 //   GET /v1/github/installed?code=<code>&state=<state>
 //     GitHub's `redirect_url` callback. Exchanges `code` for the App's
@@ -139,20 +153,111 @@ const jsonError = (
   });
 
 /**
+ * GitHub login grammar: a leading alphanumeric followed by ≤38 alphanumerics
+ * or single dashes. Real GitHub also forbids consecutive dashes and a trailing
+ * dash, but those finer rules are GitHub's to enforce — a too-strict regex
+ * here would refuse logins the user could legitimately create. The intent of
+ * this check is to make sure the value is safe to splat into a URL path and
+ * an HTML attribute, not to perfectly mirror GitHub's reserved-name list.
+ */
+const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+
+/**
+ * Build the form action URL for a given owner choice.
+ *   - `""`        → personal-account App   → `/settings/apps/new`
+ *   - `"<org>"`   → org-owned App          → `/organizations/<org>/settings/apps/new`
+ *
+ * `org` is `encodeURIComponent`'d defensively, even though the validator
+ * already restricts the input to URL-safe characters — same belt-and-braces
+ * rule as `dispatch.ts`'s `encodeURIComponent(run)`.
+ */
+const formActionForOwner = (owner: string, state: string): string => {
+  const safeState = encodeURIComponent(state);
+  if (owner === "") {
+    return `https://github.com/settings/apps/new?state=${safeState}`;
+  }
+  return `https://github.com/organizations/${encodeURIComponent(owner)}/settings/apps/new?state=${safeState}`;
+};
+
+/**
+ * The owner-chooser page — rendered when `/install/new` is hit without an
+ * `owner` query param. Two GET-submit forms route the operator back to
+ * `/install/new?owner=` (personal) or `/install/new?owner=<input>` (org).
+ *
+ * The org form uses a `pattern` attribute as a client-side hint; the
+ * server-side validator in `handleInstallNew` is the real enforcement.
+ */
+const renderOwnerChooser = (): string => `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>FlareDispatch — Choose App owner</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
+    button { font: inherit; padding: 0.5rem 1rem; cursor: pointer; }
+    input[type="text"] { font: inherit; padding: 0.4rem 0.6rem; min-width: 16rem; }
+    code { font-family: ui-monospace, Menlo, monospace; }
+    .option { border: 1px solid #d4d4d8; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    .option h2 { margin-top: 0; }
+    .hint { color: #555; font-size: 0.9rem; }
+    label { display: block; margin-bottom: 0.4rem; }
+  </style>
+</head>
+<body>
+  <h1>Create your FlareDispatch GitHub App</h1>
+  <p>FlareDispatch is BYOC — there is no shared App. This step creates an App in your GitHub account or org and hands the private key back to this Dispatcher (one-time, stored in your Worker Secrets).</p>
+
+  <h2>Pick an owner</h2>
+  <p class="hint">App ownership controls who can manage the App and rotate its key. Org-owned Apps survive a single admin leaving; personal-owned ones don&#39;t.</p>
+
+  <form class="option" method="get" action="/v1/github/install/new">
+    <h2>Personal account</h2>
+    <p class="hint">Owned by whoever is signed in to GitHub when you continue. Fine for solo use; brittle for teams.</p>
+    <input type="hidden" name="owner" value="">
+    <button type="submit">Continue as personal account</button>
+  </form>
+
+  <form class="option" method="get" action="/v1/github/install/new">
+    <h2>Organization</h2>
+    <p class="hint">Recommended for teams. You must have <em>Owner</em> role on the org. The App will be created under the org and all org admins can manage it afterward.</p>
+    <label for="owner-input">Organization login (the <code>&lt;org&gt;</code> in <code>github.com/&lt;org&gt;</code>):</label>
+    <input type="text" id="owner-input" name="owner" placeholder="acme-corp" pattern="[A-Za-z0-9][A-Za-z0-9-]{0,38}" maxlength="39" required>
+    <button type="submit" style="margin-left: 0.5rem">Continue as organization</button>
+  </form>
+</body>
+</html>`;
+
+/**
  * The manifest-form page. Auto-submits via JS on load; a `<noscript>` button
  * gives a manual fallback for headless browsers and JS-disabled UAs.
  *
- * GitHub's docs spell the receiving endpoint as `settings/apps/new` — the
- * `?state=<csrf>` query is what GitHub echoes back to `redirect_url` so we can
- * (in a follow-up PR) verify the callback wasn't initiated by a third party.
+ * GitHub's docs spell the receiving endpoint as `settings/apps/new` (personal)
+ * or `organizations/<org>/settings/apps/new` (org-owned) — `formActionForOwner`
+ * picks the right one. The `?state=<csrf>` query is what GitHub echoes back to
+ * `redirect_url` so we can (in a follow-up PR) verify the callback wasn't
+ * initiated by a third party.
  */
-const renderInstallForm = (manifest: Record<string, unknown>, state: string): string => {
+const renderInstallForm = (
+  manifest: Record<string, unknown>,
+  state: string,
+  owner: string,
+): string => {
   const manifestJson = JSON.stringify(manifest);
   // The hidden `manifest` input value is HTML-attribute-escaped — `htmlEscape`
   // turns `"` into `&quot;` so the `value="..."` boundary holds. The state is
   // a UUID, so escaping is overkill, but apply it as defense-in-depth.
   const safeManifest = htmlEscape(manifestJson);
   const safeState = htmlEscape(state);
+  // `formActionForOwner` already URL-encodes the org segment; we additionally
+  // HTML-escape the resulting attribute value for the `<form action="…">`
+  // boundary. Belt-and-braces — the regex validator already excludes any HTML
+  // metacharacter.
+  const actionUrl = htmlEscape(formActionForOwner(owner, state));
+  const ownerLabel =
+    owner === ""
+      ? "your personal account"
+      : `<code>${htmlEscape(owner)}</code>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -167,8 +272,8 @@ const renderInstallForm = (manifest: Record<string, unknown>, state: string): st
 </head>
 <body>
   <h1>FlareDispatch — Create GitHub App</h1>
-  <p>Redirecting you to GitHub to create the FlareDispatch App for your account or org. If you aren&#39;t redirected automatically, click the button below.</p>
-  <form id="manifest-form" method="post" action="https://github.com/settings/apps/new?state=${safeState}">
+  <p>Redirecting you to GitHub to create the FlareDispatch App, owned by ${ownerLabel}. If you aren&#39;t redirected automatically, click the button below.</p>
+  <form id="manifest-form" method="post" action="${actionUrl}">
     <input type="hidden" name="manifest" value="${safeManifest}">
     <input type="hidden" name="state" value="${safeState}">
     <noscript>
@@ -184,7 +289,18 @@ const renderInstallForm = (manifest: Record<string, unknown>, state: string): st
 };
 
 /**
- * Handle `GET /v1/github/install/new` — render the manifest-form page.
+ * Handle `GET /v1/github/install/new` — render either the owner chooser or
+ * the manifest-form page, depending on whether `owner` was supplied.
+ *
+ *   - no `owner` query                  → chooser (200 HTML)
+ *   - `owner=` (empty)                  → personal-account form (200 HTML)
+ *   - `owner=<valid-login>`             → org-owned form (200 HTML)
+ *   - `owner=<invalid>`                 → 400 JSON
+ *
+ * The "empty `owner` means personal" sentinel is intentional — `null` (no
+ * query at all) is the "user hasn't chosen yet" case, while an explicit empty
+ * string means "I chose personal." This matches the chooser's two forms:
+ * both POST `owner`, one with a value, one without.
  *
  * The form's `manifest` is a fresh resolution of `MANIFEST_TEMPLATE` against
  * `new URL(request.url).origin`. We use `crypto.randomUUID()` for the state
@@ -192,10 +308,24 @@ const renderInstallForm = (manifest: Record<string, unknown>, state: string): st
  * (the follow-up PR adds KV binding).
  */
 export const handleInstallNew = (request: Request): Response => {
-  const origin = new URL(request.url).origin;
-  const manifest = resolveManifest(origin);
+  const url = new URL(request.url);
+  const owner = url.searchParams.get("owner");
+
+  if (owner === null) {
+    return htmlResponse(renderOwnerChooser());
+  }
+
+  if (owner !== "" && !LOGIN_RE.test(owner)) {
+    return jsonError(
+      "invalid_owner",
+      "`owner` must be a valid GitHub login (alphanumeric + dashes, 1–39 chars, not starting with a dash) or empty for a personal-account App",
+      400,
+    );
+  }
+
+  const manifest = resolveManifest(url.origin);
   const state = crypto.randomUUID();
-  return htmlResponse(renderInstallForm(manifest, state));
+  return htmlResponse(renderInstallForm(manifest, state, owner));
 };
 
 // ---------------------------------------------------------------------------
@@ -216,6 +346,12 @@ const ConversionResponse = Schema.Struct({
   pem: Schema.String,
   client_id: Schema.String,
   client_secret: Schema.String,
+  // `owner.login` is what GitHub assigned as the App's owner — either the
+  // signed-in user (personal-owned) or the org login (org-owned). We surface
+  // it on the success page so the operator can confirm the owner matches
+  // what they picked on the chooser; if they accidentally got prompted for
+  // their personal account on the GitHub side, the page makes that visible.
+  owner: Schema.Struct({ login: Schema.String }),
 });
 type ConversionResponse = Schema.Schema.Type<typeof ConversionResponse>;
 
@@ -322,6 +458,7 @@ const renderSuccess = (app: ConversionResponse): string => {
   const name = htmlEscape(app.name);
   const htmlUrl = htmlEscape(app.html_url);
   const installUrl = htmlEscape(`${app.html_url}/installations/new`);
+  const ownerLogin = htmlEscape(app.owner.login);
   const webhookSecret = htmlEscape(app.webhook_secret);
   const clientId = htmlEscape(app.client_id);
   const clientSecret = htmlEscape(app.client_secret);
@@ -347,7 +484,7 @@ const renderSuccess = (app: ConversionResponse): string => {
 </head>
 <body>
   <h1>App created: ${name}</h1>
-  <p class="subtitle">slug: <code>${slug}</code> &middot; id: <code>${id}</code> &middot; <a href="${htmlUrl}" rel="noreferrer noopener">view on GitHub</a></p>
+  <p class="subtitle">owner: <code>${ownerLogin}</code> &middot; slug: <code>${slug}</code> &middot; id: <code>${id}</code> &middot; <a href="${htmlUrl}" rel="noreferrer noopener">view on GitHub</a></p>
 
   <div class="warn">
     <strong>These credentials are shown ONCE.</strong> Copy them into <code>wrangler secret put</code> NOW — they will not be displayed again. If you lose them, regenerate from the App&#39;s settings page.
@@ -389,6 +526,7 @@ ${clientSecret}</pre>
   </div>
 
   <h2>2. Install the App on a repo or org</h2>
+  <p>The install picker shows every account/org you can install the App on. Pick <code>${ownerLogin}</code> (or any other org you admin) and choose the repos.</p>
   <p><a class="btn" href="${installUrl}" rel="noreferrer noopener">Install ${name}</a></p>
 
   <h2>3. Verify</h2>
