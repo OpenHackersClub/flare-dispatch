@@ -58,16 +58,23 @@ export const cdpAcceptance = defineRun({
         }),
       );
 
+      // Expose the app port as a public preview URL — the browser runs in
+      // Cloudflare's cloud and cannot reach the container's `localhost`, so the
+      // suite navigates to this reachable URL (handed over as CDP_TARGET_URL).
+      const exposed = yield* step("expose-app", () =>
+        sandbox.exposePort({ container, port: input.appPort }),
+      );
+
       // Attach Browser Rendering over CDP and run the acceptance suite. The
       // suite drives the app and writes screenshots/traces under ./artifacts.
       const session = yield* step("attach-cdp", () =>
-        browser.newCDPSession({ targetUrl: `http://localhost:${input.appPort}` }),
+        browser.newCDPSession({ targetUrl: exposed.url }),
       );
       const exec = yield* step("run-tests", () =>
         sandbox.exec({
           cwd: dir,
           container,
-          env: { CDP_WS_URL: session.wsEndpoint },
+          env: { CDP_WS_URL: session.wsEndpoint, CDP_TARGET_URL: exposed.url },
           command: input.testCommand,
         }),
       );

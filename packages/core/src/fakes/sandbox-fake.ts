@@ -37,6 +37,8 @@ export type SandboxFakeState = {
     cwd?: string;
     env?: Record<string, string>;
   }[];
+  /** every `exposePort` call, in order — lets tests assert the port was exposed. */
+  readonly exposed: { port: number; name?: string }[];
 };
 
 const normalizeCommand = (command: string | readonly string[]): string =>
@@ -67,7 +69,12 @@ const fullResult = (partial: Partial<ExecResult> & { exitCode: number }): ExecRe
 export const makeSandboxFake = (
   program: CannedProgram = {},
 ): { layer: Layer.Layer<Sandbox>; state: SandboxFakeState } => {
-  const state: SandboxFakeState = { acquired: [], clones: [], execs: [] };
+  const state: SandboxFakeState = {
+    acquired: [],
+    clones: [],
+    execs: [],
+    exposed: [],
+  };
   let containerSeq = 0;
 
   const resolve = (command: string): CannedExec | undefined => {
@@ -125,6 +132,14 @@ export const makeSandboxFake = (
     waitForExit: () => Effect.succeed(fullResult({ exitCode: 0 })),
 
     waitForPort: () => Effect.void,
+
+    // Deterministic preview URL so a run test can assert the reachable URL is
+    // threaded to the suite without booting a real container.
+    exposePort: ({ port, name }) =>
+      Effect.sync(() => {
+        state.exposed.push({ port, name });
+        return { url: `https://${port}-fake-sandbox.example.com` };
+      }),
   };
 
   return { layer: Layer.succeed(Sandbox, service), state };

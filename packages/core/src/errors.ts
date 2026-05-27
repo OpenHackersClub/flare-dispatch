@@ -31,7 +31,24 @@ export class ContainerLaunchFailed extends Schema.TaggedError<ContainerLaunchFai
 
 export class PortNeverOpened extends Schema.TaggedError<PortNeverOpened>()(
   "PortNeverOpened",
-  { port: Schema.Number, timeoutSec: Schema.Number },
+  {
+    port: Schema.Number,
+    timeoutSec: Schema.Number,
+    /**
+     * R2 key of the detached process's captured stdout/stderr at the moment
+     * the wait timed out, when log capture succeeded. A detached boot fails
+     * with no other diagnostic — this is the only window into *why* the port
+     * never opened. `undefined` when the runtime could not capture logs (e.g.
+     * the process had already vanished), so a capture failure never masks the
+     * original timeout.
+     */
+    logPath: Schema.optional(Schema.String),
+  },
+) {}
+
+export class ExposePortFailed extends Schema.TaggedError<ExposePortFailed>()(
+  "ExposePortFailed",
+  { port: Schema.Number, cause: Schema.Unknown },
 ) {}
 
 export class BrowserUnavailable extends Schema.TaggedError<BrowserUnavailable>()(
@@ -121,6 +138,7 @@ export type RunError =
   | ExecTimeout
   | ContainerLaunchFailed
   | PortNeverOpened
+  | ExposePortFailed
   | BrowserUnavailable
   | CacheError
   | ArtifactUploadFailed

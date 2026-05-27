@@ -36,7 +36,7 @@ const baseInput = {
 } as const;
 
 describe("cdp-acceptance", () => {
-  it.effect("green path — test command exits 0, six steps, CDP attached", () => {
+  it.effect("green path — test command exits 0, seven steps, CDP attached", () => {
     const { layer, handles } = makeCFRuntimeTest({
       sandboxProgram: { "pnpm test:acceptance": { exitCode: 0 } },
       browser: { wsEndpoint: "wss://test-cdp/abc" },
@@ -49,12 +49,14 @@ describe("cdp-acceptance", () => {
       expect(result.reportUri.length).toBeGreaterThan(0);
       expect(result.screenshotsUri.length).toBeGreaterThan(0);
 
-      // checkout → boot-app → attach-cdp → run-tests → upload-report →
-      // upload-screenshots, each recorded once, all successful. `loadSecrets`
-      // is called inline (not a step) so credentials never hit a checkpoint.
+      // checkout → boot-app → expose-app → attach-cdp → run-tests →
+      // upload-report → upload-screenshots, each recorded once, all successful.
+      // `loadSecrets` is called inline (not a step) so credentials never hit a
+      // checkpoint.
       expect(handles.executions.steps.map((s) => s.name)).toEqual([
         "checkout",
         "boot-app",
+        "expose-app",
         "attach-cdp",
         "run-tests",
         "upload-report",
@@ -64,9 +66,13 @@ describe("cdp-acceptance", () => {
         handles.executions.steps.every((s) => s.status === "success"),
       ).toBe(true);
 
-      // The CDP session was opened against the app under test.
+      // The app port was exposed to get a publicly-reachable URL.
+      expect(handles.sandbox.exposed).toEqual([{ port: 4173, name: undefined }]);
+
+      // The CDP session was opened against the *exposed* URL, not `localhost`
+      // (the cloud browser cannot reach the container's localhost).
       expect(handles.browser.cdpSessions).toEqual([
-        { targetUrl: "http://localhost:4173" },
+        { targetUrl: "https://4173-fake-sandbox.example.com" },
       ]);
     }).pipe(Effect.provide(layer));
   });
@@ -136,13 +142,15 @@ describe("cdp-acceptance", () => {
         const boot = handles.sandbox.execs.find((e) => e.command === "pnpm dev");
         expect(boot?.env).toEqual({ CLERK_SECRET_KEY: "sk_live_x" });
 
-        // The test command gets the secret plus the CDP endpoint.
+        // The test command gets the secret, the CDP endpoint, and the
+        // publicly-reachable target URL the suite navigates to.
         const test = handles.sandbox.execs.find(
           (e) => e.command === "pnpm test:acceptance",
         );
         expect(test?.env).toEqual({
           CLERK_SECRET_KEY: "sk_live_x",
           CDP_WS_URL: "wss://test-cdp/abc",
+          CDP_TARGET_URL: "https://4173-fake-sandbox.example.com",
         });
       }).pipe(Effect.provide(layer));
     },

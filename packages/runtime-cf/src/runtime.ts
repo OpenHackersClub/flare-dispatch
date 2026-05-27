@@ -88,6 +88,17 @@ export type CFRuntimeLiveOptions = {
    */
   readonly browser?: BrowserRenderingConfig;
   /**
+   * The Worker's public domain (e.g. `flare-dispatch.<account>.workers.dev`)
+   * the `sandbox` capability's `exposePort` uses to construct container preview
+   * URLs — the publicly-reachable URL a cloud browser dials instead of the
+   * container's `localhost`. A deploy-time property (`SANDBOX_PREVIEW_HOSTNAME`).
+   * `undefined` — a deploy that has not configured it — makes `exposePort` fail
+   * with `ExposePortFailed`; a browser-acceptance run that needs a reachable
+   * URL fails loudly rather than handing the suite an unreachable `localhost`.
+   * Non-browser runs never touch the surface.
+   */
+  readonly sandboxPreviewHostname?: string;
+  /**
    * OIDC signing config for the `oidc` capability — the ES256 private JWK
    * (`OIDC_SIGNING_JWK` secret) + the issuer URL the IdP's trust policy
    * pins. `undefined` selects `OidcDeferred`: a run that calls `oidc.sign`
@@ -119,6 +130,7 @@ export const makeCFRuntimeLive = (
     opts.bucket,
     opts.executionId,
     opts.checks,
+    opts.sandboxPreviewHostname,
   );
   const stepRunner = makeStepRunnerCloudflare(
     opts.workflowStep,

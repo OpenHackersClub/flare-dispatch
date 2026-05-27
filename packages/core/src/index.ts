@@ -33,6 +33,7 @@ export {
   type DetachedHandle,
   type ExecResult,
   type ExecOpts,
+  type ExposeResult,
 } from "./services/sandbox";
 export {
   browser,

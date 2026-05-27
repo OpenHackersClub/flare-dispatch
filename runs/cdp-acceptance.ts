@@ -33,14 +33,16 @@
 //    steps; the Workflow records the execution. See runs/offload-test.ts
 //    header note 1.
 //
-// 3. CDP target reachability is a deploy-time concern.
+// 3. CDP target reachability is solved by exposing the app port.
 //    `attach-cdp` hands the test command a `CDP_WS_URL` — the container's
 //    Playwright process dials Cloudflare Browser Rendering directly (the
 //    `/connect` WS endpoint, see @flare-dispatch/runtime-cf browser-cf.ts).
-//    Whether the *browser* can in turn reach the app under test is a
-//    networking property of the deploy (the app may need a publicly exposed
-//    port rather than container `localhost`); the run keeps the spec'd
-//    `targetUrl` shape and leaves that wiring to the runtime.
+//    The *browser* runs in Cloudflare's cloud and cannot reach the container's
+//    `localhost`, so a `localhost:<port>` target URL is unreachable. The
+//    `expose-app` step calls `sandbox.exposePort(appPort)` to get a public
+//    preview URL routing to the container and hands it to the suite as
+//    `CDP_TARGET_URL` (alongside `CDP_WS_URL`). The suite navigates the browser
+//    to `CDP_TARGET_URL`, not to `localhost`.
 //
 // Spec: specs/02-runs.md § 4, specs/03-dsl.md § browser + § Primitives,
 //       specs/pm/plan.md § V1 / V2 plan — PR9.
@@ -121,22 +123,34 @@ export const cdpAcceptance = defineRun({
         }),
       );
 
+      // expose-app — publish the app port as a public preview URL. The browser
+      // runs in Cloudflare's cloud and cannot reach the container's
+      // `localhost`; this is the reachable URL the suite navigates to (header
+      // note 3). Handed to the test command as `CDP_TARGET_URL` below.
+      const exposed = yield* step("expose-app", () =>
+        sandbox.exposePort({ container, port: input.appPort }),
+      );
+
       // attach-cdp — open a Browser Rendering CDP session. `wsEndpoint` is the
       // URL the test command's Playwright process connects over.
       const session = yield* step("attach-cdp", () =>
-        browser.newCDPSession({
-          targetUrl: `http://localhost:${input.appPort}`,
-        }),
+        browser.newCDPSession({ targetUrl: exposed.url }),
       );
 
       // run-tests — run the acceptance suite. A non-zero exit code is a NORMAL
       // ExecResult (a failing test), surfaced to the output below — never an
       // Effect failure. The suite writes screenshots/traces under ./artifacts.
+      // `CDP_TARGET_URL` is the publicly-reachable URL the suite navigates to;
+      // `CDP_WS_URL` is the Browser Rendering endpoint the suite connects over.
       const exec = yield* step("run-tests", () =>
         sandbox.exec({
           cwd: dir,
           container,
-          env: { ...secretEnv, CDP_WS_URL: session.wsEndpoint },
+          env: {
+            ...secretEnv,
+            CDP_WS_URL: session.wsEndpoint,
+            CDP_TARGET_URL: exposed.url,
+          },
           command: input.testCommand,
         }),
       );
