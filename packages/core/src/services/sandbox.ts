@@ -12,6 +12,7 @@ import type {
   ContainerLaunchFailed,
   ExecFailed,
   ExecTimeout,
+  ExposePortFailed,
   PortNeverOpened,
 } from "../errors";
 
@@ -44,6 +45,16 @@ export type ExecOpts = {
   readonly container?: Container;
 };
 
+/**
+ * The result of exposing a container port: a publicly-reachable URL. A process
+ * bound to the container's `localhost:<port>` is not reachable from outside the
+ * container (e.g. a cloud browser dialling it); `exposePort` returns a public
+ * preview URL that routes to it.
+ */
+export type ExposeResult = {
+  readonly url: string;
+};
+
 /** The service contract a runtime Layer implements. */
 export interface SandboxService {
   readonly acquire: (opts: {
@@ -71,6 +82,17 @@ export interface SandboxService {
     port: number;
     timeoutSec?: number;
   }) => Effect.Effect<void, PortNeverOpened>;
+  /**
+   * Expose a container port and return a publicly-reachable URL routing to it.
+   * The app under test binds the container's `localhost:<port>`, which a cloud
+   * browser cannot reach; this hands back a public preview URL the browser
+   * (and the test suite) can navigate to.
+   */
+  readonly exposePort: (opts: {
+    container?: Container;
+    port: number;
+    name?: string;
+  }) => Effect.Effect<ExposeResult, ExposePortFailed>;
 }
 
 /** Context.Tag — the dependency a run carries until a Layer provides it. */
@@ -101,4 +123,6 @@ export const sandbox = {
     port: number;
     timeoutSec?: number;
   }) => Effect.flatMap(Sandbox, (s) => s.waitForPort(opts)),
+  exposePort: (opts: { container?: Container; port: number; name?: string }) =>
+    Effect.flatMap(Sandbox, (s) => s.exposePort(opts)),
 } as const;

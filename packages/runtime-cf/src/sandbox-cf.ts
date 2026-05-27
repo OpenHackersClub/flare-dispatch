@@ -41,7 +41,7 @@
 // Spec: specs/01-architecture.md § Sandbox, specs/03-dsl.md § sandbox.
 
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
-import { Effect, Layer } from "effect";
+import { Duration, Effect, Layer } from "effect";
 import {
   CheckoutFailed,
   type Container,
@@ -50,6 +50,8 @@ import {
   ExecFailed,
   type ExecResult,
   ExecTimeout,
+  type ExposeResult,
+  ExposePortFailed,
   PortNeverOpened,
   Sandbox as SandboxTag,
   type SandboxService,
@@ -79,12 +81,20 @@ const asCommand = (command: string | readonly string[]): string =>
  *                     a short-lived installation token so private repositories
  *                     are reachable. When absent, clones are unauthenticated
  *                     — the public-repo path is unchanged.
+ * @param previewHostname  the Worker's public domain (e.g.
+ *                     `flare-dispatch.<account>.workers.dev`) the SDK uses to
+ *                     construct container preview URLs in `exposePort`. A
+ *                     deploy-time property; absent, `exposePort` fails with
+ *                     `ExposePortFailed` (the SDK cannot build a URL without it),
+ *                     so a run that needs a reachable URL fails loudly rather
+ *                     than handing the suite an unreachable `localhost`.
  */
 export const makeSandboxCloudflareLive = (
   ns: DurableObjectNamespace<Sandbox>,
   bucket: R2Bucket,
   executionId: string,
   githubAuth?: ChecksGithubConfig,
+  previewHostname?: string,
 ): Layer.Layer<SandboxTag> => {
   // The per-execution sandbox client. `getSandbox` is cheap — the container is
   // provisioned lazily on first use — so resolving it once per Layer build is
@@ -121,6 +131,31 @@ export const makeSandboxCloudflareLive = (
       httpMetadata: { contentType: "application/x-ndjson" },
     });
   };
+
+  /**
+   * Best-effort capture of a detached process's logs to R2 on a failure path
+   * (a boot that never opened its port, a launch that threw). A detached boot
+   * leaves no other diagnostic — without this the `steps` row's `log_uri` is
+   * `null` and a failed boot is undebuggable. Returns the R2 `logPath` on
+   * success, or `undefined` if logs could not be fetched (e.g. the process had
+   * already vanished) — a capture failure must never mask the original error,
+   * so every step is swallowed.
+   */
+  const captureDetachedLog = (
+    handleId: string,
+  ): Effect.Effect<string | undefined> =>
+    Effect.promise(async () => {
+      try {
+        const proc = await box.getProcess(handleId);
+        if (proc === null) return undefined;
+        const logs = await proc.getLogs();
+        const logPath = nextLogKey();
+        await writeLog(logPath, proc.command, logs.stdout, logs.stderr);
+        return logPath;
+      } catch {
+        return undefined;
+      }
+    });
 
   const service: SandboxService = {
     // No explicit acquire in the SDK — the container is provisioned lazily.
@@ -251,8 +286,13 @@ export const makeSandboxCloudflareLive = (
           }),
       }),
 
-    waitForPort: ({ handle, port, timeoutSec }) =>
-      Effect.tryPromise({
+    waitForPort: ({ handle, port, timeoutSec }) => {
+      // The SDK's own `timeout` option is passed through, but it is not
+      // reliably honored — in practice a hung boot blocks far past the ceiling
+      // (a single attempt, not retries). Enforce the ceiling at the Effect
+      // layer with `Effect.timeoutFail` so the wait fails fast at `timeoutSec`
+      // regardless of SDK behavior.
+      const sdkWait = Effect.tryPromise({
         try: async () => {
           const proc = await box.getProcess(handle.id);
           if (proc === null) {
@@ -268,7 +308,61 @@ export const makeSandboxCloudflareLive = (
         },
         catch: (): PortNeverOpened =>
           new PortNeverOpened({ port, timeoutSec: timeoutSec ?? 0 }),
-      }),
+      });
+
+      const bounded =
+        timeoutSec === undefined
+          ? sdkWait
+          : sdkWait.pipe(
+              Effect.timeoutFail({
+                duration: Duration.seconds(timeoutSec),
+                onTimeout: () =>
+                  new PortNeverOpened({ port, timeoutSec }),
+              }),
+            );
+
+      // On any failure (SDK throw or the Effect-level timeout), best-effort
+      // capture the detached process's logs and re-fail with the `logPath`
+      // attached — the only diagnostic a failed detached boot leaves behind.
+      return bounded.pipe(
+        Effect.catchTag("PortNeverOpened", (err) =>
+          captureDetachedLog(handle.id).pipe(
+            Effect.flatMap((logPath) =>
+              Effect.fail(
+                new PortNeverOpened({
+                  port: err.port,
+                  timeoutSec: err.timeoutSec,
+                  logPath,
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+
+    exposePort: ({ port, name }) =>
+      previewHostname === undefined
+        ? Effect.fail(
+            new ExposePortFailed({
+              port,
+              cause:
+                "no preview hostname configured — cannot construct a public URL",
+            }),
+          )
+        : Effect.tryPromise({
+            try: async (): Promise<ExposeResult> => {
+              // The SDK builds the preview URL from the Worker's domain
+              // (`hostname`) + the port; the process bound to the container's
+              // `localhost:<port>` becomes reachable at the returned URL.
+              const { url } = await box.exposePort(port, {
+                hostname: previewHostname,
+                name,
+              });
+              return { url };
+            },
+            catch: (cause) => new ExposePortFailed({ port, cause }),
+          }),
   };
 
   return Layer.succeed(SandboxTag, service);

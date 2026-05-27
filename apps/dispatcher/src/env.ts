@@ -124,4 +124,15 @@ export interface Env {
    * secret, paired with `BROWSER_CDP_CONNECT_URL`.
    */
   readonly BROWSER_CDP_API_TOKEN?: string;
+
+  /**
+   * The Worker's public domain (e.g. `flare-dispatch.<account>.workers.dev`,
+   * or a custom domain) the `sandbox` capability's `exposePort` uses to build
+   * container preview URLs — the publicly-reachable URL a cloud browser dials
+   * instead of the container's `localhost`. A var, not a secret (it is the
+   * public origin, not a credential). Absent → `exposePort` fails with
+   * `ExposePortFailed`, so a browser-acceptance run that needs a reachable URL
+   * fails loudly. Non-browser runs are unaffected.
+   */
+  readonly SANDBOX_PREVIEW_HOSTNAME?: string;
 }

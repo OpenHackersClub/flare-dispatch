@@ -15,6 +15,7 @@ import {
   EventPayloadInvalid,
   ExecFailed,
   ExecTimeout,
+  ExposePortFailed,
   GitHubApiError,
   OidcSigningFailed,
   PortNeverOpened,
@@ -35,6 +36,7 @@ const summarize = (e: RunError): string =>
     Match.tag("ExecTimeout", ({ timeoutSec }) => `exec timeout ${timeoutSec}s`),
     Match.tag("ContainerLaunchFailed", ({ image }) => `launch ${image}`),
     Match.tag("PortNeverOpened", ({ port }) => `port ${port} never opened`),
+    Match.tag("ExposePortFailed", ({ port }) => `expose port ${port} failed`),
     Match.tag("BrowserUnavailable", ({ reason }) => `browser ${reason}`),
     Match.tag("CacheError", ({ phase, key }) => `cache ${phase} ${key}`),
     Match.tag("ArtifactUploadFailed", ({ name }) => `artifact ${name}`),
@@ -74,6 +76,11 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
       name: "PortNeverOpened",
       err: new PortNeverOpened({ port: 3000, timeoutSec: 120 }),
       expect: "port 3000 never opened",
+    },
+    {
+      name: "ExposePortFailed",
+      err: new ExposePortFailed({ port: 4173, cause: "x" }),
+      expect: "expose port 4173 failed",
     },
     {
       name: "BrowserUnavailable",
