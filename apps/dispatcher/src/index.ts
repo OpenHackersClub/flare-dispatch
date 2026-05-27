@@ -17,6 +17,8 @@
 //
 // Spec: specs/pm/plan.md § PR5, specs/04-gha-integration.md § Schedule mode.
 
+import { proxyToSandbox } from "@cloudflare/sandbox";
+
 import type { Env } from "./env";
 import { handleRequest } from "./router";
 import { handleScheduled } from "./routes/scheduled";
@@ -27,7 +29,15 @@ export { RunWorkflow } from "./workflow";
 export { RunSandbox };
 
 export default {
-  fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    // Preview-URL proxying for `exposePort` (the `cdp-acceptance` reachability
+    // path): a request to `<port>-<sandboxId>-<token>.<SANDBOX_PREVIEW_HOSTNAME>`
+    // is forwarded to that container's port. `proxyToSandbox` returns `null`
+    // for everything else, so it's a no-op for the dispatch/health/artifact
+    // routes. The SDK's `SandboxEnv` hardcodes the binding name `Sandbox`; our
+    // binding is `RUNS_SANDBOX`, so we adapt rather than rename the binding.
+    const proxied = await proxyToSandbox(request, { Sandbox: env.RUNS_SANDBOX });
+    if (proxied !== null) return proxied;
     return handleRequest(request, env);
   },
   /**
