@@ -158,6 +158,23 @@ const scheduleGithubTarget = (
   const sha = typeof obj.sha === "string" ? obj.sha : (typeof obj.ref === "string" ? obj.ref : "main");
   const installation_id =
     typeof obj.installation_id === "number" ? obj.installation_id : undefined;
+
+  // Warn when the run's `schedules[].inputs()` returned a shape without
+  // the fields the `executions` row expects — a Schema mismatch between
+  // the schedule inputs and the run's own `inputs` schema. The Workflow
+  // will validate again at decode time, but surfacing the mismatch here
+  // gives the operator a faster diagnosis path.
+  if (typeof obj.repo !== "string") {
+    console.warn(
+      `[scheduled] scheduleGithubTarget: inputs.repo is not a string (got ${typeof obj.repo}), falling back to "schedule/unknown"`,
+    );
+  }
+  if (typeof obj.ref !== "string") {
+    console.warn(
+      `[scheduled] scheduleGithubTarget: inputs.ref is not a string (got ${typeof obj.ref}), falling back to "refs/heads/main"`,
+    );
+  }
+
   return installation_id !== undefined
     ? { repo, ref, sha, installation_id }
     : { repo, ref, sha };

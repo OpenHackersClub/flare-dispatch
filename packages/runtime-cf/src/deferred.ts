@@ -15,6 +15,7 @@
 import { Effect, Layer } from "effect";
 import {
   Browser,
+  BrowserUnavailable,
   type BrowserService,
   Config,
   type ConfigService,
@@ -29,9 +30,18 @@ import {
 export const BrowserDeferred: Layer.Layer<Browser> = Layer.succeed(
   Browser,
   ((): BrowserService => ({
-    newPage: () => Effect.die("browser.newPage: not implemented until V2"),
+    newPage: () =>
+      Effect.fail(
+        new BrowserUnavailable({
+          reason: "transient",
+        }),
+      ),
     newCDPSession: () =>
-      Effect.die("browser.newCDPSession: not implemented until V2"),
+      Effect.fail(
+        new BrowserUnavailable({
+          reason: "transient",
+        }),
+      ),
   }))(),
 );
 

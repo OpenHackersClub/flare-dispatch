@@ -126,7 +126,7 @@ Adversaries are concrete actors, not abstract STRIDE categories. Each entry name
 - HMAC verify on `/v1/dispatch/:run` (`apps/dispatcher/src/hmac.ts`). An unsigned or wrong-signed request gets 401; the 401 body includes the dispatcher's secret fingerprint (8 hex chars of `sha256(secret)`) which is non-secret by construction — short of the full key, useless as a credential.
 - The install form is the *only* unauthenticated POST surface to GitHub, and it doesn't trust user input — the manifest is constructed server-side from `MANIFEST_TEMPLATE` (`apps/dispatcher/src/routes/github.ts`), not from the request body.
 - `/v1/github/installed` only accepts a `code` query param. The code is one-shot, valid for one minute, and the API call to convert it is made by the Dispatcher (no auth header — the code IS the credential). An attacker who guesses a valid `code` does see the App credentials in the success page; this is a **gap** ([§ Known gaps](#known-gaps): state-token CSRF).
-- `/v1/artifacts/:execution/:name` 302-redirects to a short-lived signed R2 URL. The execution id is a ULID (122 bits of entropy); guessing is not a useful attack. Multi-tenancy across deploys is not a thing — one operator, one R2 bucket.
+- `/v1/artifacts/:execution/:name` streams the R2 object body directly. The execution id is a ULID (122 bits of entropy); guessing is not a useful attack. Multi-tenancy across deploys is not a thing — one operator, one R2 bucket. Artifact URLs are stable and immutable — cache headers are set accordingly.
 - `/health` lists run names. This is intentional — the run list is not secret.
 
 **Residual risk.** Without CSRF binding on the manifest install flow, an attacker who can lure an operator-with-an-active-GitHub-session to a controlled URL can race the install. See [§ Known gaps](#known-gaps).
@@ -180,9 +180,9 @@ Adversaries are concrete actors, not abstract STRIDE categories. Each entry name
 
 **Defended by.**
 
-- **Status: Planned (V1).** Today the receiver does not exist (`apps/dispatcher/src/router.ts` does not route `/v1/webhooks/github`), so the attack surface is `404`. When the receiver lands, `X-Hub-Signature-256` HMAC over `GITHUB_WEBHOOK_SECRET` is the gate. Same `crypto.subtle.verify` primitive as the dispatch HMAC; no shared secret with `HMAC_SECRET`.
+- The receiver is live at `apps/dispatcher/src/routes/webhook.ts`. `X-Hub-Signature-256` HMAC over `GITHUB_WEBHOOK_SECRET` is the gate, verified with the same `crypto.subtle.verify` primitive as the dispatch HMAC; no shared secret with `HMAC_SECRET`. A deploy without `GITHUB_WEBHOOK_SECRET` returns 503 on the route rather than silently accepting unsigned deliveries.
 
-**Residual risk (current).** Until V1, no risk — the route does not exist. Once it lands, the same comments as [§ Compromised Action runner](#compromised-action-runner) apply with `GITHUB_WEBHOOK_SECRET` substituted for `HMAC_SECRET`. A leaked webhook secret lets an attacker fire Webhook-mode runs at will but does not let them read repos.
+**Residual risk.** A leaked webhook secret lets an attacker fire Webhook-mode runs at will but does not let them read repos. Same comments as [§ Compromised Action runner](#compromised-action-runner) with `GITHUB_WEBHOOK_SECRET` substituted for `HMAC_SECRET`.
 
 ### Compromised GitHub App installation (leaked App private key)
 
@@ -318,15 +318,11 @@ These are explicitly **un-defended today**. Each has a severity, a description, 
 
 **Workaround until fixed.** Operators should not click links to `/v1/github/installed?code=...` they did not initiate themselves; the install flow should be completed in one continuous browser session from `install/new`.
 
-### Webhook receiver not implemented — high (deferred)
+### Webhook receiver — live ✅
 
-**Description.** The `FlareDispatch` App manifest declares `https://<endpoint>/v1/webhooks/github` as its `hook_attributes.url`, but no receiver exists at `apps/dispatcher/src/router.ts`. Webhook deliveries from GitHub today get a 404 from the Dispatcher.
+**Status.** The receiver is implemented at `apps/dispatcher/src/routes/webhook.ts`. `POST /v1/webhooks/github` verifies `X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET`, evaluates every registered run's `triggers[]` against the inbound event, filters by `actions[]` and `gate()`, dedups via `IDEMPOTENCY_KV`, and fans out Workflow instances. The `check_run.rerequested` re-run path is wired through the same route.
 
-**Consequence.** Webhook mode does not work (see [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode), marked Planned). The `check_run.rerequested` re-run path is also not wired — clicking "Re-run failed checks" on a PR has no effect on the Dispatcher.
-
-**Tracking.** Planned for V1, per `pm/plan.md`. Spec language in 04-gha-integration explicitly marks the section as Planned.
-
-**Workaround.** Use Action mode for now — every dispatch goes through the live HMAC-signed surface.
+**Residual.** The installation-id map auto-populated from webhook deliveries (`installation.id` on every payload) replaces the manual `installation-id` Action input. Operators no longer need to pass `installation-id` explicitly for Webhook-mode runs.
 
 ### Installation-ID map not populated — medium
 

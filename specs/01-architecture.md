@@ -60,13 +60,13 @@ It is invoked two ways — the Worker's `fetch()` handler serves the HTTP surfac
 |---|---|---|---|
 | **Dispatch** | `fetch()` | Start an execution from an HMAC-signed POST (Action mode). | Live |
 | **App manifest** | `fetch()` | `/v1/github/install/new` + `/v1/github/installed` — render the App-creation form and exchange the manifest `code` for credentials (specs/05-byoc.md § GitHub App setup). | Live |
-| **Artifact** | `fetch()` | `/v1/artifacts/:execution/:name` — 302-redirect to a short-lived signed R2 URL. | Live |
+| **Artifact** | `fetch()` | `/v1/artifacts/:execution/:name` — stream the stored R2 object body (no S3 presigned-URL dependency). | Live |
 | **Health** | `fetch()` | `/health` — liveness + registered-run list. | Live |
-| **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). | **Planned (V1)** — receiver not yet implemented. |
+| **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). | **Live** |
 | **Schedule** | `scheduled()` | A Cloudflare Cron Trigger fires on a wall-clock cadence; the handler instantiates a scheduling Workflow (Schedule mode). See [§ Schedule-mode dispatch](#schedule-mode-dispatch). | Live |
 | **Inspection** | `fetch()` | Return execution metadata; redirect to signed artifact / log URLs. | **Planned (V1)** — `/v1/executions/:id` for `await`-mode polling. |
 | **Admin** | `fetch()` | Operator surface — execution list, force-cancel, replay, signalling a paused Workflow. Gated by Cloudflare Access. | **Planned (V2/V3)** — lands with `step.waitForEvent` (`/v1/admin/events/:wf_id`). |
-| **OIDC issuer** | `fetch()` | Public, unauthenticated `/.well-known/openid-configuration` + `/.well-known/jwks.json`. The Dispatcher self-issues OIDC tokens runs federate against AWS STS / GCP STS / Vault — see [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy). Public by design: IdPs fetch the JWKS unauthenticated to verify token signatures. | **Planned (V3.5)** — lands with `awsAssumeRole` primitive. |
+| **OIDC issuer** | `fetch()` | Public, unauthenticated `/.well-known/openid-configuration` + `/.well-known/jwks.json`. The Dispatcher self-issues OIDC tokens runs federate against AWS STS / GCP STS / Vault — see [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy). Public by design: IdPs fetch the JWKS unauthenticated to verify token signatures. | **Live** |
 
 Only the `fetch()` surfaces are publicly reachable. `scheduled()` has no HTTP route — Cloudflare invokes it internally from the Cron Trigger, which is why Schedule mode authenticates nothing inbound (see [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). Trigger modes, the request/response contracts, and the literal route paths are in [04-gha-integration](04-gha-integration.md). Trust boundaries and adversaries against each surface are catalogued in [07-trust-model](07-trust-model.md).
 
