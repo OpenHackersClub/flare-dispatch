@@ -79,10 +79,13 @@
       "binding": "IDEMPOTENCY_KV",
       "id": "00000000000000000000000000000000"
     },
-    {
-      "binding": "INSTALL_TOKEN_KV",
-      "id": "00000000000000000000000000000000"
-    }
+    // INSTALL_TOKEN_KV — deferred to V1; the check-runs Layer caches
+    // installation tokens in Worker memory only (the V0 behaviour).
+    // Uncomment and fill the real id when wiring the KV cache.
+    // {
+    //   "binding": "INSTALL_TOKEN_KV",
+    //   "id": "00000000000000000000000000000000"
+    // }
   ],
 
   // Worker Secrets used by V0-V3 runtime (set with `wrangler secret put`):

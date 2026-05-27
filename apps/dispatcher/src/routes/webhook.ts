@@ -176,6 +176,18 @@ export const handleGithubWebhook = async (
       ? ((payload as { action: string }).action)
       : undefined;
 
+  // GitHub's `action` field is always a string when present, but a
+  // non-string value (beta API, unexpected event shape) would silently
+  // fail to match any trigger. Surface it so the operator can diagnose.
+  if (
+    (payload as { action?: unknown }).action !== undefined &&
+    payloadAction === undefined
+  ) {
+    console.warn(
+      `[webhook] event "${event}" has a non-string action field — no trigger actions[] filter will match`,
+    );
+  }
+
   const dispatched: Array<{ run: string; executionId: string }> = [];
   for (const { run, trigger } of matches) {
     if (

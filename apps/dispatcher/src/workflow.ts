@@ -45,41 +45,15 @@
 
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { Effect, Exit, Schema } from "effect";
-import { Checks, Executions, type Run } from "@flare-dispatch/core";
+import { Effect, Exit, Schedule, Schema } from "effect";
+import { Checks, Executions } from "@flare-dispatch/core";
 import {
   type BrowserRenderingConfig,
   type ChecksGithubConfig,
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
-import {
-  cdpAcceptance,
-  deploySmoke,
-  matrixFanout,
-  offloadTest,
-  playwrightDemo,
-  playwrightE2E,
-  productDemo,
-} from "@flare-dispatch/runs";
+import { lookupRun } from "./registry";
 import type { Env } from "./env";
-
-/**
- * The run registry — a map from run name to its `Run` value. `RunWorkflow`
- * looks a dispatched run up here; an unknown name fails the execution. Each
- * new run slots in as another entry — `offload-test` (V0), `cdp-acceptance`
- * (V2 browser acceptance, PR9), `product-demo` (V3 — AI-driven, requires
- * the `demo-agent` image), `playwright-demo` (record a hand-authored
- * Playwright spec against a deployed URL + upload the artifact bundle).
- */
-const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
-  [offloadTest.name]: offloadTest as Run<unknown, unknown>,
-  [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
-  [deploySmoke.name]: deploySmoke as Run<unknown, unknown>,
-  [matrixFanout.name]: matrixFanout as Run<unknown, unknown>,
-  [playwrightE2E.name]: playwrightE2E as Run<unknown, unknown>,
-  [productDemo.name]: productDemo as Run<unknown, unknown>,
-  [playwrightDemo.name]: playwrightDemo as Run<unknown, unknown>,
-};
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */
 const GithubContext = Schema.Struct({
@@ -167,7 +141,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       event.payload,
     );
 
-    const run = RUN_REGISTRY[payload.run];
+    const run = lookupRun(payload.run);
     if (run === undefined) {
       throw new Error(`RunWorkflow: unknown run "${payload.run}"`);
     }
@@ -242,12 +216,20 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         },
       });
       // Persist the GitHub check-run id onto the `executions` row.
+      // D1 write for check_run_id — best-effort metadata, retry once on
+      // transient errors then die (the execution and check-run are already
+      // complete; losing the check_run_id on the D1 row is a minor loss).
       yield* Effect.tryPromise(() =>
         db
           .prepare(`UPDATE executions SET check_run_id = ? WHERE id = ?`)
           .bind(checkRunId, payload.executionId)
           .run(),
-      ).pipe(Effect.orDie);
+      ).pipe(
+        Effect.retry(
+          Schedule.once.pipe(Schedule.addDelay(() => "500 millis")),
+        ),
+        Effect.orDie,
+      );
 
       const exit = yield* Effect.exit(run.run(input));
       const completedAt = yield* Effect.sync(() => Date.now());

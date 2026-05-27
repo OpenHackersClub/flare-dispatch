@@ -35,16 +35,19 @@ A user-defined run in their own repo has the same shape. The shipped runs below 
 | | Run | When to use | Status |
 |---|---|---|---|
 | 1 | [`offload-test`](#1-offload-test) | Single command, single container, pass/fail back to GHA | **Live** (V0) |
-| 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | Planned (V1) |
-| 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | Planned (V2) |
+| 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | **Live** (V1) — runs inline `sharded`; child-Workflow fan-out deferred |
+| 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | **Live** (V2) — runs inline `sharded`; Browser Rendering binding deferred |
 | 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | **Live** (V2) |
 | 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode | **Live** (V3) |
-| 6 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
-| 7 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
+| 6 | [`deploy-smoke`](#8-deploy-smoke) | Post-deploy smoke test against a live URL, Webhook-mode-first | **Live** (V2) |
+| 7 | [`playwright-demo`](#9-playwright-demo) | Record a Playwright walkthrough of a deployed surface | **Live** (V3) |
+| 8 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
+| 9 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
 | — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | **Live** — capability + primitive |
 | — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | **Live** — capability wired |
+| — | [`awsAssumeRole`](#primitive-awsassumerole) | Primitive — OIDC-federated AWS STS credentials | **Live** — capability + primitive |
 
-> **Live runs at HEAD** — `offload-test`, `cdp-acceptance`, `product-demo` (see [`runs/index.ts`](../runs/index.ts)). Action mode (HMAC POST) and Schedule mode (Cron Trigger → `scheduled()` handler) are both wired; Webhook mode is Planned (V1). Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
+> **Live runs at HEAD** — `offload-test`, `cdp-acceptance`, `product-demo`, `deploy-smoke`, `playwright-demo`, `matrix-fanout`, `playwright-e2e` (see [`runs/index.ts`](../runs/index.ts)). All three trigger modes are wired: Action mode (HMAC POST), Webhook mode (GitHub App webhook → `/v1/webhooks/github`), and Schedule mode (Cron Trigger → `scheduled()` handler). Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
 
 ---
 

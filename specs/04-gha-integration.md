@@ -5,7 +5,7 @@ GitHub talks to FlareDispatch through **three trigger modes**. Pick whichever fi
 | Mode | How a run is triggered | GHA workflow file? | GHA minutes per execution | Shared secret to rotate? | Status |
 |---|---|---|---|---|---|
 | **Action mode** | A GHA workflow calls `openhackersclub/flare-dispatch-action`; or any external caller HMAC-signs and POSTs the dispatch endpoint | yes (or none, for direct POST) | ~10 s per dispatch | yes — `FLAREDISPATCH_HMAC` | Live |
-| **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret | **Planned (V1)** — receiver not yet wired |
+| **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret | **Live** |
 | **Schedule mode** | A Cloudflare [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/) fires the Dispatcher's `scheduled()` handler on a wall-clock cadence; the handler instantiates a durable scheduling Workflow | no | 0 | no — no GitHub-facing secret at all | Live |
 
 All three modes hit the same Dispatcher, share the same dedup discipline, and report results through the same check-run callback. The rest of this doc is **one section per mode**, then the parts they share (check-runs callback, dedup, secrets, failure handling). Trust boundaries and threats per mode are catalogued in [07-trust-model](07-trust-model.md).
@@ -124,7 +124,7 @@ Use **only** when a follow-up GHA step needs the result inline — e.g. a deploy
 
 ## Webhook mode
 
-> **Status: Planned (V1).** The `FlareDispatch` GitHub App manifest declares `/v1/webhooks/github` as its `hook_attributes.url` (`infra/github-app-manifest.json`, mirrored in `apps/dispatcher/src/routes/github.ts`), but the receiver itself — `X-Hub-Signature-256` verify, `triggers` evaluation, `check_run.rerequested` handling, the `IDEMPOTENCY_KV` dedup window, and the installation-id map — is not yet wired in `apps/dispatcher/src/router.ts`. The shape below is the contract V1 implements; everything in this section is forward-looking.
+> **Status: Live.** The `FlareDispatch` GitHub App manifest declares `/v1/webhooks/github` as its `hook_attributes.url` (`infra/github-app-manifest.json`, mirrored in `apps/dispatcher/src/routes/github.ts`). The receiver — `X-Hub-Signature-256` verify, `triggers` evaluation, `actions[]` filtering, `gate()`, `IDEMPOTENCY_KV` receiver-dedup, and `check_run.rerequested` handling — is wired at `apps/dispatcher/src/routes/webhook.ts`.
 
 The `FlareDispatch` GitHub App webhook fires the Dispatcher's `/v1/webhooks/github` directly. No GHA workflow file is involved.
 

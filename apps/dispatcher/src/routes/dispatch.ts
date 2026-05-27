@@ -218,15 +218,21 @@ export const handleDispatch = async (
       ? headerKey
       : semanticInstanceId(body.run, body.github.repo, body.github.sha);
 
-  // 7. Receiver-level dedup short-circuit. With IDEMPOTENCY_KV bound, a
-  //    repeat delivery returns 202 immediately without touching Workflows.
-  //    Without the KV, the duplicate-create catch in step 8 supplies the
-  //    same end-state at the cost of one wasted Workflows RPC.
+  // 7. Receiver-level dedup: write the KV entry FIRST (before touching
+  //    Workflows) so a concurrent duplicate request sees the key and
+  //    short-circuits. `put` with `expirationTtl` is idempotent — two
+  //    racing writes both succeed; the second is a no-op on the same key.
+  //    Without IDEMPOTENCY_KV, dedup falls back to CF Workflows'
+  //    platform-level `create({id})` no-op (step 8).
   if (env.IDEMPOTENCY_KV !== undefined) {
     const existing = await env.IDEMPOTENCY_KV.get(executionId);
     if (existing !== null) {
       return json({ executionId }, 202);
     }
+    // Pre-record the dedup key so a concurrent request sees it.
+    await env.IDEMPOTENCY_KV.put(executionId, executionId, {
+      expirationTtl: IDEMPOTENCY_TTL_SEC,
+    });
   }
 
   // 8. Build the Workflow `params` — exactly the `DispatchPayload` shape
@@ -261,14 +267,7 @@ export const handleDispatch = async (
     if (!/already_exists/i.test(msg)) throw cause;
   }
 
-  // 9. Record the dedup key AFTER the Workflow create succeeds — a failed
-  //    create must remain retryable (the second attempt would otherwise be
-  //    silently short-circuited above).
-  if (env.IDEMPOTENCY_KV !== undefined) {
-    await env.IDEMPOTENCY_KV.put(executionId, executionId, {
-      expirationTtl: IDEMPOTENCY_TTL_SEC,
-    });
-  }
-
+  // 9. KV entry was already written in step 7 (before the create call) to
+  //    close the TOCTOU window. Return the execution id.
   return json({ executionId }, 202);
 };
