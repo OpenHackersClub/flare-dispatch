@@ -58,6 +58,7 @@ import {
 } from "@flare-dispatch/core";
 import { getInstallationToken } from "@flare-dispatch/github-app";
 import type { ChecksGithubConfig } from "./checks-github";
+import { previewSafeSandboxId } from "./preview-sandbox-id";
 import { authenticateCloneUrl, repoUrl } from "./sandbox-clone-url";
 
 /** Normalise a `command` (string | array) to a single shell string. */
@@ -96,10 +97,20 @@ export const makeSandboxCloudflareLive = (
   githubAuth?: ChecksGithubConfig,
   previewHostname?: string,
 ): Layer.Layer<SandboxTag> => {
+  // The Durable Object / sandbox id. `getSandbox` routes the DO by this id AND
+  // the SDK embeds it in the `exposePort` preview URL's DNS label, which must
+  // be lowercase `[a-z0-9-]` and short — so the raw `executionId`
+  // (`<run>:<Owner>_<repo>:<sha>`) makes `expose-app` throw `ExposePortFailed`.
+  // Normalise once and use the SAME value for every `getSandbox` call of this
+  // run (here + the cache/artifact layers via the `acquire` handle below);
+  // routing by a different id would resolve to a different container. R2 log
+  // keys keep the raw `executionId` for traceability. See preview-sandbox-id.ts.
+  const sandboxId = previewSafeSandboxId(executionId);
+
   // The per-execution sandbox client. `getSandbox` is cheap — the container is
   // provisioned lazily on first use — so resolving it once per Layer build is
   // correct (one container per execution).
-  const box = getSandbox(ns, executionId);
+  const box = getSandbox(ns, sandboxId);
 
   // `exec` log keys are unique within a run: the first exec is `exec.ndjson`
   // (the name the plan's acceptance pins), subsequent execs `exec-2.ndjson`, …
@@ -159,8 +170,10 @@ export const makeSandboxCloudflareLive = (
 
   const service: SandboxService = {
     // No explicit acquire in the SDK — the container is provisioned lazily.
-    // V0 = one container per execution, so the handle is the execution id.
-    acquire: () => Effect.succeed({ id: executionId } satisfies Container),
+    // V0 = one container per execution; the handle is the normalised sandbox
+    // id (NOT the raw executionId) so the cache + artifact layers, which call
+    // `getSandbox(ns, container.id)`, route to the same DO as `box` above.
+    acquire: () => Effect.succeed({ id: sandboxId } satisfies Container),
 
     gitClone: ({ repo, sha }) =>
       Effect.tryPromise({
@@ -362,7 +375,20 @@ export const makeSandboxCloudflareLive = (
               return { url };
             },
             catch: (cause) => new ExposePortFailed({ port, cause }),
-          }),
+          }).pipe(
+            // The Workflow records only the tagged error; the underlying SDK
+            // cause (e.g. `SandboxSecurityError: Preview URLs require lowercase
+            // sandbox IDs`) is otherwise lost. Log it so a failed `expose-app`
+            // is diagnosable from `wrangler tail` without DO-internal access.
+            Effect.tapError((e) =>
+              Effect.logError("exposePort failed", {
+                port,
+                sandboxId,
+                previewHostname,
+                cause: e.cause,
+              }),
+            ),
+          ),
   };
 
   return Layer.succeed(SandboxTag, service);
