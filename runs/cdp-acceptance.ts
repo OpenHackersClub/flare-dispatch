@@ -131,10 +131,18 @@ export const cdpAcceptance = defineRun({
         sandbox.exposePort({ container, port: input.appPort }),
       );
 
-      // attach-cdp — open a Browser Rendering CDP session. `wsEndpoint` is the
-      // URL the test command's Playwright process connects over.
-      const session = yield* step("attach-cdp", () =>
-        browser.newCDPSession({ targetUrl: exposed.url }),
+      // attach-cdp — open a Browser Rendering CDP session. The step persists
+      // ONLY the `wsEndpoint` string, not the whole `CDPSession`: the session
+      // carries a `close` Effect, and a CF Workflow checkpoint cannot
+      // structured-clone an Effect (`DataCloneError: … EffectPrimitiveSuccess`)
+      // — every `step` return value is durably checkpointed. The suite never
+      // closes the session (the container is torn down at run end), so the
+      // endpoint the Playwright process connects over is all we carry across
+      // the step boundary.
+      const cdpWsUrl = yield* step("attach-cdp", () =>
+        browser
+          .newCDPSession({ targetUrl: exposed.url })
+          .pipe(Effect.map((session) => session.wsEndpoint)),
       );
 
       // run-tests — run the acceptance suite. A non-zero exit code is a NORMAL
@@ -148,7 +156,7 @@ export const cdpAcceptance = defineRun({
           container,
           env: {
             ...secretEnv,
-            CDP_WS_URL: session.wsEndpoint,
+            CDP_WS_URL: cdpWsUrl,
             CDP_TARGET_URL: exposed.url,
           },
           command: input.testCommand,
