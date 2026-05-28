@@ -48,3 +48,13 @@ RUN set -eux; \
     rm /tmp/node24.tar.gz; \
     /opt/node24/bin/node --version
 ENV PATH=/opt/node24/bin:$PATH
+
+# Enable Corepack so the `pnpm` / `yarn` shims are on PATH for every
+# `sandbox.exec` / detached boot — without each command first running
+# `corepack enable`. This matters because `installCached` (core primitive) runs
+# the bare `pnpm install --frozen-lockfile`; on an image where pnpm isn't on
+# PATH that exits 127 (`pnpm: not found`), and since the install exit code is
+# not checked the failure is silent — leaving no node_modules and a boot chain
+# that crashes ~2-3s later with PortNeverOpened. Corepack resolves the pinned
+# version from each repo's `packageManager` field at first use.
+RUN corepack enable
