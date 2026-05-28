@@ -46,6 +46,30 @@ export const enqueueInlineEvent = (
   queue.set(type, arr);
 };
 
+/**
+ * Fail (as a defect) if a step's success value cannot be structured-cloned —
+ * the operation `WorkflowStep.do` performs to checkpoint each result in
+ * production. Mirroring it here turns a latent `DataCloneError` (e.g. a value
+ * carrying an `Effect`) into a unit-test failure instead of a runtime-only one.
+ */
+const assertStructuredCloneable = (
+  name: string,
+  value: unknown,
+): Effect.Effect<void> =>
+  Effect.try({
+    try: () => {
+      structuredClone(value);
+    },
+    catch: (cause) =>
+      new Error(
+        `step "${name}" returned a non-serializable value — CF Workflows ` +
+          `checkpoints every step result via structuredClone, which would ` +
+          `fail at runtime with: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+      ),
+  }).pipe(Effect.orDie);
+
 /** Extract a tagged error's `_tag` from a Cause, without a raw `._tag` branch. */
 const errorTagOf = (cause: Cause.Cause<unknown>): string | undefined =>
   Option.match(Cause.failureOption(cause), {
@@ -90,14 +114,25 @@ export const makeStepRunnerInline = (
 
             return yield* Exit.match(exit, {
               onSuccess: (value) =>
-                executions
-                  .finishStep({
-                    executionId,
-                    name,
-                    completedAt,
-                    status: "success",
-                  })
-                  .pipe(Effect.as(value)),
+                // The production `StepRunnerWorkflow` backs this seam with
+                // `WorkflowStep.do`, which durably checkpoints every step
+                // result by structured-cloning it. A non-serializable return
+                // (e.g. an object carrying an `Effect`) fails at runtime with
+                // `DataCloneError` — invisible to an inline fake that just
+                // passes the value through. Enforce the same contract here so
+                // unit tests catch it without a live Workflow.
+                assertStructuredCloneable(name, value).pipe(
+                  Effect.andThen(
+                    executions
+                      .finishStep({
+                        executionId,
+                        name,
+                        completedAt,
+                        status: "success",
+                      })
+                      .pipe(Effect.as(value)),
+                  ),
+                ),
               onFailure: (cause) =>
                 executions
                   .finishStep({
