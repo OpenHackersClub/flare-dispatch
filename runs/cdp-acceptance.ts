@@ -165,21 +165,30 @@ export const cdpAcceptance = defineRun({
 
       // upload-report / upload-screenshots — promote both bundles to signed R2
       // URLs surfaced in the check-run summary.
+      //
+      // Best-effort: an artifact upload failure must NOT mask the test verdict.
+      // The run's purpose is to report pass/fail (`exitCode`); the report +
+      // screenshots are a debugging bonus. Previously a throwing `upload-report`
+      // (e.g. an empty/oversized `playwright-report/`) aborted the run before
+      // `exitCode` was recorded, so even a *passing* suite came back red with a
+      // null summary. Catch upload failures, log them, and continue with an
+      // empty URI so the verdict always lands.
+      const uploadOrEmpty = (label: string, name: string, path: string) =>
+        artifact
+          .upload({ name, path, container, signedUrlTTL: "30 days" })
+          .pipe(
+            Effect.catchAll((cause) =>
+              io
+                .log("warn", `cdp-acceptance ${label} upload failed: ${cause}`)
+                .pipe(Effect.as("")),
+            ),
+          );
+
       const reportUri = yield* step("upload-report", () =>
-        artifact.upload({
-          name: "acceptance-report",
-          path: `${dir}/playwright-report/`,
-          container,
-          signedUrlTTL: "30 days",
-        }),
+        uploadOrEmpty("report", "acceptance-report", `${dir}/playwright-report/`),
       );
       const screenshotsUri = yield* step("upload-screenshots", () =>
-        artifact.upload({
-          name: "screenshots",
-          path: `${dir}/artifacts/`,
-          container,
-          signedUrlTTL: "30 days",
-        }),
+        uploadOrEmpty("screenshots", "screenshots", `${dir}/artifacts/`),
       );
 
       yield* io.log("info", `cdp-acceptance exited ${exec.exitCode}`);
