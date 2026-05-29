@@ -14,10 +14,12 @@
 //     dispatch). The validator is factored into a small helper rather than
 //     duplicated.
 //
-//   * `open <url>` (macOS) / `xdg-open <url>` (Linux) is best-effort. A
-//     headless agent, a missing `open` binary, or a non-interactive shell all
-//     just print the URL and continue — the CLI never exits non-zero because
-//     of a browser-launch failure.
+//   * `open <url>` (macOS) / `xdg-open <url>` (Linux) is best-effort and
+//     gated on an interactive terminal. A headless agent, a pipe, or CI must
+//     NOT have a browser window pop open on the host machine — so by default
+//     we auto-open only when stdout is a TTY and `CI` is unset, and otherwise
+//     just print the URL. `--open` / `--no-open` overrides the detection. The
+//     CLI never exits non-zero because of a browser-launch failure.
 //
 //   * No blocking on the browser. The user might run the wrangler commands
 //     hours later; the CLI returns immediately.
@@ -26,7 +28,7 @@
 
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
-import { Console, Effect, Match } from "effect";
+import { Console, Effect, Match, Option } from "effect";
 import { InvalidEndpoint, MissingInput } from "./errors.js";
 
 /**
@@ -94,14 +96,32 @@ const tryOpenBrowser = (url: string): Effect.Effect<boolean> =>
     }
   });
 
+/**
+ * Whether to auto-open a browser when the caller didn't pass `--open` /
+ * `--no-open`. Popping a browser window only makes sense for a human sitting at
+ * an interactive terminal: when stdout isn't a TTY (piped, an agent harness, a
+ * non-interactive shell) or `CI` is set, an unexpected window on the host is
+ * surprising at best and wrong at worst — print the URL and let them click it.
+ */
+const isInteractiveTerminal: Effect.Effect<boolean> = Effect.sync(
+  () => Boolean(process.stdout.isTTY) && !process.env.CI,
+);
+
 export interface GithubAppCreateOptions {
   /** Already-validated endpoint (no trailing slash, http(s) only). */
   readonly endpoint: string;
+  /**
+   * Whether to launch a browser at the install URL. When `false` the URL is
+   * only printed — the caller resolves this from `--open`/`--no-open` and the
+   * interactive-terminal heuristic.
+   */
+  readonly openBrowser: boolean;
 }
 
 /**
- * Print the install URL and try to open it. Never fails — a browser-launch
- * failure is reported on stderr and we still exit zero.
+ * Print the install URL and — when `openBrowser` is set — try to open it.
+ * Never fails: a browser-launch failure falls back to the printed URL and we
+ * still exit zero.
  */
 export const runGithubAppCreate = (
   opts: GithubAppCreateOptions,
@@ -119,6 +139,10 @@ export const runGithubAppCreate = (
       "credentials with the `wrangler secret put` commands you need to run.\n",
     );
 
+    if (!opts.openBrowser) {
+      return;
+    }
+
     const launched = yield* tryOpenBrowser(url);
     if (!launched) {
       yield* Console.log(
@@ -131,14 +155,22 @@ export const runGithubAppCreate = (
  * Resolve `--endpoint` from the parsed CLI option, validate it, and run the
  * launcher. Surfaces the same `InvalidEndpoint` / `MissingInput` tagged
  * errors the dispatch path uses so the failure-reporter behaves the same way.
+ *
+ * `open` is the parsed `--open`/`--no-open` flag: `Some(true)`/`Some(false)`
+ * forces the choice, `None` (flag absent) defers to `isInteractiveTerminal`.
  */
 export const runGithubAppCreateFromOption = (
   endpoint: string | undefined,
+  opts: { readonly open: Option.Option<boolean> } = { open: Option.none() },
 ): Effect.Effect<void, InvalidEndpoint | MissingInput> =>
   Effect.gen(function* () {
     if (endpoint === undefined || endpoint === "") {
       return yield* Effect.fail(new MissingInput({ name: "endpoint" }));
     }
     const validated = yield* validateEndpoint(endpoint);
-    yield* runGithubAppCreate({ endpoint: validated });
+    const openBrowser = yield* Option.match(opts.open, {
+      onNone: () => isInteractiveTerminal,
+      onSome: (b) => Effect.succeed(b),
+    });
+    yield* runGithubAppCreate({ endpoint: validated, openBrowser });
   });

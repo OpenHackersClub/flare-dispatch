@@ -6,13 +6,25 @@
 // observable return; there's nothing meaningful to assert that wouldn't be
 // a brittle test of the host environment's `open`/`xdg-open` binary.
 
-import { Effect, Exit } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { Effect, Exit, Option } from "effect";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   runGithubAppCreate,
   runGithubAppCreateFromOption,
   validateEndpoint,
 } from "./github-app.js";
+
+// Mock the browser launcher so the "open" path is observable (and so no real
+// browser window ever opens during the suite). `tryOpenBrowser` calls
+// `spawn(...).on(...).unref()`, so the stub must return that shape.
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => ({ on: vi.fn(), unref: vi.fn() })),
+}));
+
+afterEach(() => {
+  vi.mocked(spawn).mockClear();
+});
 
 // ---------------------------------------------------------------------------
 // validateEndpoint — the shared scheme/URL rule. Same fixtures as `dispatch`.
@@ -103,7 +115,7 @@ const captureStdout = async (
 describe("runGithubAppCreate", () => {
   it("prints the install URL with /v1/github/install/new appended", async () => {
     const lines = await captureStdout(
-      runGithubAppCreate({ endpoint: "https://x.example" }),
+      runGithubAppCreate({ endpoint: "https://x.example", openBrowser: false }),
     );
     const joined = lines.join("\n");
     expect(joined).toContain("https://x.example/v1/github/install/new");
@@ -114,7 +126,7 @@ describe("runGithubAppCreate", () => {
 
   it("doesn't double-append /v1/github/install/new when given an already-stripped endpoint", async () => {
     const lines = await captureStdout(
-      runGithubAppCreate({ endpoint: "https://x.example" }),
+      runGithubAppCreate({ endpoint: "https://x.example", openBrowser: false }),
     );
     const joined = lines.join("\n");
     expect(joined).not.toContain(
@@ -171,6 +183,32 @@ describe("runGithubAppCreateFromOption", () => {
     if (Exit.isFailure(exit)) {
       expect(JSON.stringify(exit.cause)).toContain("MissingInput");
     }
+  });
+
+  it("does NOT open a browser when --no-open is passed (open: Some(false))", async () => {
+    const lines = await captureStdout(
+      runGithubAppCreateFromOption("https://x.example", {
+        open: Option.some(false),
+      }).pipe(Effect.catchAll(() => Effect.die("unexpected failure"))),
+    );
+    expect(lines.join("\n")).toContain(
+      "https://x.example/v1/github/install/new",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("opens a browser when --open is passed (open: Some(true))", async () => {
+    await captureStdout(
+      runGithubAppCreateFromOption("https://x.example", {
+        open: Option.some(true),
+      }).pipe(Effect.catchAll(() => Effect.die("unexpected failure"))),
+    );
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(spawn).mock.calls[0];
+    const args = (call?.[1] ?? []) as readonly string[];
+    expect(args.join(" ")).toContain(
+      "https://x.example/v1/github/install/new",
+    );
   });
 
   it("strips a trailing slash from the endpoint before composing the URL", async () => {
