@@ -20,6 +20,7 @@ export type CheckCreateCall = {
   readonly sha: string;
   readonly name: string;
   readonly output?: CheckOutput;
+  readonly detailsUrl?: string;
 };
 
 export type CheckUpdateCall = {
@@ -27,6 +28,7 @@ export type CheckUpdateCall = {
   readonly repo: string;
   readonly conclusion: CheckConclusion;
   readonly output?: CheckOutput;
+  readonly detailsUrl?: string;
 };
 
 /** Inspectable record of every check-run call. */
@@ -44,17 +46,17 @@ export const makeChecksFake = (): {
   let checkRunSeq = 0;
 
   const service: ChecksService = {
-    create: ({ repo, sha, name, output }) =>
+    create: ({ repo, sha, name, output, detailsUrl }) =>
       Effect.sync(() => {
         checkRunSeq += 1;
         const checkRunId = `fake-check-${checkRunSeq}`;
-        state.creates.push({ checkRunId, repo, sha, name, output });
+        state.creates.push({ checkRunId, repo, sha, name, output, detailsUrl });
         return checkRunId;
       }),
 
-    update: ({ repo, checkRunId, conclusion, output }) =>
+    update: ({ repo, checkRunId, conclusion, output, detailsUrl }) =>
       Effect.sync(() => {
-        state.updates.push({ checkRunId, repo, conclusion, output });
+        state.updates.push({ checkRunId, repo, conclusion, output, detailsUrl });
       }),
   };
 

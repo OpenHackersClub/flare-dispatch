@@ -73,6 +73,12 @@ export type CreateCheckRunOptions = ClientOptions & {
   readonly name: string;
   /** Optional initial output block. */
   readonly output?: CheckRunOutput;
+  /**
+   * Optional `details_url` — the "Details" link GitHub renders on the check.
+   * FlareDispatch points it at the Cloudflare Workflows instance page so a
+   * reviewer jumps straight from the PR check to the execution's step logs.
+   */
+  readonly detailsUrl?: string;
 };
 
 /**
@@ -97,6 +103,7 @@ export const createCheckRun = async (
         head_sha: opts.sha,
         status: "in_progress",
         started_at: new Date().toISOString(),
+        ...(opts.detailsUrl ? { details_url: opts.detailsUrl } : {}),
         ...(opts.output ? { output: opts.output } : {}),
       }),
     },
@@ -124,6 +131,8 @@ export type UpdateCheckRunOptions = ClientOptions & {
   readonly conclusion: CheckConclusion;
   /** Optional output block — the markdown summary GitHub renders. */
   readonly output?: CheckRunOutput;
+  /** Optional `details_url` — preserved on completion so the link persists. */
+  readonly detailsUrl?: string;
 };
 
 /**
@@ -147,6 +156,7 @@ export const updateCheckRun = async (
         status: "completed",
         conclusion: opts.conclusion,
         completed_at: new Date().toISOString(),
+        ...(opts.detailsUrl ? { details_url: opts.detailsUrl } : {}),
         ...(opts.output ? { output: opts.output } : {}),
       }),
     },
