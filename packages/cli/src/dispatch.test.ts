@@ -128,15 +128,22 @@ describe("buildBody", () => {
     });
   });
 
-  it("defaults installation_id to 0 and leaves actor undefined when unset", () => {
+  it("omits installation_id (undefined) and leaves actor undefined when unset", () => {
+    // The dispatch schema is `positive | undefined`; a literal 0 is a 400.
+    // An unset installation id must drop out of the JSON, not serialize as 0.
     const body = buildBody(
       baseEnv({
         INPUT_INSTALLATION_ID: undefined,
         GITHUB_ACTOR: undefined,
       }),
     );
-    expect(body.github.installation_id).toBe(0);
+    expect(body.github.installation_id).toBeUndefined();
     expect(body.github.actor).toBeUndefined();
+  });
+
+  it("omits installation_id when the input is a non-positive 0", () => {
+    const body = buildBody(baseEnv({ INPUT_INSTALLATION_ID: "0" }));
+    expect(body.github.installation_id).toBeUndefined();
   });
 
   it("defaults inputs to {} when INPUT_INPUTS is unset", () => {

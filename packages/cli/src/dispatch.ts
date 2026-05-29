@@ -58,7 +58,7 @@ export interface DispatchBody {
     readonly ref: string;
     readonly sha: string;
     readonly actor?: string;
-    readonly installation_id: number;
+    readonly installation_id?: number;
   };
   readonly inputs: unknown;
   readonly trigger: {
@@ -133,7 +133,12 @@ export const resolveHeadSha = (env: DispatchEnv): string => {
  * Assemble the dispatch body from input + `GITHUB_*` env vars. Mirrors the
  * inline `node -e` script the old `dispatch.sh` ran:
  *
- *   * `installation_id` defaults to `0` (not `undefined`).
+ *   * `installation_id` is OMITTED (undefined → dropped from the JSON) when
+ *     the input is unset or `<= 0`. `action.yml` documents it as optional —
+ *     "when omitted, the Dispatcher resolves it server-side from the App's
+ *     webhook-registered installation map" — and the dispatch schema is
+ *     `positive | undefined`, so a literal `0` is rejected (HTTP 400). Sending
+ *     a positive id passes it through unchanged.
  *   * `actor` is `undefined` when unset (and therefore omitted from the JSON).
  *   * `workflow_run_id` is `undefined` when unset or `0`.
  *   * `inputs` defaults to `{}` and is parsed from JSON.
@@ -149,7 +154,12 @@ export const buildBody = (env: DispatchEnv): DispatchBody => {
       // so the check-run lands where branch protection can gate it.
       sha: resolveHeadSha(env),
       actor: env.GITHUB_ACTOR ? env.GITHUB_ACTOR : undefined,
-      installation_id: Number(readInput(env, "installation-id") ?? 0),
+      // Omit a 0/unset installation id (the dispatch schema is
+      // `positive | undefined`; a literal 0 is a 400). The Dispatcher resolves
+      // it server-side when absent.
+      installation_id: ((id) => (id > 0 ? id : undefined))(
+        Number(readInput(env, "installation-id") ?? 0),
+      ),
     },
     inputs: JSON.parse(readInput(env, "inputs") ?? "{}") as unknown,
     trigger: {

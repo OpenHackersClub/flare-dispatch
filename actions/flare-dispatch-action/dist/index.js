@@ -28495,7 +28495,12 @@ var buildBody = (env) => {
       // so the check-run lands where branch protection can gate it.
       sha: resolveHeadSha(env),
       actor: env.GITHUB_ACTOR ? env.GITHUB_ACTOR : void 0,
-      installation_id: Number(readInput(env, "installation-id") ?? 0)
+      // Omit a 0/unset installation id (the dispatch schema is
+      // `positive | undefined`; a literal 0 is a 400). The Dispatcher resolves
+      // it server-side when absent.
+      installation_id: ((id) => id > 0 ? id : void 0)(
+        Number(readInput(env, "installation-id") ?? 0)
+      )
     },
     inputs: JSON.parse(readInput(env, "inputs") ?? "{}"),
     trigger: {
