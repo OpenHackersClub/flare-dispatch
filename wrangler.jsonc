@@ -19,9 +19,9 @@
   //     logs. Omit it (the BYOC default — each deploy owns its account) and the
   //     check-run renders exactly as before with no link. Uncomment + fill, or
   //     override per-deploy with `CLOUDFLARE_ACCOUNT_ID=... wrangler deploy`.
-  // "vars": {
-  //   "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef"
-  // },
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "c91d52c288c452ab734ede1518b00e11"
+  },
 
   // RunWorkflow (apps/dispatcher/src/workflow.ts) maps each run `step(...)` to a
   // durable WorkflowStep.do checkpoint under an Effect runtime — see PR4.
