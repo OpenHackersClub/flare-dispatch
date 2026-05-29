@@ -14,7 +14,7 @@
 //     attempts total with `attempt * backoffMs` backoff (5s, 10s by default).
 
 import { createHash, createHmac } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { Console, Effect, Match, Schedule } from "effect";
 import {
   BadMode,
@@ -58,7 +58,7 @@ export interface DispatchBody {
     readonly ref: string;
     readonly sha: string;
     readonly actor?: string;
-    readonly installation_id: number;
+    readonly installation_id?: number;
   };
   readonly inputs: unknown;
   readonly trigger: {
@@ -99,10 +99,46 @@ const readInput = (env: DispatchEnv, name: string): string | undefined => {
 };
 
 /**
+ * Resolve the SHA the run keys on — the commit the verdict check-run and the
+ * executionId must attach to. On a `pull_request` / `pull_request_target`
+ * event `GITHUB_SHA` is the ephemeral test-*merge* commit (a throwaway merge
+ * of head into base that GitHub regenerates on every base change); a check-run
+ * posted there is invisible on the PR head and branch protection cannot gate
+ * it. The verdict belongs on the PR *head* SHA — the commit the author pushed.
+ *
+ * Read `pull_request.head.sha` from the event payload at `GITHUB_EVENT_PATH`.
+ * Fall back to `GITHUB_SHA` for push events and whenever the payload is absent
+ * or unreadable (the worst case is the prior behaviour, never a hard failure).
+ */
+export const resolveHeadSha = (env: DispatchEnv): string => {
+  const fallback = env.GITHUB_SHA ?? "";
+  const eventName = env.GITHUB_EVENT_NAME ?? "";
+  if (eventName !== "pull_request" && eventName !== "pull_request_target") {
+    return fallback;
+  }
+  const path = env.GITHUB_EVENT_PATH;
+  if (path === undefined || path === "") return fallback;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      pull_request?: { head?: { sha?: string } };
+    };
+    const head = parsed.pull_request?.head?.sha;
+    return head !== undefined && head !== "" ? head : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+/**
  * Assemble the dispatch body from input + `GITHUB_*` env vars. Mirrors the
  * inline `node -e` script the old `dispatch.sh` ran:
  *
- *   * `installation_id` defaults to `0` (not `undefined`).
+ *   * `installation_id` is OMITTED (undefined → dropped from the JSON) when
+ *     the input is unset or `<= 0`. `action.yml` documents it as optional —
+ *     "when omitted, the Dispatcher resolves it server-side from the App's
+ *     webhook-registered installation map" — and the dispatch schema is
+ *     `positive | undefined`, so a literal `0` is rejected (HTTP 400). Sending
+ *     a positive id passes it through unchanged.
  *   * `actor` is `undefined` when unset (and therefore omitted from the JSON).
  *   * `workflow_run_id` is `undefined` when unset or `0`.
  *   * `inputs` defaults to `{}` and is parsed from JSON.
@@ -114,9 +150,16 @@ export const buildBody = (env: DispatchEnv): DispatchBody => {
     github: {
       repo: env.GITHUB_REPOSITORY ?? "",
       ref: env.GITHUB_REF ?? "refs/heads/main",
-      sha: env.GITHUB_SHA ?? "",
+      // PR head SHA on pull_request events, not the ephemeral merge commit —
+      // so the check-run lands where branch protection can gate it.
+      sha: resolveHeadSha(env),
       actor: env.GITHUB_ACTOR ? env.GITHUB_ACTOR : undefined,
-      installation_id: Number(readInput(env, "installation-id") ?? 0),
+      // Omit a 0/unset installation id (the dispatch schema is
+      // `positive | undefined`; a literal 0 is a 400). The Dispatcher resolves
+      // it server-side when absent.
+      installation_id: ((id) => (id > 0 ? id : undefined))(
+        Number(readInput(env, "installation-id") ?? 0),
+      ),
     },
     inputs: JSON.parse(readInput(env, "inputs") ?? "{}") as unknown,
     trigger: {
@@ -176,7 +219,9 @@ export const computeIdempotencyKey = (
   run: string,
 ): string => {
   const repo = env.GITHUB_REPOSITORY ?? "";
-  const sha = env.GITHUB_SHA ?? "";
+  // Key idempotency on the same SHA the body + check-run use (PR head on PR
+  // events) so a step re-run collapses onto one execution per head commit.
+  const sha = resolveHeadSha(env);
   if (repo !== "" && sha !== "") {
     const repoSafe = repo.replace(/\//g, "_");
     const shaShort = sha.slice(0, 12);

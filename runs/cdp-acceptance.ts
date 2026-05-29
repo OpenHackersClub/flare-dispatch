@@ -150,17 +150,28 @@ export const cdpAcceptance = defineRun({
       // Effect failure. The suite writes screenshots/traces under ./artifacts.
       // `CDP_TARGET_URL` is the publicly-reachable URL the suite navigates to;
       // `CDP_WS_URL` is the Browser Rendering endpoint the suite connects over.
-      const exec = yield* step("run-tests", () =>
-        sandbox.exec({
-          cwd: dir,
-          container,
-          env: {
-            ...secretEnv,
-            CDP_WS_URL: cdpWsUrl,
-            CDP_TARGET_URL: exposed.url,
-          },
-          command: input.testCommand,
-        }),
+      //
+      // `timeoutSec: 1740` raises the step's CF Workflows timeout above the
+      // 10-minute default. A full remote-CDP acceptance suite runs longer than
+      // 10 min, so the default capped `run-tests` at 600s — the step timed out
+      // with `WorkflowTimeoutError` and retried forever. 1740s (29 min) sits
+      // under the run's 1800s `maxDurationSec` ceiling and above the consumer
+      // suite's own ~25-min Playwright `globalTimeout`, so the suite self-aborts
+      // (flushing its report) before this step timeout can fire.
+      const exec = yield* step(
+        "run-tests",
+        () =>
+          sandbox.exec({
+            cwd: dir,
+            container,
+            env: {
+              ...secretEnv,
+              CDP_WS_URL: cdpWsUrl,
+              CDP_TARGET_URL: exposed.url,
+            },
+            command: input.testCommand,
+          }),
+        { timeoutSec: 1740 },
       );
 
       // upload-report / upload-screenshots — promote both bundles to signed R2

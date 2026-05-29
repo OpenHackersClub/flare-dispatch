@@ -52,7 +52,20 @@ import { countRows, makeTestBindings, type TestBindings } from "./test-support";
  * for real against it.
  */
 const fakeWorkflowStep = {
-  do: <T>(_name: string, callback: () => Promise<T>): Promise<T> => callback(),
+  // Handle both `do(name, cb)` and `do(name, config, cb)` — the runner uses the
+  // config overload when a step sets a timeout/retries. The fake ignores the
+  // config (there is no Workflows engine to honor it) and just runs the body.
+  do: <T>(
+    _name: string,
+    configOrCallback: unknown,
+    maybeCallback?: () => Promise<T>,
+  ): Promise<T> => {
+    const callback =
+      typeof configOrCallback === "function"
+        ? (configOrCallback as () => Promise<T>)
+        : (maybeCallback as () => Promise<T>);
+    return callback();
+  },
 };
 
 /**
