@@ -42,6 +42,7 @@ import {
   runEffect,
   type RunContext,
   StepFailed,
+  type StepOpts,
   StepRunner,
   type StepRunnerService,
 } from "@flare-dispatch/core";
@@ -57,6 +58,63 @@ type WorkflowStepLike = {
     name: string,
     opts: { type: string; timeout: string | number },
   ) => Promise<{ type: string; payload: unknown }>;
+};
+
+/**
+ * CF's `WorkflowStep.do` has a second overload — `do(name, config, callback)` —
+ * that takes a per-step `WorkflowStepConfig` (timeout, retries). We model the
+ * step surface minimally (no CF type dependency), so that overload isn't on
+ * `WorkflowStepLike`; this is the typed view we cast to when passing a config.
+ * Without it every step inherits CF Workflows' 10-minute default step timeout,
+ * which capped the multi-minute acceptance suite at 600s. See `buildStepConfig`.
+ */
+type DoWithConfig = <T>(
+  name: string,
+  config: WorkflowStepConfigLike,
+  callback: () => Promise<T>,
+) => Promise<T>;
+
+/**
+ * The subset of CF's `WorkflowStepConfig` the runner sets from `StepOpts`.
+ * `timeout` is a CF duration string ("1740 seconds"); `retries` mirrors CF's
+ * `{ limit, delay, backoff }`.
+ */
+type WorkflowStepConfigLike = {
+  readonly timeout?: string | number;
+  readonly retries?: {
+    readonly limit: number;
+    readonly delay: string | number;
+    readonly backoff?: "constant" | "linear" | "exponential";
+  };
+};
+
+/**
+ * Map a run's `StepOpts` onto a CF `WorkflowStepConfig`. Returns `undefined`
+ * when neither a `timeoutSec` nor `retries` is set, so those steps keep the
+ * bare `do(name, callback)` call (and CF's defaults). A `timeoutSec` becomes
+ * a CF duration string; `retries` becomes a bounded exponential-backoff policy.
+ */
+export const buildStepConfig = (
+  opts?: StepOpts,
+): WorkflowStepConfigLike | undefined => {
+  if (opts === undefined) return undefined;
+  const config: {
+    timeout?: string;
+    retries?: WorkflowStepConfigLike["retries"];
+  } = {};
+  if (opts.timeoutSec !== undefined) {
+    config.timeout = `${opts.timeoutSec} seconds`;
+  }
+  if (opts.retries !== undefined) {
+    config.retries = {
+      limit: opts.retries,
+      delay: "5 seconds",
+      backoff: "exponential",
+    };
+  }
+  return config.timeout === undefined && config.retries === undefined
+    ? undefined
+    : config;
 };
 
 /** A thrown error carrying an Effect `Cause` — produced by `runEffect`. */
@@ -122,12 +180,23 @@ export const makeStepRunnerCloudflare = (
             // records+retries it. `Effect.tryPromise` brings the settled
             // Promise back: a rejection lands in the failure channel as
             // `{ error }`, so failure is data the match below branches on.
+            //
+            // Pass the per-step CF config (timeout/retries) when the run set
+            // one — otherwise the bare `do(name, callback)` keeps CF's
+            // defaults (notably the 10-minute step timeout). A long step like
+            // the acceptance suite raises its ceiling via `StepOpts.timeoutSec`.
+            const stepConfig = buildStepConfig(stepOpts);
+            const runBody = () => runEffect(Effect.provide(body(), context));
+            // `WorkflowStepLike` models only the no-config `do` overload; the
+            // real CF `step.do` also accepts `(name, config, callback)`. Bridge
+            // to it via `DoWithConfig` when a step set a timeout/retries.
+            const doWithConfig = workflowStep.do as unknown as DoWithConfig;
             const exit = yield* Effect.exit(
               Effect.tryPromise({
                 try: () =>
-                  workflowStep.do(name, () =>
-                    runEffect(Effect.provide(body(), context)),
-                  ),
+                  stepConfig === undefined
+                    ? workflowStep.do(name, runBody)
+                    : doWithConfig(name, stepConfig, runBody),
                 catch: (error): { readonly error: unknown } => ({ error }),
               }),
             );
