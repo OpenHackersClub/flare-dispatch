@@ -77,6 +77,29 @@ describe("createCheckRun", () => {
     });
   });
 
+  it("attaches details_url when provided, omits it otherwise", async () => {
+    await createCheckRun({
+      token: "ghs_test",
+      repo: "owner/name",
+      sha: "abc123",
+      name: "flare-dispatch/cdp-acceptance",
+      detailsUrl:
+        "https://dash.cloudflare.com/acct/workers/workflows/runs-workflow/instance/exec-1",
+    });
+    expect(posts[0]!.body.details_url).toBe(
+      "https://dash.cloudflare.com/acct/workers/workflows/runs-workflow/instance/exec-1",
+    );
+
+    posts = [];
+    await createCheckRun({
+      token: "ghs_test",
+      repo: "owner/name",
+      sha: "abc123",
+      name: "flare-dispatch/cdp-acceptance",
+    });
+    expect(posts[0]!.body).not.toHaveProperty("details_url");
+  });
+
   it("surfaces a GithubApiError on a non-2xx response", async () => {
     server.use(
       http.post(
@@ -125,6 +148,20 @@ describe("updateCheckRun", () => {
       status: "completed",
       conclusion: "failure",
     });
+  });
+
+  it("preserves details_url on completion when provided", async () => {
+    await updateCheckRun({
+      token: "ghs_test",
+      repo: "owner/name",
+      checkRunId: "555001",
+      conclusion: "success",
+      detailsUrl:
+        "https://dash.cloudflare.com/acct/workers/workflows/runs-workflow/instance/exec-1",
+    });
+    expect(patches[0]!.body.details_url).toBe(
+      "https://dash.cloudflare.com/acct/workers/workflows/runs-workflow/instance/exec-1",
+    );
   });
 
   it("surfaces a GithubApiError on a non-2xx response", async () => {

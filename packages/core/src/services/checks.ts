@@ -36,6 +36,8 @@ export interface ChecksService {
     sha: string;
     name: string;
     output?: CheckOutput;
+    /** Optional "Details" link — e.g. the Cloudflare Workflows instance page. */
+    detailsUrl?: string;
   }) => Effect.Effect<string>;
 
   /** Complete a check-run with a conclusion. */
@@ -44,6 +46,8 @@ export interface ChecksService {
     checkRunId: string;
     conclusion: CheckConclusion;
     output?: CheckOutput;
+    /** Optional "Details" link, preserved on completion. */
+    detailsUrl?: string;
   }) => Effect.Effect<void>;
 }
 
@@ -64,11 +68,13 @@ export const checks = {
     sha: string;
     name: string;
     output?: CheckOutput;
+    detailsUrl?: string;
   }) => Effect.flatMap(Checks, (c) => c.create(opts)),
   update: (opts: {
     repo: string;
     checkRunId: string;
     conclusion: CheckConclusion;
     output?: CheckOutput;
+    detailsUrl?: string;
   }) => Effect.flatMap(Checks, (c) => c.update(opts)),
 } as const;

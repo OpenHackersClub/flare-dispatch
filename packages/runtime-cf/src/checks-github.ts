@@ -110,7 +110,7 @@ export const makeChecksGithubLive = (
     }).pipe(Effect.orDie);
 
   const service: ChecksService = {
-    create: ({ repo, sha, name, output }) =>
+    create: ({ repo, sha, name, output, detailsUrl }) =>
       Effect.gen(function* () {
         const accessToken = yield* token();
         return yield* Effect.tryPromise({
@@ -121,13 +121,14 @@ export const makeChecksGithubLive = (
               sha,
               name,
               output,
+              detailsUrl,
             }),
           catch: (cause) =>
             new Error("ChecksGithubLive: check-run create failed", { cause }),
         });
       }).pipe(Effect.orDie),
 
-    update: ({ repo, checkRunId, conclusion, output }) =>
+    update: ({ repo, checkRunId, conclusion, output, detailsUrl }) =>
       Effect.gen(function* () {
         // A no-op create (degraded earlier in the same execution) yields the
         // sentinel id — there is no real check-run to PATCH, so skip cleanly.
@@ -146,6 +147,7 @@ export const makeChecksGithubLive = (
               checkRunId,
               conclusion,
               output,
+              detailsUrl,
             }),
           catch: (cause) =>
             new Error("ChecksGithubLive: check-run update failed", { cause }),
