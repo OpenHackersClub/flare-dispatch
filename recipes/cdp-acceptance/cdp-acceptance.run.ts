@@ -67,14 +67,19 @@ export const cdpAcceptance = defineRun({
 
       // Attach Browser Rendering over CDP and run the acceptance suite. The
       // suite drives the app and writes screenshots/traces under ./artifacts.
-      const session = yield* step("attach-cdp", () =>
-        browser.newCDPSession({ targetUrl: exposed.url }),
+      // Persist only the `wsEndpoint` string: a `CDPSession` carries a `close`
+      // Effect, which a CF Workflow `step` checkpoint cannot structured-clone
+      // (`DataCloneError`). See runs/cdp-acceptance.ts attach-cdp note.
+      const cdpWsUrl = yield* step("attach-cdp", () =>
+        browser
+          .newCDPSession({ targetUrl: exposed.url })
+          .pipe(Effect.map((session) => session.wsEndpoint)),
       );
       const exec = yield* step("run-tests", () =>
         sandbox.exec({
           cwd: dir,
           container,
-          env: { CDP_WS_URL: session.wsEndpoint, CDP_TARGET_URL: exposed.url },
+          env: { CDP_WS_URL: cdpWsUrl, CDP_TARGET_URL: exposed.url },
           command: input.testCommand,
         }),
       );
