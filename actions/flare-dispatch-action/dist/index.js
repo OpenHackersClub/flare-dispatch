@@ -28468,6 +28468,22 @@ var readInput = (env, name) => {
   if (b !== void 0 && b !== "") return b;
   return void 0;
 };
+var resolveHeadSha = (env) => {
+  const fallback = env.GITHUB_SHA ?? "";
+  const eventName = env.GITHUB_EVENT_NAME ?? "";
+  if (eventName !== "pull_request" && eventName !== "pull_request_target") {
+    return fallback;
+  }
+  const path = env.GITHUB_EVENT_PATH;
+  if (path === void 0 || path === "") return fallback;
+  try {
+    const parsed = JSON.parse((0, import_node_fs.readFileSync)(path, "utf8"));
+    const head6 = parsed.pull_request?.head?.sha;
+    return head6 !== void 0 && head6 !== "" ? head6 : fallback;
+  } catch {
+    return fallback;
+  }
+};
 var buildBody = (env) => {
   const runId = Number(env.GITHUB_RUN_ID ?? 0);
   return {
@@ -28475,9 +28491,16 @@ var buildBody = (env) => {
     github: {
       repo: env.GITHUB_REPOSITORY ?? "",
       ref: env.GITHUB_REF ?? "refs/heads/main",
-      sha: env.GITHUB_SHA ?? "",
+      // PR head SHA on pull_request events, not the ephemeral merge commit —
+      // so the check-run lands where branch protection can gate it.
+      sha: resolveHeadSha(env),
       actor: env.GITHUB_ACTOR ? env.GITHUB_ACTOR : void 0,
-      installation_id: Number(readInput(env, "installation-id") ?? 0)
+      // Omit a 0/unset installation id (the dispatch schema is
+      // `positive | undefined`; a literal 0 is a 400). The Dispatcher resolves
+      // it server-side when absent.
+      installation_id: ((id) => id > 0 ? id : void 0)(
+        Number(readInput(env, "installation-id") ?? 0)
+      )
     },
     inputs: JSON.parse(readInput(env, "inputs") ?? "{}"),
     trigger: {
@@ -28498,7 +28521,7 @@ var requireInput = (env, name) => {
 var stripTrailingSlash = (s) => s.endsWith("/") ? s.slice(0, -1) : s;
 var computeIdempotencyKey = (env, run3) => {
   const repo = env.GITHUB_REPOSITORY ?? "";
-  const sha = env.GITHUB_SHA ?? "";
+  const sha = resolveHeadSha(env);
   if (repo !== "" && sha !== "") {
     const repoSafe = repo.replace(/\//g, "_");
     const shaShort = sha.slice(0, 12);

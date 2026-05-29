@@ -7,13 +7,18 @@
 // contract is broken.
 
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect, Exit } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildBody,
+  computeIdempotencyKey,
   type DispatchEnv,
   type FetchLike,
   reportFailure,
+  resolveHeadSha,
   runDispatch,
   secretFingerprint,
   signBytes,
@@ -40,6 +45,65 @@ const baseEnv = (overrides: Partial<DispatchEnv> = {}): DispatchEnv => ({
   ...overrides,
 });
 
+/** Write a minimal pull_request event payload to a temp file, return its path. */
+const writeEventFile = (headSha: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), "flare-event-"));
+  const path = join(dir, "event.json");
+  writeFileSync(path, JSON.stringify({ pull_request: { head: { sha: headSha } } }));
+  return path;
+};
+
+describe("resolveHeadSha", () => {
+  it("returns GITHUB_SHA for push events", () => {
+    expect(
+      resolveHeadSha(baseEnv({ GITHUB_EVENT_NAME: "push", GITHUB_SHA: "merge_sha" })),
+    ).toBe("merge_sha");
+  });
+
+  it("returns the PR head SHA (not GITHUB_SHA) on pull_request events", () => {
+    const env = baseEnv({
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_SHA: "ephemeral_merge_sha",
+      GITHUB_EVENT_PATH: writeEventFile("real_head_sha"),
+    });
+    expect(resolveHeadSha(env)).toBe("real_head_sha");
+  });
+
+  it("also handles pull_request_target events", () => {
+    const env = baseEnv({
+      GITHUB_EVENT_NAME: "pull_request_target",
+      GITHUB_SHA: "ephemeral_merge_sha",
+      GITHUB_EVENT_PATH: writeEventFile("head_from_target"),
+    });
+    expect(resolveHeadSha(env)).toBe("head_from_target");
+  });
+
+  it("falls back to GITHUB_SHA when the event payload is missing/unreadable", () => {
+    expect(
+      resolveHeadSha(
+        baseEnv({
+          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_SHA: "fallback_sha",
+          GITHUB_EVENT_PATH: "/nonexistent/event.json",
+        }),
+      ),
+    ).toBe("fallback_sha");
+  });
+
+  it("propagates the head SHA into buildBody + the idempotency key", () => {
+    const env = baseEnv({
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_SHA: "ephemeral_merge_sha",
+      GITHUB_EVENT_PATH: writeEventFile("head1234567890abcdef"),
+    });
+    expect(buildBody(env).github.sha).toBe("head1234567890abcdef");
+    // sha[:12] — see computeIdempotencyKey
+    expect(computeIdempotencyKey(env, "cdp-acceptance")).toBe(
+      "cdp-acceptance-owner_test-repo-head12345678",
+    );
+  });
+});
+
 describe("buildBody", () => {
   it("produces the documented JSON shape from INPUT_/GITHUB_ env vars", () => {
     const body = buildBody(baseEnv());
@@ -64,15 +128,22 @@ describe("buildBody", () => {
     });
   });
 
-  it("defaults installation_id to 0 and leaves actor undefined when unset", () => {
+  it("omits installation_id (undefined) and leaves actor undefined when unset", () => {
+    // The dispatch schema is `positive | undefined`; a literal 0 is a 400.
+    // An unset installation id must drop out of the JSON, not serialize as 0.
     const body = buildBody(
       baseEnv({
         INPUT_INSTALLATION_ID: undefined,
         GITHUB_ACTOR: undefined,
       }),
     );
-    expect(body.github.installation_id).toBe(0);
+    expect(body.github.installation_id).toBeUndefined();
     expect(body.github.actor).toBeUndefined();
+  });
+
+  it("omits installation_id when the input is a non-positive 0", () => {
+    const body = buildBody(baseEnv({ INPUT_INSTALLATION_ID: "0" }));
+    expect(body.github.installation_id).toBeUndefined();
   });
 
   it("defaults inputs to {} when INPUT_INPUTS is unset", () => {
