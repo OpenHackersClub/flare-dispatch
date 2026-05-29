@@ -76,6 +76,7 @@ export const makeSandboxFake = (
     exposed: [],
   };
   let containerSeq = 0;
+  const detachedCommands = new Map<string, string>();
 
   const resolve = (command: string): CannedExec | undefined => {
     const key = Object.keys(program).find((k) => command.includes(k));
@@ -123,13 +124,35 @@ export const makeSandboxFake = (
         const command = normalizeCommand(opts.command);
         state.execs.push({ command, cwd: opts.cwd, env: opts.env });
         containerSeq += 1;
+        const id = `fake-detached-${containerSeq}`;
+        // Remember the command behind this handle so `waitForExit` can resolve
+        // the same canned program entry `exec` would.
+        detachedCommands.set(id, command);
         return {
-          id: `fake-detached-${containerSeq}`,
+          id,
           container: { id: `fake-container-${containerSeq}` },
         } satisfies DetachedHandle;
       }),
 
-    waitForExit: () => Effect.succeed(fullResult({ exitCode: 0 })),
+    // Resolve the canned program for the detached command (the same entry
+    // `exec` uses), so a program can drive a detached run's exit code / timeout.
+    // `waitForExit`'s only failure is `ExecTimeout`; a canned `ExecFailed`
+    // becomes a non-zero `ExecResult` (the process ran, then exited non-zero).
+    waitForExit: ({ handle }) => {
+      const command = detachedCommands.get(handle.id) ?? "";
+      const canned = resolve(command);
+      if (canned && "fail" in canned) {
+        return canned.fail === "ExecTimeout"
+          ? Effect.fail(
+              new ExecTimeout({
+                timeoutSec: canned.timeoutSec ?? 600,
+                command,
+              }),
+            )
+          : Effect.succeed(fullResult({ exitCode: canned.exitCode ?? 1 }));
+      }
+      return Effect.succeed(fullResult(canned ?? { exitCode: 0 }));
+    },
 
     waitForPort: () => Effect.void,
 

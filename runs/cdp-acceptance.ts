@@ -145,23 +145,29 @@ export const cdpAcceptance = defineRun({
           .pipe(Effect.map((session) => session.wsEndpoint)),
       );
 
-      // run-tests — run the acceptance suite. A non-zero exit code is a NORMAL
-      // ExecResult (a failing test), surfaced to the output below — never an
-      // Effect failure. The suite writes screenshots/traces under ./artifacts.
-      // `CDP_TARGET_URL` is the publicly-reachable URL the suite navigates to;
-      // `CDP_WS_URL` is the Browser Rendering endpoint the suite connects over.
+      // run-tests — run the acceptance suite DETACHED, then poll for its exit.
+      // A non-zero exit code is a NORMAL ExecResult (a failing test), surfaced
+      // to the output below — never an Effect failure. The suite writes
+      // screenshots/traces under ./artifacts. `CDP_TARGET_URL` is the publicly-
+      // reachable URL the suite navigates to; `CDP_WS_URL` is the Browser
+      // Rendering endpoint the suite connects over.
       //
-      // `timeoutSec: 1740` raises the step's CF Workflows timeout above the
-      // 10-minute default. A full remote-CDP acceptance suite runs longer than
-      // 10 min, so the default capped `run-tests` at 600s — the step timed out
-      // with `WorkflowTimeoutError` and retried forever. 1740s (29 min) sits
-      // under the run's 1800s `maxDurationSec` ceiling and above the consumer
-      // suite's own ~25-min Playwright `globalTimeout`, so the suite self-aborts
-      // (flushing its report) before this step timeout can fire.
-      const exec = yield* step(
-        "run-tests",
+      // Why detached, not a blocking `sandbox.exec`: the blocking exec holds a
+      // single connection to the container for the *entire* multi-minute
+      // remote-CDP run, and that connection is killed non-deterministically
+      // (observed at 2 min and 25 min; occasionally survives ~10 min) —
+      // surfacing as `ExecFailed` and an infinite step-retry loop. `runDetached`
+      // launches the suite as a background process that survives a dropped
+      // connection; `waitForExit` re-attaches to that persistent process to read
+      // its exit code + logs. The `run-tests-wait` retries cover a dropped
+      // wait-connection: each retry re-polls the SAME process (idempotent — it
+      // returns at once after the process exits). The suite's own ~25-min
+      // Playwright `globalTimeout` bounds the process; both steps stay under the
+      // run's 1800s `maxDurationSec`.
+      const handle = yield* step(
+        "run-tests-start",
         () =>
-          sandbox.exec({
+          sandbox.runDetached({
             cwd: dir,
             container,
             env: {
@@ -171,7 +177,12 @@ export const cdpAcceptance = defineRun({
             },
             command: input.testCommand,
           }),
-        { timeoutSec: 1740 },
+        { retries: 0 },
+      );
+      const exec = yield* step(
+        "run-tests-wait",
+        () => sandbox.waitForExit({ handle }),
+        { timeoutSec: 900, retries: 3 },
       );
 
       // upload-report / upload-screenshots — promote both bundles to signed R2

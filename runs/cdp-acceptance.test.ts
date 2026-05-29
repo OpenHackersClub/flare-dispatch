@@ -36,7 +36,7 @@ const baseInput = {
 } as const;
 
 describe("cdp-acceptance", () => {
-  it.effect("green path — test command exits 0, seven steps, CDP attached", () => {
+  it.effect("green path — test command exits 0, eight steps, CDP attached", () => {
     const { layer, handles } = makeCFRuntimeTest({
       sandboxProgram: { "pnpm test:acceptance": { exitCode: 0 } },
       browser: { wsEndpoint: "wss://test-cdp/abc" },
@@ -49,16 +49,18 @@ describe("cdp-acceptance", () => {
       expect(result.reportUri.length).toBeGreaterThan(0);
       expect(result.screenshotsUri.length).toBeGreaterThan(0);
 
-      // checkout → boot-app → expose-app → attach-cdp → run-tests →
-      // upload-report → upload-screenshots, each recorded once, all successful.
-      // `loadSecrets` is called inline (not a step) so credentials never hit a
-      // checkpoint.
+      // checkout → boot-app → expose-app → attach-cdp → run-tests-start →
+      // run-tests-wait → upload-report → upload-screenshots, each recorded once,
+      // all successful. The suite runs detached (`run-tests-start`) and its exit
+      // is polled (`run-tests-wait`). `loadSecrets` is called inline (not a
+      // step) so credentials never hit a checkpoint.
       expect(handles.executions.steps.map((s) => s.name)).toEqual([
         "checkout",
         "boot-app",
         "expose-app",
         "attach-cdp",
-        "run-tests",
+        "run-tests-start",
+        "run-tests-wait",
         "upload-report",
         "upload-screenshots",
       ]);
