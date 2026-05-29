@@ -10,6 +10,11 @@
 
   "observability": { "enabled": true },
 
+  // Browser Rendering binding — backs `GET /v1/browser/cdp`, the CDP proxy the
+  // cdp-acceptance container connects to. CF Browser Rendering CDP is only
+  // reachable via this binding, not a public token-dialable WebSocket.
+  "browser": { "binding": "BROWSER" },
+
   // RunWorkflow (apps/dispatcher/src/workflow.ts) maps each run `step(...)` to a
   // durable WorkflowStep.do checkpoint under an Effect runtime — see PR4.
   "workflows": [

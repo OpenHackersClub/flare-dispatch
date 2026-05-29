@@ -22,6 +22,7 @@
 import type { Env } from "./env";
 import { handleAdminEvent } from "./routes/admin-events";
 import { handleArtifact } from "./routes/artifacts";
+import { handleBrowserCdp } from "./routes/browser-cdp";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
 import { handleInstallNew, handleInstalled } from "./routes/github";
@@ -111,6 +112,21 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleAdminEvent(request, env, decodeURIComponent(segments[3]!));
+  }
+
+  // GET /v1/browser/cdp — WebSocket upgrade, bridges connectOverCDP → the
+  // CF Browser Rendering binding. Used by the `cdp-acceptance` run.
+  if (
+    segments.length === 3 &&
+    segments[0] === "v1" &&
+    segments[1] === "browser" &&
+    segments[2] === "cdp"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    const requestId = request.headers.get("cf-ray") ?? "no-ray";
+    return handleBrowserCdp(request, env, requestId);
   }
 
   // GET /v1/artifacts/:execution/:name

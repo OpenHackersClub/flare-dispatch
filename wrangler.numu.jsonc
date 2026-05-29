@@ -1,0 +1,76 @@
+{
+  // numu-ai deploy config for the FlareDispatch Dispatcher (flare-dispatch-v0).
+  // Mirrors ./wrangler.jsonc but with the numu-ai account's resource ids only
+  // — NO upstream/OHC ids. Used as `wrangler deploy -c wrangler.numu.jsonc`.
+  // Not committed (numu-specific operator config).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flare-dispatch-v0",
+  "account_id": "5c9c9e6f153b3aa62c715a6d4af3c9ef",
+  "main": "apps/dispatcher/src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": { "enabled": true },
+
+  // exposePort preview-URL host. Requires a wildcard-routed custom domain
+  // (workers.dev can't route <port>-<id>.<host>): *.fd-sandbox.numu.gg → this
+  // worker, with a proxied wildcard DNS record in the numu.gg zone.
+  "vars": { "SANDBOX_PREVIEW_HOSTNAME": "fd-sandbox.numu.gg" },
+
+  // Browser Rendering binding — backs `GET /v1/browser/cdp`, the CDP proxy the
+  // cdp-acceptance container connects to. CF Browser Rendering CDP is only
+  // reachable via this binding, not a public token-dialable WebSocket.
+  "browser": { "binding": "BROWSER" },
+
+  "workflows": [
+    {
+      "name": "runs-workflow",
+      "binding": "RUNS_WORKFLOW",
+      "class_name": "RunWorkflow"
+    }
+  ],
+
+  "containers": [
+    {
+      "class_name": "RunSandbox",
+      "image": "./infra/Dockerfile.sandbox",
+      "instance_type": "standard-2",
+      "max_instances": 16
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] }
+  ],
+
+  "r2_buckets": [
+    { "binding": "RUNS_STORAGE", "bucket_name": "flare-dispatch-v0" }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "RUNS_METADATA",
+      "database_name": "flare-dispatch-v0",
+      "database_id": "2bc1dbca-ee48-47e3-82c9-7d65dbeecbcd"
+    }
+  ],
+
+  // Only CONFIG_KV — the live numu-ai worker has no IDEMPOTENCY_KV /
+  // INSTALL_TOKEN_KV bindings (both optional), so they're omitted here.
+  "kv_namespaces": [
+    {
+      "binding": "CONFIG_KV",
+      "id": "e6f5012673314866a7d629f9ecd93c0c"
+    }
+  ],
+
+  "triggers": {
+    "crons": ["0 14 * * *"]
+  }
+}

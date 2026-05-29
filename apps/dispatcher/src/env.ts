@@ -121,9 +121,27 @@ export interface Env {
 
   /**
    * Cloudflare API token authorizing the Browser Rendering connect — Worker
-   * secret, paired with `BROWSER_CDP_CONNECT_URL`.
+   * secret, paired with `BROWSER_CDP_CONNECT_URL`. Also the bearer token the
+   * `GET /v1/browser/cdp` proxy route validates: a `cdp-acceptance` container
+   * connects with `?token=<this>` (or `Authorization: Bearer <this>`).
    */
   readonly BROWSER_CDP_API_TOKEN?: string;
+
+  /**
+   * Cloudflare Browser Rendering binding. When present, `GET /v1/browser/cdp`
+   * bridges a container's `connectOverCDP` to a Browser Rendering session via
+   * `env.BROWSER.fetch(/v1/acquire)` + `/v1/devtools/browser/<sessionId>` — the
+   * only supported way to reach CF Browser Rendering CDP (it is not a public,
+   * token-dialable WebSocket). Absent → that route 503s; non-browser runs are
+   * unaffected. Declared as `"browser": { "binding": "BROWSER" }` in wrangler.
+   */
+  readonly BROWSER?: Fetcher;
+
+  /**
+   * CF Browser session `keep_alive` ceiling in ms for the `/v1/browser/cdp`
+   * proxy (default 600000 = CF's documented 10-min max). A var, not a secret.
+   */
+  readonly KEEP_ALIVE_MS?: string;
 
   /**
    * The Worker's public domain (e.g. `flare-dispatch.<account>.workers.dev`,
