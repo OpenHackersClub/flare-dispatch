@@ -6,6 +6,7 @@
 import { Match } from "effect";
 import { describe, expect, it } from "vitest";
 import {
+  AcceptanceFailed,
   ApprovalTimedOut,
   ArtifactUploadFailed,
   BrowserUnavailable,
@@ -34,6 +35,7 @@ const summarize = (e: RunError): string =>
     Match.tag("CheckoutFailed", ({ repo, sha }) => `checkout ${repo}@${sha}`),
     Match.tag("ExecFailed", ({ exitCode }) => `exec exited ${exitCode}`),
     Match.tag("ExecTimeout", ({ timeoutSec }) => `exec timeout ${timeoutSec}s`),
+    Match.tag("AcceptanceFailed", ({ exitCode }) => `acceptance exited ${exitCode}`),
     Match.tag("ContainerLaunchFailed", ({ image }) => `launch ${image}`),
     Match.tag("PortNeverOpened", ({ port }) => `port ${port} never opened`),
     Match.tag("ExposePortFailed", ({ port }) => `expose port ${port} failed`),
@@ -66,6 +68,11 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
       name: "ExecTimeout",
       err: new ExecTimeout({ timeoutSec: 60, command: "pnpm test" }),
       expect: "exec timeout 60s",
+    },
+    {
+      name: "AcceptanceFailed",
+      err: new AcceptanceFailed({ exitCode: 1 }),
+      expect: "acceptance exited 1",
     },
     {
       name: "ContainerLaunchFailed",
