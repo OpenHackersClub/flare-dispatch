@@ -13,15 +13,14 @@
 //       The checkout rides on the `workspace` primitive — 03-dsl § Primitives.
 
 import { Effect, Schema, Match, Option } from "effect";
-import { defineRun, step, sandbox, config, io } from "@flare-dispatch/core";
+import { defineRun, step, sandbox, config, io, type WebhookPayload } from "@flare-dispatch/core";
 import { workspace } from "@flare-dispatch/core/primitives";
 
-// Local helper — true if the PR carries the given label. The webhook
-// payload's pull_request.labels is an array of { name }.
-const hasLabel = (
-  payload: { pull_request: { labels: ReadonlyArray<{ name: string }> } },
-  name: string,
-): boolean => payload.pull_request.labels.some((l) => l.name === name);
+// Local helper — true if the PR carries the given label.
+// Typed against WebhookPayload (Record<string, any>) to match the trigger callbacks.
+const hasLabel = (payload: WebhookPayload, name: string): boolean =>
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+  payload.pull_request?.labels?.some((l: { name: string }) => l.name === name) ?? false;
 
 // The domain-scoped reviewers, one per concern (blog: "up to seven
 // domain-specific agents"). The risk tier selects which subset actually runs
