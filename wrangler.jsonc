@@ -15,6 +15,19 @@
   // reachable via this binding, not a public token-dialable WebSocket.
   "browser": { "binding": "BROWSER" },
 
+  // Plain (non-secret) vars.
+  //   CLOUDFLARE_ACCOUNT_ID — the 32-hex account id from the dashboard URL.
+  //     When set, RunWorkflow adds a `details_url` to the GitHub check-run
+  //     linking to the Cloudflare Workflows instance page
+  //     (dash.cloudflare.com/<id>/workers/workflows/runs-workflow/instance/<executionId>),
+  //     so reviewers jump from the PR check straight to the execution's step
+  //     logs. Omit it (the BYOC default — each deploy owns its account) and the
+  //     check-run renders exactly as before with no link. Uncomment + fill, or
+  //     override per-deploy with `CLOUDFLARE_ACCOUNT_ID=... wrangler deploy`.
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "c91d52c288c452ab734ede1518b00e11"
+  },
+
   // RunWorkflow (apps/dispatcher/src/workflow.ts) maps each run `step(...)` to a
   // durable WorkflowStep.do checkpoint under an Effect runtime — see PR4.
   "workflows": [

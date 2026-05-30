@@ -153,4 +153,16 @@ export interface Env {
    * fails loudly. Non-browser runs are unaffected.
    */
   readonly SANDBOX_PREVIEW_HOSTNAME?: string;
+
+  /**
+   * Cloudflare account id (the 32-hex id in the dashboard URL) — a var, not a
+   * secret. When set, `RunWorkflow` builds a `details_url` on the GitHub
+   * check-run pointing at the Cloudflare Workflows instance page
+   * (`dash.cloudflare.com/<id>/workers/workflows/runs-workflow/instance/<executionId>`),
+   * so a reviewer jumps from the PR check straight to the execution's step
+   * logs. Absent (the BYOC default — each deploy owns its account) → no
+   * `details_url`, the check-run renders exactly as before. Set with
+   * `wrangler` via the `vars` block in wrangler.jsonc.
+   */
+  readonly CLOUDFLARE_ACCOUNT_ID?: string;
 }

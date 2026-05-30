@@ -131,6 +131,27 @@ const resolveBrowserConfig = (env: Env): BrowserRenderingConfig | undefined =>
         apiToken: env.BROWSER_CDP_API_TOKEN,
       };
 
+/**
+ * The Cloudflare Workflows name backing `RUNS_WORKFLOW` — the dashboard
+ * URL segment. MUST stay in sync with `wrangler.jsonc` → `workflows[0].name`.
+ */
+const WORKFLOWS_DASHBOARD_NAME = "runs-workflow";
+
+/**
+ * Build the Cloudflare dashboard deep-link for this execution's Workflow
+ * instance (the `executionId` doubles as the CF Workflow `instanceId` —
+ * `RUNS_WORKFLOW.create({ id: executionId })`), or `undefined` when the
+ * account id is not configured (the BYOC default). Used as the check-run's
+ * `details_url` so a reviewer jumps from the PR check to the step logs.
+ */
+const workflowDashboardUrl = (
+  accountId: string | undefined,
+  executionId: string,
+): string | undefined =>
+  accountId !== undefined && accountId.length > 0
+    ? `https://dash.cloudflare.com/${accountId}/workers/workflows/${WORKFLOWS_DASHBOARD_NAME}/instance/${encodeURIComponent(executionId)}`
+    : undefined;
+
 export class RunWorkflow extends WorkflowEntrypoint<Env> {
   override async run(
     event: WorkflowEvent<unknown>,
@@ -155,6 +176,14 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     // run body is a real durable `WorkflowStep.do(...)` checkpoint.
     const db = this.env.RUNS_METADATA;
     const checkRunName = `flare-dispatch/${payload.run}`;
+    // The Cloudflare Workflows instance page for this execution — the "Details"
+    // link on the GitHub check-run + a markdown link in its summary. `undefined`
+    // when CLOUDFLARE_ACCOUNT_ID is unset (BYOC default): the check-run renders
+    // exactly as before, no link.
+    const detailsUrl = workflowDashboardUrl(
+      this.env.CLOUDFLARE_ACCOUNT_ID,
+      payload.executionId,
+    );
     const runtime = makeCFRuntimeLive({
       db,
       bucket: this.env.RUNS_STORAGE,
@@ -210,9 +239,13 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         repo: payload.github.repo,
         sha: payload.github.sha,
         name: checkRunName,
+        ...(detailsUrl !== undefined ? { detailsUrl } : {}),
         output: {
           title: checkRunName,
-          summary: `Execution \`${payload.executionId}\` started.`,
+          summary:
+            detailsUrl !== undefined
+              ? `Execution [\`${payload.executionId}\`](${detailsUrl}) started — [view step logs in Cloudflare ↗](${detailsUrl})`
+              : `Execution \`${payload.executionId}\` started.`,
         },
       });
       // Persist the GitHub check-run id onto the `executions` row.
@@ -261,15 +294,21 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       });
 
       // Complete the check-run with the run's verdict.
+      const logsSuffix =
+        detailsUrl !== undefined
+          ? ` — [view step logs in Cloudflare ↗](${detailsUrl})`
+          : "";
       yield* checks.update({
         repo: payload.github.repo,
         checkRunId,
         conclusion: status,
+        ...(detailsUrl !== undefined ? { detailsUrl } : {}),
         output: {
           title: checkRunName,
           summary: Exit.match(exit, {
-            onSuccess: () => `✓ ${payload.run} — execution succeeded.`,
-            onFailure: () => `✗ ${payload.run} — execution failed.`,
+            onSuccess: () =>
+              `✓ ${payload.run} — execution succeeded.${logsSuffix}`,
+            onFailure: () => `✗ ${payload.run} — execution failed.${logsSuffix}`,
           }),
         },
       });
