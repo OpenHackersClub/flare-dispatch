@@ -70,10 +70,7 @@
     }
   ],
 
-  // 14:00 — product-demo (runs/product-demo.ts); 15:00 — cdp-acceptance daily
-  // asset-matrix sweep (runs/cdp-acceptance.ts § schedules). Each cron must
-  // match a run's schedules[].cron exactly for schedulesByCron to route it.
   "triggers": {
-    "crons": ["0 14 * * *", "0 15 * * *"]
+    "crons": ["0 14 * * *"]
   }
 }
