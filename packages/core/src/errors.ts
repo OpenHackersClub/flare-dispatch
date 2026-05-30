@@ -24,6 +24,17 @@ export class ExecTimeout extends Schema.TaggedError<ExecTimeout>()(
   { timeoutSec: Schema.Number, command: Schema.String },
 ) {}
 
+/**
+ * A run's command/suite ran to completion but exited non-zero (a real test
+ * failure). A run raises this to fail itself so the dispatcher reports a
+ * `failure` check-run — distinct from `ExecFailed` (the process could not run
+ * at all).
+ */
+export class AcceptanceFailed extends Schema.TaggedError<AcceptanceFailed>()(
+  "AcceptanceFailed",
+  { exitCode: Schema.Number },
+) {}
+
 export class ContainerLaunchFailed extends Schema.TaggedError<ContainerLaunchFailed>()(
   "ContainerLaunchFailed",
   { image: Schema.String, cause: Schema.Unknown },
@@ -136,6 +147,7 @@ export type RunError =
   | CheckoutFailed
   | ExecFailed
   | ExecTimeout
+  | AcceptanceFailed
   | ContainerLaunchFailed
   | PortNeverOpened
   | ExposePortFailed

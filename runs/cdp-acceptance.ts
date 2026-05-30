@@ -49,6 +49,7 @@
 
 import { Duration, Effect, Schema } from "effect";
 import {
+  AcceptanceFailed,
   artifact,
   browser,
   type Container,
@@ -134,6 +135,7 @@ const CdpAcceptanceOutput = Schema.Struct({
   reportUri: Schema.String, // signed R2 URL to the HTML report
   screenshotsUri: Schema.String, // signed R2 URL to the screenshots + trace bundle
 });
+
 
 /** Wait-for-port ceiling for the app boot, in seconds. */
 const APP_BOOT_TIMEOUT_SEC = 120;
@@ -276,6 +278,12 @@ export const cdpAcceptance = defineRun({
       );
 
       yield* io.log("info", `cdp-acceptance exited ${exitCode}`);
+      // A non-zero suite exit is a real test failure — fail the run so the
+      // check-run conclusion is `failure`. Uploads above already ran, so the
+      // report + screenshots are available for debugging the red run.
+      if (exitCode !== 0) {
+        return yield* Effect.fail(new AcceptanceFailed({ exitCode }));
+      }
       return { exitCode, reportUri, screenshotsUri };
     }),
 });

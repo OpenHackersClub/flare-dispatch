@@ -82,7 +82,7 @@ describe("cdp-acceptance", () => {
   });
 
   it.effect(
-    "red path — test command exits 1, output reports exitCode 1, Effect succeeds",
+    "red path — test command exits 1, the run FAILS with AcceptanceFailed",
     () => {
       const { layer } = makeCFRuntimeTest({
         // Suite finished with a non-zero exit (a failing spec). The cat exec
@@ -93,10 +93,16 @@ describe("cdp-acceptance", () => {
       return Effect.gen(function* () {
         const exit = yield* Effect.exit(cdpAcceptance.run(baseInput));
 
-        expect(Exit.isSuccess(exit)).toBe(true);
-        if (Exit.isSuccess(exit)) {
-          expect(exit.value.exitCode).toBe(1);
-        }
+        // A non-zero suite exit fails the run → the dispatcher reports a
+        // `failure` check-run (was a false-green: a succeeding value).
+        expect(Exit.isFailure(exit)).toBe(true);
+        const tag = Exit.isFailure(exit)
+          ? Option.match(Cause.failureOption(exit.cause), {
+              onSome: (f) => (f as { _tag?: string })._tag,
+              onNone: () => undefined,
+            })
+          : undefined;
+        expect(tag).toBe("AcceptanceFailed");
       }).pipe(Effect.provide(layer));
     },
   );
