@@ -10,6 +10,11 @@
 
   "observability": { "enabled": true },
 
+  // Browser Rendering binding — backs `GET /v1/browser/cdp`, the CDP proxy the
+  // cdp-acceptance container connects to. CF Browser Rendering CDP is only
+  // reachable via this binding, not a public token-dialable WebSocket.
+  "browser": { "binding": "BROWSER" },
+
   // Plain (non-secret) vars.
   //   CLOUDFLARE_ACCOUNT_ID — the 32-hex account id from the dashboard URL.
   //     When set, RunWorkflow adds a `details_url` to the GitHub check-run

@@ -47,9 +47,68 @@
 // Spec: specs/02-runs.md § 4, specs/03-dsl.md § browser + § Primitives,
 //       specs/pm/plan.md § V1 / V2 plan — PR9.
 
-import { Effect, Schema } from "effect";
-import { artifact, browser, defineRun, io, sandbox, step } from "@flare-dispatch/core";
+import { Duration, Effect, Schema } from "effect";
+import {
+  AcceptanceFailed,
+  artifact,
+  browser,
+  type Container,
+  defineRun,
+  ExecTimeout,
+  io,
+  sandbox,
+  step,
+} from "@flare-dispatch/core";
 import { bootApp, loadSecrets, workspace } from "@flare-dispatch/core/primitives";
+
+/** Where `run-tests-start` writes the suite's `DONE:<exitcode>` sentinel. */
+const SENTINEL_PATH = "/tmp/run-tests.done";
+const SENTINEL_RE = /DONE:(-?\d+)/;
+
+/**
+ * Poll the detached suite's completion sentinel for its exit code.
+ *
+ * `run-tests-start` launches the suite as `( <testCommand> ); echo "DONE:$?" >
+ * <sentinel>`, so the process writes its exit code to the sentinel when it
+ * finishes (including when Playwright's own `globalTimeout` self-aborts it).
+ * We poll with SHORT `cat` execs — each returns in well under the ~2-min window
+ * that kills a long-lived blocking exec — instead of `sandbox.waitForExit`,
+ * which does NOT reliably report a detached process's completion (it blocks
+ * until the step timeout, which then retries and never resolves). Returns the
+ * suite's exit code; fails `ExecTimeout` only if the sentinel never appears
+ * within `maxAttempts` (the durable step's own timeout is the real ceiling).
+ */
+export const pollSentinelExit = ({
+  container,
+  dir,
+  sentinel = SENTINEL_PATH,
+  pollEvery = "5 seconds",
+  maxAttempts = 360,
+}: {
+  readonly container: Container;
+  readonly dir: string;
+  readonly sentinel?: string;
+  readonly pollEvery?: Duration.DurationInput;
+  readonly maxAttempts?: number;
+}) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const r = yield* sandbox.exec({
+        cwd: dir,
+        container,
+        command: `cat ${sentinel} 2>/dev/null || true`,
+      });
+      const match = SENTINEL_RE.exec(r.stdout);
+      if (match) return Number(match[1]);
+      yield* Effect.sleep(pollEvery);
+    }
+    return yield* Effect.fail(
+      new ExecTimeout({
+        timeoutSec: 0,
+        command: `run-tests-wait: sentinel ${sentinel} never appeared after ${maxAttempts} polls`,
+      }),
+    );
+  });
 
 /** Input contract — specs/02-runs.md § 4. */
 const CdpAcceptanceInput = Schema.Struct({
@@ -76,6 +135,7 @@ const CdpAcceptanceOutput = Schema.Struct({
   reportUri: Schema.String, // signed R2 URL to the HTML report
   screenshotsUri: Schema.String, // signed R2 URL to the screenshots + trace bundle
 });
+
 
 /** Wait-for-port ceiling for the app boot, in seconds. */
 const APP_BOOT_TIMEOUT_SEC = 120;
@@ -145,23 +205,33 @@ export const cdpAcceptance = defineRun({
           .pipe(Effect.map((session) => session.wsEndpoint)),
       );
 
-      // run-tests — run the acceptance suite. A non-zero exit code is a NORMAL
-      // ExecResult (a failing test), surfaced to the output below — never an
-      // Effect failure. The suite writes screenshots/traces under ./artifacts.
-      // `CDP_TARGET_URL` is the publicly-reachable URL the suite navigates to;
-      // `CDP_WS_URL` is the Browser Rendering endpoint the suite connects over.
+      // run-tests — run the acceptance suite DETACHED, then poll for its exit.
+      // A non-zero exit code is a NORMAL ExecResult (a failing test), surfaced
+      // to the output below — never an Effect failure. The suite writes
+      // screenshots/traces under ./artifacts. `CDP_TARGET_URL` is the publicly-
+      // reachable URL the suite navigates to; `CDP_WS_URL` is the Browser
+      // Rendering endpoint the suite connects over.
       //
-      // `timeoutSec: 1740` raises the step's CF Workflows timeout above the
-      // 10-minute default. A full remote-CDP acceptance suite runs longer than
-      // 10 min, so the default capped `run-tests` at 600s — the step timed out
-      // with `WorkflowTimeoutError` and retried forever. 1740s (29 min) sits
-      // under the run's 1800s `maxDurationSec` ceiling and above the consumer
-      // suite's own ~25-min Playwright `globalTimeout`, so the suite self-aborts
-      // (flushing its report) before this step timeout can fire.
-      const exec = yield* step(
-        "run-tests",
+      // Why detached + sentinel-poll, not a blocking `sandbox.exec` or
+      // `waitForExit`: a blocking exec holds one connection to the container for
+      // the whole multi-minute remote-CDP run, and that connection is killed
+      // non-deterministically (~2 min, ~25 min) → `ExecFailed`. `waitForExit`
+      // avoids the kill but does NOT reliably report a detached process's exit —
+      // it blocks until the step timeout, retries, and never resolves. So:
+      //   - `run-tests-start` launches the suite DETACHED, wrapped to write its
+      //     exit code to a sentinel file on completion:
+      //         `( <testCommand> ); echo "DONE:$?" > <sentinel>`
+      //     The subshell runs the suite (its trailing `exit $rc` sets `$?`); the
+      //     parent shell records `DONE:<rc>` and exits. Playwright's own
+      //     `globalTimeout` (consumer config) bounds the suite, so the sentinel
+      //     is written even on a hung run.
+      //   - `run-tests-wait` polls the sentinel with SHORT `cat` execs (each far
+      //     under the ~2-min kill window), returning the exit code the moment it
+      //     appears. No long-lived connection, so nothing to kill.
+      yield* step(
+        "run-tests-start",
         () =>
-          sandbox.exec({
+          sandbox.runDetached({
             cwd: dir,
             container,
             env: {
@@ -169,31 +239,51 @@ export const cdpAcceptance = defineRun({
               CDP_WS_URL: cdpWsUrl,
               CDP_TARGET_URL: exposed.url,
             },
-            command: input.testCommand,
+            command: `( ${input.testCommand} ); echo "DONE:$?" > ${SENTINEL_PATH}`,
           }),
-        { timeoutSec: 1740 },
+        { retries: 0 },
+      );
+      const exitCode = yield* step(
+        "run-tests-wait",
+        () => pollSentinelExit({ container, dir }),
+        { timeoutSec: 1740, retries: 0 },
       );
 
       // upload-report / upload-screenshots — promote both bundles to signed R2
       // URLs surfaced in the check-run summary.
+      //
+      // Best-effort: an artifact upload failure must NOT mask the test verdict.
+      // The run's purpose is to report pass/fail (`exitCode`); the report +
+      // screenshots are a debugging bonus. Previously a throwing `upload-report`
+      // (e.g. an empty/oversized `playwright-report/`) aborted the run before
+      // `exitCode` was recorded, so even a *passing* suite came back red with a
+      // null summary. Catch upload failures, log them, and continue with an
+      // empty URI so the verdict always lands.
+      const uploadOrEmpty = (label: string, name: string, path: string) =>
+        artifact
+          .upload({ name, path, container, signedUrlTTL: "30 days" })
+          .pipe(
+            Effect.catchAll((cause) =>
+              io
+                .log("warn", `cdp-acceptance ${label} upload failed: ${cause}`)
+                .pipe(Effect.as("")),
+            ),
+          );
+
       const reportUri = yield* step("upload-report", () =>
-        artifact.upload({
-          name: "acceptance-report",
-          path: `${dir}/playwright-report/`,
-          container,
-          signedUrlTTL: "30 days",
-        }),
+        uploadOrEmpty("report", "acceptance-report", `${dir}/playwright-report/`),
       );
       const screenshotsUri = yield* step("upload-screenshots", () =>
-        artifact.upload({
-          name: "screenshots",
-          path: `${dir}/artifacts/`,
-          container,
-          signedUrlTTL: "30 days",
-        }),
+        uploadOrEmpty("screenshots", "screenshots", `${dir}/artifacts/`),
       );
 
-      yield* io.log("info", `cdp-acceptance exited ${exec.exitCode}`);
-      return { exitCode: exec.exitCode, reportUri, screenshotsUri };
+      yield* io.log("info", `cdp-acceptance exited ${exitCode}`);
+      // A non-zero suite exit is a real test failure — fail the run so the
+      // check-run conclusion is `failure`. Uploads above already ran, so the
+      // report + screenshots are available for debugging the red run.
+      if (exitCode !== 0) {
+        return yield* Effect.fail(new AcceptanceFailed({ exitCode }));
+      }
+      return { exitCode, reportUri, screenshotsUri };
     }),
 });

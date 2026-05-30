@@ -23,8 +23,8 @@ import { fileURLToPath } from "node:url";
 import { it } from "@effect/vitest";
 import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect } from "vitest";
-import { makeCFRuntimeTest } from "@flare-dispatch/core/testing";
-import { cdpAcceptance } from "./cdp-acceptance";
+import { makeCFRuntimeTest, makeSandboxFake } from "@flare-dispatch/core/testing";
+import { cdpAcceptance, pollSentinelExit } from "./cdp-acceptance";
 
 const baseInput = {
   repo: "owner/app",
@@ -36,9 +36,11 @@ const baseInput = {
 } as const;
 
 describe("cdp-acceptance", () => {
-  it.effect("green path — test command exits 0, seven steps, CDP attached", () => {
+  it.effect("green path — test command exits 0, eight steps, CDP attached", () => {
     const { layer, handles } = makeCFRuntimeTest({
-      sandboxProgram: { "pnpm test:acceptance": { exitCode: 0 } },
+      // The suite runs detached and writes `DONE:<exit>` to the sentinel;
+      // `run-tests-wait` polls `cat <sentinel>` for it. Exit 0 = green.
+      sandboxProgram: { "run-tests.done": { exitCode: 0, stdout: "DONE:0" } },
       browser: { wsEndpoint: "wss://test-cdp/abc" },
     });
 
@@ -49,16 +51,18 @@ describe("cdp-acceptance", () => {
       expect(result.reportUri.length).toBeGreaterThan(0);
       expect(result.screenshotsUri.length).toBeGreaterThan(0);
 
-      // checkout → boot-app → expose-app → attach-cdp → run-tests →
-      // upload-report → upload-screenshots, each recorded once, all successful.
-      // `loadSecrets` is called inline (not a step) so credentials never hit a
-      // checkpoint.
+      // checkout → boot-app → expose-app → attach-cdp → run-tests-start →
+      // run-tests-wait → upload-report → upload-screenshots, each recorded once,
+      // all successful. The suite runs detached (`run-tests-start`) and its exit
+      // is polled (`run-tests-wait`). `loadSecrets` is called inline (not a
+      // step) so credentials never hit a checkpoint.
       expect(handles.executions.steps.map((s) => s.name)).toEqual([
         "checkout",
         "boot-app",
         "expose-app",
         "attach-cdp",
-        "run-tests",
+        "run-tests-start",
+        "run-tests-wait",
         "upload-report",
         "upload-screenshots",
       ]);
@@ -78,37 +82,19 @@ describe("cdp-acceptance", () => {
   });
 
   it.effect(
-    "red path — test command exits 1, output reports exitCode 1, Effect succeeds",
+    "red path — test command exits 1, the run FAILS with AcceptanceFailed",
     () => {
       const { layer } = makeCFRuntimeTest({
-        sandboxProgram: {
-          "pnpm test:acceptance": { exitCode: 1, stderr: "1 failing spec" },
-        },
+        // Suite finished with a non-zero exit (a failing spec). The cat exec
+        // itself succeeds; the suite's code lives in the sentinel's `DONE:1`.
+        sandboxProgram: { "run-tests.done": { exitCode: 0, stdout: "DONE:1" } },
       });
 
       return Effect.gen(function* () {
         const exit = yield* Effect.exit(cdpAcceptance.run(baseInput));
 
-        expect(Exit.isSuccess(exit)).toBe(true);
-        if (Exit.isSuccess(exit)) {
-          expect(exit.value.exitCode).toBe(1);
-        }
-      }).pipe(Effect.provide(layer));
-    },
-  );
-
-  it.effect(
-    "timeout — the test command raises ExecTimeout, the run re-fails with the tag",
-    () => {
-      const { layer } = makeCFRuntimeTest({
-        sandboxProgram: {
-          "pnpm test:acceptance": { fail: "ExecTimeout", timeoutSec: 1800 },
-        },
-      });
-
-      return Effect.gen(function* () {
-        const exit = yield* Effect.exit(cdpAcceptance.run(baseInput));
-
+        // A non-zero suite exit fails the run → the dispatcher reports a
+        // `failure` check-run (was a false-green: a succeeding value).
         expect(Exit.isFailure(exit)).toBe(true);
         const tag = Exit.isFailure(exit)
           ? Option.match(Cause.failureOption(exit.cause), {
@@ -116,16 +102,59 @@ describe("cdp-acceptance", () => {
               onNone: () => undefined,
             })
           : undefined;
-        expect(tag).toBe("ExecTimeout");
+        expect(tag).toBe("AcceptanceFailed");
       }).pipe(Effect.provide(layer));
     },
   );
 
   it.effect(
+    "pollSentinelExit — returns the suite exit code parsed from the DONE sentinel",
+    () => {
+      const { layer } = makeSandboxFake({
+        "run-tests.done": { exitCode: 0, stdout: "DONE:7" },
+      });
+      return Effect.gen(function* () {
+        const code = yield* pollSentinelExit({
+          container: { id: "c1" },
+          dir: "/workspace/app",
+          maxAttempts: 5,
+          pollEvery: "1 millis",
+        });
+        expect(code).toBe(7);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  // Plain `it` (real clock) — the poll sleeps between attempts, and `it.effect`'s
+  // TestClock would never advance them, hanging the test.
+  it("pollSentinelExit — fails ExecTimeout when the sentinel never appears", async () => {
+    // Empty program → `cat <sentinel>` returns no DONE line on every poll.
+    const { layer } = makeSandboxFake({});
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        pollSentinelExit({
+          container: { id: "c1" },
+          dir: "/workspace/app",
+          maxAttempts: 3,
+          pollEvery: "1 millis",
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const tag = Exit.isFailure(exit)
+      ? Option.match(Cause.failureOption(exit.cause), {
+          onSome: (f) => (f as { _tag?: string })._tag,
+          onNone: () => undefined,
+        })
+      : undefined;
+    expect(tag).toBe("ExecTimeout");
+  });
+
+  it.effect(
     "secrets — config-store values are injected into the boot + test env",
     () => {
       const { layer, handles } = makeCFRuntimeTest({
-        sandboxProgram: { "pnpm test:acceptance": { exitCode: 0 } },
+        sandboxProgram: { "run-tests.done": { exitCode: 0, stdout: "DONE:0" } },
         browser: { wsEndpoint: "wss://test-cdp/abc" },
         config: { "secret/CLERK_SECRET_KEY": "sk_live_x" },
       });
@@ -142,10 +171,10 @@ describe("cdp-acceptance", () => {
         const boot = handles.sandbox.execs.find((e) => e.command === "pnpm dev");
         expect(boot?.env).toEqual({ CLERK_SECRET_KEY: "sk_live_x" });
 
-        // The test command gets the secret, the CDP endpoint, and the
-        // publicly-reachable target URL the suite navigates to.
-        const test = handles.sandbox.execs.find(
-          (e) => e.command === "pnpm test:acceptance",
+        // The test command (now wrapped in the sentinel writer) gets the
+        // secret, the CDP endpoint, and the publicly-reachable target URL.
+        const test = handles.sandbox.execs.find((e) =>
+          e.command.includes("pnpm test:acceptance"),
         );
         expect(test?.env).toEqual({
           CLERK_SECRET_KEY: "sk_live_x",
