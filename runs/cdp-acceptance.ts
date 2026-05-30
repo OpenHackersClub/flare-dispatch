@@ -154,6 +154,44 @@ export const cdpAcceptance = defineRun({
     requiresBrowser: true,
   },
 
+  // Schedule mode — a daily acceptance sweep against the numu monorepo's
+  // creative-onboard ASSET MATRIX (3 games × asset combinations). The CF cron
+  // tick routes here via `schedulesByCron` (apps/dispatcher/src/registry.ts);
+  // the cron string below MUST also appear in the numu deployment's
+  // `wrangler.numu.jsonc` `triggers.crons`. Staggered to 15:00 UTC so it does
+  // not collide with product-demo's 14:00 tick.
+  //
+  // Inputs mirror the numu `offload-acceptance` PR dispatch
+  // (numu-monorepo/.github/workflows/ci.yml), with `sha: "main"` for the
+  // nightly tip and `PW_CLOUD_SPECS` narrowed to the matrix spec so the daily
+  // run is the asset-matrix suite specifically. Clerk creds resolve from the
+  // Dispatcher config store (`staging/CLERK_*`) via `secrets`/`secretPrefix` —
+  // never inline. The generic `wrangler.jsonc` deployment does not subscribe
+  // to this cron, so only the numu deployment fires it.
+  schedules: [
+    {
+      cron: "0 15 * * *",
+      idempotencyKey: ({ firedAt }) =>
+        `cdp-acceptance-asset-matrix-${new Date(firedAt).toISOString().slice(0, 10)}`,
+      inputs: () => ({
+        repo: "Numu-AI/numu-monorepo",
+        sha: "main",
+        appBootCommand:
+          "cd /workspace/numu-monorepo && corepack enable && export DAM_BASE_URL=http://127.0.0.1:8788 DAM_SHARED_SECRET=dev_secret_ci_only_change_me NUMU_STUB_COMFY=1 && pnpm ci-cli start-dam-worker --shared-secret=dev_secret_ci_only_change_me && pnpm ci-cli start-edge-worker && pnpm ci-cli start-dev-servers",
+        appPort: 5173,
+        testCommand:
+          "PW_CLOUD_SPECS=creative-onboard-asset-matrix NUMU_STUB_COMFY=1 BROWSER_BACKEND=cloudflare pnpm --filter @numu/qa exec playwright test > /tmp/run-tests.log 2>&1; rc=$?; mkdir -p artifacts; cp /tmp/run-tests.log artifacts/run-tests.log; exit $rc",
+        secretPrefix: "staging/",
+        secrets: [
+          "CLERK_PUBLISHABLE_KEY",
+          "CLERK_SECRET_KEY",
+          "CLERK_ISSUER",
+          "VITE_CLERK_PUBLISHABLE_KEY",
+        ],
+      }),
+    },
+  ],
+
   run: (input) =>
     Effect.gen(function* () {
       // checkout — acquire a container, clone the SHA, install deps from the
