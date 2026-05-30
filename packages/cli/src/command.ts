@@ -61,9 +61,20 @@ const reportGithubAppFailure = (
  */
 const githubAppCreateCommand = Command.make(
   "create",
-  { endpoint: Options.text("endpoint") },
-  ({ endpoint }) =>
-    runGithubAppCreateFromOption(endpoint).pipe(
+  {
+    endpoint: Options.text("endpoint"),
+    // `--open` / `--no-open`. Absent → defer to the interactive-terminal
+    // heuristic in `runGithubAppCreateFromOption` (only pop a browser for a
+    // human at a TTY); present → force the choice.
+    open: Options.boolean("open", { negationNames: ["no-open"] }).pipe(
+      Options.withDescription(
+        "Auto-open the install URL in a browser. Defaults on at an interactive terminal, off when piped/non-interactive or under CI. Use --no-open to suppress.",
+      ),
+      Options.optional,
+    ),
+  },
+  ({ endpoint, open }) =>
+    runGithubAppCreateFromOption(endpoint, { open }).pipe(
       Effect.catchAll(reportGithubAppFailure),
     ),
 );
