@@ -12,7 +12,8 @@
     "./deploy-smoke": "./deploy-smoke.ts",
     "./matrix-fanout": "./matrix-fanout.ts",
     "./playwright-e2e": "./playwright-e2e.ts",
-    "./product-demo": "./product-demo.ts"
+    "./product-demo": "./product-demo.ts",
+    "./pr-review": "./pr-review.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
