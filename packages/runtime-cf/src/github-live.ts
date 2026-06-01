@@ -24,6 +24,7 @@
 import {
   createPullReview,
   getInstallationToken,
+  resolveRepoInstallationId,
   GithubApiError as GithubAppApiError,
 } from "@flare-dispatch/github-app";
 import { Effect, Layer } from "effect";
@@ -80,16 +81,30 @@ export const makeGithubLive = (
         if (config === undefined) {
           return yield* logSkip(repo, pr, "no GitHub App credentials");
         }
-        if (installationId === undefined || installationId <= 0) {
-          return yield* logSkip(repo, pr, "no installation id");
-        }
+
+        // Prefer the webhook-threaded installation id, but don't depend on it:
+        // the App is the source of truth for which installation covers a repo,
+        // so resolve it from `GET /repos/{repo}/installation` when the run input
+        // didn't carry one (Action-mode dispatch, or a dropped `installation.id`).
+        const resolvedInstallationId =
+          installationId !== undefined && installationId > 0
+            ? installationId
+            : yield* Effect.tryPromise({
+                try: () =>
+                  resolveRepoInstallationId({
+                    appId: config.appId,
+                    privateKeyPem: config.privateKeyPem,
+                    repo,
+                  }),
+                catch: (cause) => toGitHubApiError(cause),
+              });
 
         const token = yield* Effect.tryPromise({
           try: () =>
             getInstallationToken({
               appId: config.appId,
               privateKeyPem: config.privateKeyPem,
-              installationId,
+              installationId: resolvedInstallationId,
             }),
           catch: (cause) => toGitHubApiError(cause),
         });

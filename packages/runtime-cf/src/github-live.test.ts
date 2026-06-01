@@ -7,10 +7,14 @@
 //                   with event:COMMENT, the body, and the head sha as commit_id;
 //   * degraded    — with no App config, `pullReview` makes zero HTTP calls and
 //                   still succeeds (reporting must never fail a run);
-//   * no install  — with config but a request lacking an installation id, it is
-//                   also a logged no-op (zero HTTP calls).
+//   * no install  — with config but a request lacking an installation id, it
+//                   resolves the installation from GET /repos/{repo}/installation
+//                   (App JWT), then exchanges a token and posts the review.
 
-import { __clearTokenCache } from "@flare-dispatch/github-app";
+import {
+  __clearTokenCache,
+  __clearRepoInstallationCache,
+} from "@flare-dispatch/github-app";
 import { Effect } from "effect";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -29,11 +33,19 @@ import { type GithubLiveConfig, makeGithubLive } from "./github-live";
 
 type Recorded = {
   tokenExchanges: number;
+  installationLookups: number;
   reviews: { pr: string; authorization: string | null; body: Record<string, unknown> }[];
 };
 let recorded: Recorded;
 
 const server = setupServer(
+  http.get(
+    "https://api.github.com/repos/:owner/:repo/installation",
+    () => {
+      recorded.installationLookups += 1;
+      return HttpResponse.json({ id: 778899 }, { status: 200 });
+    },
+  ),
   http.post(
     "https://api.github.com/app/installations/:id/access_tokens",
     () => {
@@ -61,8 +73,9 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 beforeEach(() => {
-  recorded = { tokenExchanges: 0, reviews: [] };
+  recorded = { tokenExchanges: 0, installationLookups: 0, reviews: [] };
   __clearTokenCache();
+  __clearRepoInstallationCache();
 });
 
 const CONFIG: GithubLiveConfig = {
@@ -106,15 +119,18 @@ describe("makeGithubLive — pullReview", () => {
     expect(recorded.reviews).toHaveLength(0);
   });
 
-  it("no installation id — configured but request lacks it → no-op", async () => {
+  it("no installation id — resolves it from the repo, then posts the review", async () => {
     await post(makeGithubLive(CONFIG), {
       repo: "owner/name",
       pr: 42,
       sha: "headsha",
       body: "summary",
     });
-    expect(recorded.tokenExchanges).toBe(0);
-    expect(recorded.reviews).toHaveLength(0);
+    // resolve installation → exchange token → POST review
+    expect(recorded.installationLookups).toBe(1);
+    expect(recorded.tokenExchanges).toBe(1);
+    expect(recorded.reviews).toHaveLength(1);
+    expect(recorded.reviews[0]!.body.event).toBe("COMMENT");
   });
 
   it("surfaces a GitHub API failure as a typed GitHubApiError", async () => {

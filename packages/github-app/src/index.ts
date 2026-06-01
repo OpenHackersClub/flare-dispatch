@@ -17,8 +17,11 @@
 export { signAppJwt, type SignAppJwtOptions } from "./jwt";
 export {
   getInstallationToken,
+  resolveRepoInstallationId,
   __clearTokenCache,
+  __clearRepoInstallationCache,
   type GetInstallationTokenOptions,
+  type ResolveRepoInstallationOptions,
 } from "./installation-token";
 export {
   createCheckRun,
