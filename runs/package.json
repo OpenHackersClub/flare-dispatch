@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@flare-dispatch/core": "workspace:*",
+    "@flare-dispatch/review-agent": "workspace:*",
     "effect": "^3.10.0"
   },
   "devDependencies": {

@@ -162,6 +162,34 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)(msw@2.14.6(@types/node@22.19.19)(typescript@5.9.3))
 
+  packages/review-agent:
+    dependencies:
+      '@effect/ai':
+        specifier: ^0.35.0
+        version: 0.35.0(@effect/experimental@0.60.0(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/platform@0.96.1(effect@3.21.2))(@effect/rpc@0.75.1(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(effect@3.21.2)
+      '@effect/ai-openai':
+        specifier: ^0.39.2
+        version: 0.39.2(@effect/ai@0.35.0(@effect/experimental@0.60.0(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/platform@0.96.1(effect@3.21.2))(@effect/rpc@0.75.1(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(effect@3.21.2))(@effect/experimental@0.60.0(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2)
+      '@effect/platform':
+        specifier: ^0.96.0
+        version: 0.96.1(effect@3.21.2)
+      effect:
+        specifier: ^3.21.0
+        version: 3.21.2
+    devDependencies:
+      '@effect/vitest':
+        specifier: 0.14.9
+        version: 0.14.9(effect@3.21.2)(vitest@2.1.9(@types/node@22.19.19)(msw@2.14.6(@types/node@22.19.19)(typescript@5.9.3)))
+      '@types/node':
+        specifier: ^22.19.19
+        version: 22.19.19
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)(msw@2.14.6(@types/node@22.19.19)(typescript@5.9.3))
+
   packages/runtime-cf:
     dependencies:
       '@cloudflare/sandbox':
@@ -204,6 +232,9 @@ importers:
       '@flare-dispatch/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@flare-dispatch/review-agent':
+        specifier: workspace:*
+        version: link:../packages/review-agent
       effect:
         specifier: ^3.10.0
         version: 3.21.2

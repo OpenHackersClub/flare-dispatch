@@ -11,19 +11,18 @@ AI review should fire on **every PR push**, on every repo, without anyone editin
 | Blog concept | In `pr-review.run.ts` |
 |---|---|
 | Triggered on merge-request open / update | `triggers` on `pull_request` actions `opened`, `synchronize`, `ready_for_review` |
-| Noise filtering — lockfiles, minified, generated | `prepare-diff` step → `review-agent diff --exclude lockfiles,minified,generated`, written as a directory of per-file patches |
-| Risk tiers — trivial / lite / full | `classify-risk` step → `Match` on the tier selects the agent set (1 / 4 / 7) **and** the coordinator model |
-| Cheaper model on trivial diffs | the `Match` arm returns `sonnet` for trivial/lite, `opus` for full |
-| Workers + KV control plane — model routing without redeploy | `resolve-model` step → `config.get("pr-review.model.<tier-model>")` overrides the default ([03-dsl § `config`](../../specs/03-dsl.md#config)) |
-| Up to seven domain-specific agents, each tightly scoped | `FULL_AGENTS`; the tier's subset is fanned out in the `review` step with `concurrency` |
-| Shared context to cut token duplication | the per-file patch directory written once by `prepare-diff`, read by every agent |
-| Per-task timeouts (5 min, 10 min for code quality) | `timeoutSec` per `sandbox.exec` inside the `review` fan-out |
-| Re-reviews track previous findings | `load-prior` step → `io.priorExecution` loads the last execution's findings for this PR; `coordinate --previous` resolves fixed threads ([03-dsl § `io`](../../specs/03-dsl.md#io)) |
-| Coordinator dedups + filters into one verdict | `coordinate` step, `--json` output |
-| Single consolidated review | the FlareDispatch **check-run summary** — one per execution, replaced on each push |
+| Noise filtering — lockfiles, minified, generated | `prepare-diff` step → plain `git diff`, then `stripDiffNoise` drops lockfile / minified / generated / vendored file sections **in the Worker** |
+| Risk tiers — trivial / lite / full | `classify-risk` step → the engine's pure `riskTier` heuristic (diff size + sensitive paths); `Match` on the tier selects the agent set (1 / 4 / 7) |
+| Cheaper model on trivial diffs | the tier gates how many domain reviewers fan out; the model is the operator-pinned backend (see below) |
+| Workers + KV control plane — model routing without redeploy | `resolve-backend` step → `config.get("pr-review.backend")` + the backend's `base_url` / `model` keys ([03-dsl § `config`](../../specs/03-dsl.md#config)) — repoint a backend in seconds, no redeploy |
+| Up to seven domain-specific agents, each tightly scoped | `FULL_AGENTS`; the tier's subset is fanned out in the `review` step (`Effect.forEach` with `concurrency`), each calling `reviewDomain` **in the Worker** |
+| Shared context to cut token duplication | the single noise-stripped diff passed to every domain reviewer |
+| Re-reviews track previous findings | `load-prior` step → `io.priorExecution` loads the last execution's output for this PR; `coordinate` reconciles fixed/open threads ([03-dsl § `io`](../../specs/03-dsl.md#io)) |
+| Coordinator dedups + filters into one verdict | `coordinate` step → the engine's `coordinate`, a forced structured tool call (Schema-validated verdict + findings) |
+| Single consolidated review | a **PR review comment** (`github.pullReview`, `event: COMMENT`) posted on every run — success AND failure — plus the check-run summary |
 | Inline comments on specific lines | each `Finding` in the run output → a check-run **annotation** ([04-gha-integration § Inline findings](../../specs/04-gha-integration.md#inline-findings--annotations)) |
-| Bias toward approval unless critical findings | encoded in the `review-agent coordinate` rubric; surfaced as the `verdict` output |
-| Prompt caching, circuit breakers, model failover | inside the bundled `review-agent` CLI / model client — not the DSL |
+| Bias toward approval unless critical findings | the coordinator's generic default prompt (overridable via `pr-review.prompt`); surfaced as the `verdict` output |
+| Provider-agnostic model client | `@flare-dispatch/review-agent` built on `@effect/ai` — one `LanguageModel` abstraction, the concrete provider supplied by the configured backend |
 
 ## Flow
 
@@ -47,11 +46,37 @@ The run is deliberately thin — it orchestrates, it does not contain model logi
 - **`io.priorExecution`** ([03-dsl](../../specs/03-dsl.md#io)) — reads the last execution's recorded output for the same `(repo, PR)` family. That is how re-reviews stay incremental: the coordinator sees what it concluded on the previous push.
 - **Check-run annotations** ([04-gha-integration](../../specs/04-gha-integration.md#inline-findings--annotations)) — the run returns a `findings` array; the Dispatcher posts each as an inline annotation on the PR's Files-changed tab. The GitHub-native equivalent of GitLab's per-line DiffNotes, with no separate review thread to manage.
 
-## The review agent
+## The review engine runs in the Worker
 
-Each step shells out to a `review-agent` CLI baked into the container image (`flare-dispatch-review`). That mirrors the blog's approach of spawning a coding-agent child process — the agent, its model client, **prompt caching, the per-model circuit breaker, and provider failover** all live inside that CLI, not in the DSL. The run only orchestrates: check out, slice the diff, tier it, fan out, coordinate, return findings.
+The review is performed **in the Worker run body**, not in a container CLI. The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` (checkout + `git diff`). Every model call goes through `@flare-dispatch/review-agent` — a provider-agnostic engine built on [`@effect/ai`](https://effect.website): `riskTier` (a pure heuristic, no model call), `reviewDomain` (one structured per-domain reviewer), and `coordinate` (dedup + verdict). Findings are Schema-validated tool-call output, never hand-parsed JSON.
 
-Swapping the model or the agent framework is a change to the image (or a `config` key), not to this run.
+> Earlier versions shelled out to a `review-agent` CLI that did **not** exist in the deployed image, so every review silently failed. Moving the engine into the Worker removes that dependency entirely.
+
+### Configurable backend
+
+The engine selects a model backend from config — repoint it in seconds, no redeploy:
+
+| Key (CONFIG_KV) | Meaning |
+|---|---|
+| `pr-review.backend` | `opencode` (default) or `reasonix` |
+| `pr-review.prompt` | *(optional)* override the generic per-domain reviewer system prompt |
+| `pr-review.opencode.base_url` | AI Gateway OpenAI-compatible endpoint (`/v1/<acct>/<gw>/compat`) for the **opencode** backend (route Anthropic/Claude-class models) |
+| `pr-review.opencode.model` | provider-named model id, e.g. `anthropic/claude-3-5-sonnet` |
+| `pr-review.reasonix.base_url` | AI Gateway OpenAI-compatible endpoint for the **reasonix** backend (route DeepSeek) |
+| `pr-review.reasonix.model` | provider-named model id, e.g. `deepseek/deepseek-chat` |
+
+API keys are CONFIG_KV entries (the `loadSecrets` store), resolved through the same `config.get` accessor:
+
+| Key (CONFIG_KV / secret) | Used by |
+|---|---|
+| `OPENCODE_API_KEY` *(or shared `MODEL_API_KEY`)* | the **opencode** backend |
+| `REASONIX_API_KEY` | the **reasonix** backend |
+
+A misconfigured backend fails fast — the run posts a PR comment naming the exact missing key.
+
+### Always a PR comment
+
+Every run posts a top-level PR review comment (`event: COMMENT`) via the `github` capability — on success (the consolidated verdict + findings) **and** on failure (`⚠️ pr-review could not complete: <reason>`). The comment carries the `<!-- flare-dispatch: pr-review -->` footer marker.
 
 ## Scheduled sweep — [`pr-review-sweep.run.ts`](pr-review-sweep.run.ts)
 

@@ -36,9 +36,9 @@ import {
 import {
   BrowserDeferred,
   ConfigDeferred,
-  GithubDeferred,
   OidcDeferred,
 } from "./deferred";
+import { makeGithubLive } from "./github-live";
 import { makeOidcLive, type OidcLiveConfig } from "./oidc-live";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
@@ -177,6 +177,20 @@ export const makeCFRuntimeLive = (
   // configured; absent, the no-op Layer logs and skips (notification must never
   // fail a run).
   const email = makeEmailCloudflareLive(opts.email);
+  // `Github` write surface (`pullReview`) is live when App credentials are
+  // present — it reuses the same `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY`
+  // the `Checks` capability carries. Absent, `pullReview` is a logged no-op
+  // (reporting must never fail a run). The read surface stays a dying stub
+  // (V3 work). `opts.checks` carries the App PEM + id; the per-request
+  // installation id rides on the `PullReviewRequest`.
+  const github = makeGithubLive(
+    opts.checks === undefined
+      ? undefined
+      : {
+          appId: opts.checks.appId,
+          privateKeyPem: opts.checks.privateKeyPem,
+        },
+  );
 
   return Layer.mergeAll(
     sandbox,
@@ -187,7 +201,7 @@ export const makeCFRuntimeLive = (
     config,
     checks,
     email,
-    GithubDeferred,
+    github,
     oidcLayer,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.

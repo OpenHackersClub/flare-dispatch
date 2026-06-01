@@ -41,6 +41,7 @@ export {
   NOOP_CHECK_RUN_ID,
   type ChecksGithubConfig,
 } from "./checks-github";
+export { makeGithubLive, type GithubLiveConfig } from "./github-live";
 export {
   BrowserDeferred,
   ConfigDeferred,

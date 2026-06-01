@@ -28,4 +28,9 @@ export {
   type CreateCheckRunOptions,
   type UpdateCheckRunOptions,
 } from "./check-runs";
+export {
+  createPullReview,
+  type PullReviewEvent,
+  type CreatePullReviewOptions,
+} from "./reviews";
 export { GithubApiError } from "./errors";

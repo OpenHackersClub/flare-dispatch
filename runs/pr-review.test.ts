@@ -1,23 +1,28 @@
-// Run-level unit tests for the `pr-review` run.
+// Run-level unit tests for the `pr-review` run (v3 — Worker-side engine).
 //
 // Exercises the run Effect against the in-memory test runtime
-// (`makeCFRuntimeTest`) — no CF, no Docker, no network.
+// (`makeCFRuntimeTest`) — no CF, no Docker, no network, no model provider.
 //
-//   (a) green path    — full-tier diff, coordinate exits 0 with JSON verdict
-//                        → ReviewOutput with tier stitched in
-//   (b) trivial tier  — risk-tier returns "trivial", only code-quality agent
-//                        runs, coordinator uses "sonnet"
-//   (c) re-review     — priorExecution returns a previous output; seed-previous
-//                        step fires and "--previous" is passed to coordinate
-//   (d) determinism   — run body must not call Date.now() / crypto.randomUUID()
-//                        / Math.random() directly
+// The model-calling steps (`review`, `coordinate`) need a real provider, so
+// the *model path* is covered exhaustively in the engine's own unit tests
+// (packages/review-agent/src/engine.test.ts) with a stub `LanguageModel`. These
+// run-level tests cover the ORCHESTRATION that needs no model:
 //
-// Spec: specs/pm/plan.md § PR3, specs/03-dsl.md § Unit-testing runs.
+//   (a) diff via git    — `prepare-diff` shells out to `git diff` (not a
+//                          `review-agent` CLI), and a non-zero git exit FAILS
+//                          the step (honest red check).
+//   (b) always-comment  — on ANY failure the run still posts a PR review
+//                          comment (the operator must always get a comment),
+//                          via the `github.pullReview` write capability.
+//   (c) misconfig        — an unconfigured backend fails with a comment naming
+//                          the missing config key.
+//   (d) determinism      — no Date.now() / crypto.randomUUID() / Math.random()
+//                          in the run source.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { describe, expect } from "vitest";
 import { makeCFRuntimeTest } from "@flare-dispatch/core/testing";
 import { prReview } from "./pr-review";
@@ -27,127 +32,108 @@ const baseInput = {
   sha: "abc123",
   baseSha: "base456",
   pr: 42,
+  installationId: 7,
 } as const;
 
-const greenVerdictJson = JSON.stringify({
-  verdict: "approve",
-  critical: 0,
-  warnings: 0,
-  suggestions: 1,
-  findings: [],
-});
-
 describe("pr-review", () => {
-  it.effect("green path — full tier, coordinate exits 0, tier stitched in", () => {
-    const { layer } = makeCFRuntimeTest({
-      sandboxProgram: {
-        "review-agent diff": { exitCode: 0, stdout: "" },
-        "review-agent risk-tier": { exitCode: 0, stdout: "full" },
-        "review-agent run": { exitCode: 0, stdout: "" },
-        "review-agent coordinate": { exitCode: 0, stdout: greenVerdictJson },
-      },
-    });
-
-    return Effect.gen(function* () {
-      const result = yield* prReview.run(baseInput);
-
-      expect(result.tier).toBe("full");
-      expect(result.verdict).toBe("approve");
-      expect(result.critical).toBe(0);
-      expect(result.findings).toEqual([]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("trivial tier — only code-quality agent, model is sonnet", () => {
-    const { layer, handles } = makeCFRuntimeTest({
-      sandboxProgram: {
-        "review-agent diff": { exitCode: 0, stdout: "" },
-        "review-agent risk-tier": { exitCode: 0, stdout: "trivial" },
-        "review-agent run": { exitCode: 0, stdout: "" },
-        "review-agent coordinate": { exitCode: 0, stdout: greenVerdictJson },
-      },
-    });
-
-    return Effect.gen(function* () {
-      const result = yield* prReview.run(baseInput);
-
-      expect(result.tier).toBe("trivial");
-      // Only one agent ran — the review step should have one exec call
-      const reviewStep = handles.executions.steps.find((s) => s.name === "review");
-      expect(reviewStep).toBeDefined();
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect(
-    "re-review — prior findings cross the step boundary as plain data, seed-prior fires, --previous passed to coordinate",
+    "prepare-diff shells out to `git diff`, not a review-agent CLI",
     () => {
-      // Seed a previous terminal execution for this PR's family. `load-prior`
-      // resolves it to `Option.some(...)`; the run must hand the step boundary
-      // PLAIN data (not the Option itself), or CF Workflows' result serializer
-      // rejects it at runtime ("Could not serialize object of type Object").
-      // The inline runner asserts the same serializability contract, so a
-      // regression here fails this test rather than only in production.
+      // No backend config → the run fails at `resolve-backend`, but only AFTER
+      // checkout + prepare-diff have run. We assert the diff command shape.
       const { layer, handles } = makeCFRuntimeTest({
-        io: {
-          prior: {
-            executionId: "01PREV0000000000000000000",
-            sha: "prev789",
-            finishedAt: 1_700_000_000_000,
-            output: {
-              verdict: "comment",
-              tier: "full",
-              critical: 0,
-              warnings: 1,
-              suggestions: 0,
-              findings: [
-                {
-                  path: "src/a.ts",
-                  startLine: 10,
-                  endLine: 12,
-                  level: "warning",
-                  title: "prior finding",
-                  message: "still open?",
-                },
-              ],
-            },
-          },
-        },
         sandboxProgram: {
-          "review-agent diff": { exitCode: 0, stdout: "" },
-          "review-agent risk-tier": { exitCode: 0, stdout: "full" },
-          "review-agent run": { exitCode: 0, stdout: "" },
-          "review-agent seed-previous": { exitCode: 0, stdout: "" },
-          "review-agent coordinate": { exitCode: 0, stdout: greenVerdictJson },
+          "git diff": { exitCode: 0, stdout: "" },
         },
       });
 
       return Effect.gen(function* () {
-        const result = yield* prReview.run(baseInput);
-        expect(result.verdict).toBe("approve");
+        yield* Effect.exit(prReview.run(baseInput));
 
-        // The Some path executed: the seed-prior step ran...
-        const seedStep = handles.executions.steps.find(
-          (s) => s.name === "seed-prior",
+        const diffExec = handles.sandbox.execs.find((e) =>
+          e.command.startsWith("git diff"),
         );
-        expect(seedStep).toBeDefined();
-
-        // ...and the coordinator was told to reconcile against the prior set.
-        const coordinate = handles.sandbox.execs.find((e) =>
-          e.command.includes("review-agent coordinate"),
+        expect(diffExec).toBeDefined();
+        expect(diffExec?.command).toContain(baseInput.baseSha);
+        expect(diffExec?.command).toContain(baseInput.sha);
+        // The old `review-agent` CLI is gone entirely.
+        const reviewAgent = handles.sandbox.execs.find((e) =>
+          e.command.includes("review-agent"),
         );
-        expect(coordinate?.command).toContain("--previous");
+        expect(reviewAgent).toBeUndefined();
       }).pipe(Effect.provide(layer));
     },
   );
 
-  it.effect("determinism guard — no Date.now / randomUUID / Math.random in run source", () => {
-    const src = readFileSync(
-      fileURLToPath(new URL("./pr-review.ts", import.meta.url)),
-      "utf8",
-    );
-    expect(src).not.toMatch(/\bDate\.now\(\)/);
-    expect(src).not.toMatch(/\bcrypto\.randomUUID\(\)/);
-    expect(src).not.toMatch(/\bMath\.random\(\)/);
-    return Effect.void;
+  it.effect("a non-zero git diff exit FAILS the run (honest red check)", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      sandboxProgram: {
+        // git diff exits non-zero — a real failure, not swallowed.
+        "git diff": { exitCode: 128, stdout: "", stderr: "fatal: bad object" },
+      },
+    });
+
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(prReview.run(baseInput));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      // The run still posted a PR comment explaining the failure.
+      expect(handles.github.pullReviewCalls).toHaveLength(1);
+      const comment = handles.github.pullReviewCalls[0]!;
+      expect(comment.repo).toBe(baseInput.repo);
+      expect(comment.pr).toBe(baseInput.pr);
+      expect(comment.body).toContain("could not complete");
+      expect(comment.body).toContain("<!-- flare-dispatch: pr-review -->");
+    }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "an unconfigured backend fails with a comment naming the missing key",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        // No `pr-review.*` config keys seeded → resolveBackend fails.
+      });
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(prReview.run(baseInput));
+        expect(Exit.isFailure(exit)).toBe(true);
+
+        expect(handles.github.pullReviewCalls).toHaveLength(1);
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).toContain("misconfigured");
+        expect(body).toContain("pr-review.opencode.base_url");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "the PR comment is anchored to the head sha and carries the installation id",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const comment = handles.github.pullReviewCalls[0]!;
+        expect(comment.sha).toBe(baseInput.sha);
+        expect(comment.installationId).toBe(baseInput.installationId);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "determinism guard — no Date.now / randomUUID / Math.random in run source",
+    () => {
+      const src = readFileSync(
+        fileURLToPath(new URL("./pr-review.ts", import.meta.url)),
+        "utf8",
+      );
+      expect(src).not.toMatch(/\bDate\.now\(\)/);
+      expect(src).not.toMatch(/\bcrypto\.randomUUID\(\)/);
+      expect(src).not.toMatch(/\bMath\.random\(\)/);
+      return Effect.void;
+    },
+  );
 });
