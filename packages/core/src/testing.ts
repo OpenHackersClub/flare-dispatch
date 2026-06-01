@@ -25,6 +25,11 @@ import {
   makeChecksFake,
 } from "./fakes/checks-fake";
 import {
+  EmailFake,
+  type EmailFakeState,
+  makeEmailFake,
+} from "./fakes/email-fake";
+import {
   ExecutionsFake,
   type ExecutionsFakeState,
   makeExecutionsFake,
@@ -74,6 +79,11 @@ export {
   type CheckCreateCall,
   type CheckUpdateCall,
 } from "./fakes/checks-fake";
+export {
+  EmailFake,
+  makeEmailFake,
+  type EmailFakeState,
+} from "./fakes/email-fake";
 export {
   ExecutionsFake,
   makeExecutionsFake,
@@ -137,6 +147,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   IOFake,
   ConfigFake,
   ChecksFake,
+  EmailFake,
   GithubFake,
   OidcFake,
   ExecutionsFake,
@@ -151,6 +162,7 @@ export type CFRuntimeTestHandles = {
   readonly artifact: ArtifactFakeState;
   readonly io: IOFakeState;
   readonly checks: ChecksFakeState;
+  readonly email: EmailFakeState;
   readonly executions: ExecutionsFakeState;
   readonly github: GithubFakeState;
   readonly oidc: OidcFakeState;
@@ -196,6 +208,7 @@ export const makeCFRuntimeTest = (
   const artifact = makeArtifactFake();
   const io = makeIOFake(opts.io);
   const checks = makeChecksFake();
+  const emailFake = makeEmailFake();
   const github = makeGithubFake(opts.github);
   const oidcLayer = makeOidcFake(opts.oidc);
   const executions = makeExecutionsFake();
@@ -213,6 +226,7 @@ export const makeCFRuntimeTest = (
     io.layer,
     makeConfigFake(opts.config),
     checks.layer,
+    emailFake.layer,
     github.layer,
     oidcLayer.layer,
     executions.layer,
@@ -227,6 +241,7 @@ export const makeCFRuntimeTest = (
       artifact: artifact.state,
       io: io.state,
       checks: checks.state,
+      email: emailFake.state,
       github: github.state,
       oidc: oidcLayer.state,
       executions: executions.state,

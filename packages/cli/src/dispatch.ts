@@ -65,7 +65,38 @@ export interface DispatchBody {
     readonly workflow_run_id?: number;
     readonly job_id?: string;
   };
+  /** Optional completion-notify recipients — omitted from JSON when empty. */
+  readonly notify?: { readonly emails: readonly string[] };
 }
+
+/**
+ * Parse the `notify-emails` action input into a recipient list. Accepts a
+ * comma / newline / whitespace separated list (`a@x.com, b@y.com`) OR a JSON
+ * array (`["a@x.com","b@y.com"]`). Returns `[]` when unset/blank so the caller
+ * omits the `notify` block entirely.
+ */
+export const parseEmailList = (raw: string | undefined): readonly string[] => {
+  if (raw === undefined) return [];
+  const trimmed = raw.trim();
+  if (trimmed === "") return [];
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((v): v is string => typeof v === "string")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+      }
+    } catch {
+      // fall through to delimiter splitting
+    }
+  }
+  return trimmed
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+};
 
 /**
  * Env-var sources. A plain string-keyed map so tests can inject either the
@@ -145,6 +176,7 @@ export const resolveHeadSha = (env: DispatchEnv): string => {
  */
 export const buildBody = (env: DispatchEnv): DispatchBody => {
   const runId = Number(env.GITHUB_RUN_ID ?? 0);
+  const notifyEmails = parseEmailList(readInput(env, "notify-emails"));
   return {
     run: readInput(env, "run") ?? "",
     github: {
@@ -166,6 +198,10 @@ export const buildBody = (env: DispatchEnv): DispatchBody => {
       workflow_run_id: runId || undefined,
       job_id: env.GITHUB_JOB ? env.GITHUB_JOB : undefined,
     },
+    // Omit `notify` when no recipients — keeps the body byte-identical to the
+    // pre-feature shape for callers that don't opt in (the HMAC is over these
+    // exact bytes).
+    ...(notifyEmails.length > 0 ? { notify: { emails: notifyEmails } } : {}),
   };
 };
 

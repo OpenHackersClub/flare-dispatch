@@ -29,6 +29,11 @@ export {
 } from "./browser-cf";
 export { makeCacheR2Live } from "./cache-r2";
 export { makeConfigKvLive } from "./config-kv";
+export {
+  makeEmailCloudflareLive,
+  type EmailCloudflareConfig,
+  type SendEmailBinding,
+} from "./email-cf";
 export { makeSandboxCloudflareLive } from "./sandbox-cf";
 export { makeStepRunnerCloudflare } from "./step-runner-cf";
 export {

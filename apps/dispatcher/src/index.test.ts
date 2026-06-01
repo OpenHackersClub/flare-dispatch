@@ -118,6 +118,7 @@ describe("GET /health", () => {
         "offload-test",
         "playwright-demo",
         "playwright-e2e",
+        "pr-review",
         "product-demo",
       ],
     });
@@ -355,6 +356,45 @@ describe("POST /v1/dispatch/:run — success", () => {
       sha: "abc123def456",
     });
     expect("installation_id" in params.github).toBe(false);
+  });
+
+  it("forwards notify.emails into the Workflow params", async () => {
+    const { env, workflow } = fixture();
+    const body = {
+      ...validBody,
+      notify: { emails: ["alice@x.com", "bob@y.com"] },
+    };
+    const bodyText = JSON.stringify(body);
+    const req = await dispatchRequest("offload-test", bodyText);
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(202);
+
+    const params = workflow.calls[0]!.params as { notify?: unknown };
+    expect(params.notify).toEqual({ emails: ["alice@x.com", "bob@y.com"] });
+  });
+
+  it("drops an empty notify.emails (no notify in params)", async () => {
+    const { env, workflow } = fixture();
+    const bodyText = JSON.stringify({ ...validBody, notify: { emails: [] } });
+    const req = await dispatchRequest("offload-test", bodyText);
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(202);
+
+    const params = workflow.calls[0]!.params as Record<string, unknown>;
+    expect("notify" in params).toBe(false);
+  });
+
+  it("rejects a malformed notify email with 400", async () => {
+    const { env, workflow } = fixture();
+    const bodyText = JSON.stringify({
+      ...validBody,
+      notify: { emails: ["not-an-email"] },
+    });
+    const req = await dispatchRequest("offload-test", bodyText);
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(400);
+    expect(await errorOf(res)).toBe("invalid_body");
+    expect(workflow.calls).toHaveLength(0);
   });
 });
 

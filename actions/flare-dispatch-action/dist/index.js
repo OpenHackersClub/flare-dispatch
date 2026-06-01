@@ -28459,6 +28459,21 @@ var BadResponse = class extends Schema_exports.TaggedError()(
 var escapeCmd = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 var truncateForLog = (s, max6 = 500) => s.length <= max6 ? s : `${s.slice(0, max6)}\u2026 (truncated)`;
 var safeForCmd = (s) => escapeCmd(truncateForLog(s));
+var parseEmailList = (raw) => {
+  if (raw === void 0) return [];
+  const trimmed2 = raw.trim();
+  if (trimmed2 === "") return [];
+  if (trimmed2.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed2);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((v) => typeof v === "string").map((s) => s.trim()).filter((s) => s.length > 0);
+      }
+    } catch {
+    }
+  }
+  return trimmed2.split(/[\s,]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+};
 var readInput = (env, name) => {
   const ghaCanonical = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
   const underscored = `INPUT_${name.replace(/ /g, "_").replace(/-/g, "_").toUpperCase()}`;
@@ -28486,6 +28501,7 @@ var resolveHeadSha = (env) => {
 };
 var buildBody = (env) => {
   const runId = Number(env.GITHUB_RUN_ID ?? 0);
+  const notifyEmails = parseEmailList(readInput(env, "notify-emails"));
   return {
     run: readInput(env, "run") ?? "",
     github: {
@@ -28506,7 +28522,11 @@ var buildBody = (env) => {
     trigger: {
       workflow_run_id: runId || void 0,
       job_id: env.GITHUB_JOB ? env.GITHUB_JOB : void 0
-    }
+    },
+    // Omit `notify` when no recipients — keeps the body byte-identical to the
+    // pre-feature shape for callers that don't opt in (the HMAC is over these
+    // exact bytes).
+    ...notifyEmails.length > 0 ? { notify: { emails: notifyEmails } } : {}
   };
 };
 var signBytes = (secret2, body) => {

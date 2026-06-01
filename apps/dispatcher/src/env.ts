@@ -155,6 +155,36 @@ export interface Env {
   readonly SANDBOX_PREVIEW_HOSTNAME?: string;
 
   /**
+   * Cloudflare Email Routing `send_email` binding — backs the `email`
+   * capability + the Workflow's completion-notify (`notify.emails` in the
+   * dispatch body). Declared as `"send_email": [{ "name": "SEND_EMAIL" }]` in
+   * wrangler. Cloudflare only delivers to **verified destination addresses** on
+   * the zone, and `from` must be `EMAIL_FROM` on that zone. Absent (no Email
+   * Routing configured) → the no-op `Email` Layer: notifications are logged and
+   * skipped, never failing a run.
+   */
+  readonly SEND_EMAIL?: SendEmail;
+
+  /**
+   * Verified sender address for completion-notify email — the `From`. A var,
+   * not a secret (a public address, not a credential). Must be on the Email
+   * Routing zone `SEND_EMAIL` is bound to. Absent → `Email` degrades to the
+   * no-op Layer even when `SEND_EMAIL` is present.
+   */
+  readonly EMAIL_FROM?: string;
+
+  /** Optional display name for the notify `From` header (e.g. "FlareDispatch"). */
+  readonly EMAIL_FROM_NAME?: string;
+
+  /**
+   * Optional comma-separated allowlist of recipient addresses. When set, a
+   * `notify.emails` recipient not on it is rejected before the provider call —
+   * a cheap guard so a dispatch can't fan notifications at arbitrary addresses
+   * on top of Cloudflare's own verified-destination enforcement. A var.
+   */
+  readonly EMAIL_ALLOWED_RECIPIENTS?: string;
+
+  /**
    * Cloudflare account id (the 32-hex id in the dashboard URL) — a var, not a
    * secret. When set, `RunWorkflow` builds a `details_url` on the GitHub
    * check-run pointing at the Cloudflare Workflows instance page

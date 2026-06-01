@@ -26,7 +26,27 @@
   //     override per-deploy with `CLOUDFLARE_ACCOUNT_ID=... wrangler deploy`.
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "c91d52c288c452ab734ede1518b00e11"
+    // EMAIL_FROM — verified Email Routing sender for completion-notify email
+    //   (the `notify.emails` dispatch field). Must be an address on the zone the
+    //   `send_email` binding below is attached to. Uncomment + set once Email
+    //   Routing is configured; absent → the `email` capability no-ops (logs +
+    //   skips). Optional companions: EMAIL_FROM_NAME (display name),
+    //   EMAIL_ALLOWED_RECIPIENTS (comma-separated recipient allowlist).
+    // "EMAIL_FROM": "flare-dispatch@<your-zone>",
+    // "EMAIL_FROM_NAME": "FlareDispatch"
   },
+
+  // Email Routing `send_email` binding — backs the `email` capability + the
+  // Workflow's completion-notify. Cloudflare delivers ONLY to addresses
+  // verified as Email Routing destination addresses on the zone, and `from`
+  // must be EMAIL_FROM on that zone (anti-abuse — not a FlareDispatch choice).
+  // Requires Email Routing enabled on a zone in this account; leaving it
+  // commented keeps `wrangler deploy` working on deploys without it. Uncomment
+  // after setup. Add `"allowed_destination_addresses": ["a@x","b@y"]` to pin
+  // the binding to a fixed set, or `"destination_address": "a@x"` for one.
+  // "send_email": [
+  //   { "name": "SEND_EMAIL" }
+  // ],
 
   // RunWorkflow (apps/dispatcher/src/workflow.ts) maps each run `step(...)` to a
   // durable WorkflowStep.do checkpoint under an Effect runtime — see PR4.
