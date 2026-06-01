@@ -16,6 +16,7 @@ import type { Browser } from "./services/browser";
 import type { Cache } from "./services/cache";
 import type { Checks } from "./services/checks";
 import type { Config } from "./services/config";
+import type { Email } from "./services/email";
 import type { Executions } from "./services/executions";
 import type { Github } from "./services/github";
 import type { IO } from "./services/io";
@@ -32,6 +33,7 @@ export type RunContext =
   | IO
   | Config
   | Checks
+  | Email
   | Github
   | Oidc
   | Executions

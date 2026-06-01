@@ -30,6 +30,10 @@ import {
 } from "./checks-github";
 import { makeConfigKvLive } from "./config-kv";
 import {
+  type EmailCloudflareConfig,
+  makeEmailCloudflareLive,
+} from "./email-cf";
+import {
   BrowserDeferred,
   ConfigDeferred,
   GithubDeferred,
@@ -105,6 +109,15 @@ export type CFRuntimeLiveOptions = {
    * fails with `OidcSigningFailed` (`reason: "key-load"`).
    */
   readonly oidc?: OidcLiveConfig;
+  /**
+   * Cloudflare Email Routing config for the `email` capability — the
+   * `SEND_EMAIL` binding + verified `EMAIL_FROM` sender. `undefined` (no
+   * binding / no sender on this deploy) selects the no-op `Email` Layer: the
+   * Workflow's completion-notify and any `email.send` in a run become a logged
+   * no-op (`skipped: true`) rather than failing — email is reporting, never a
+   * gate on the run's verdict.
+   */
+  readonly email?: EmailCloudflareConfig;
 };
 
 /**
@@ -160,6 +173,10 @@ export const makeCFRuntimeLive = (
   // call to `oidc.sign` fails with `OidcSigningFailed`.
   const oidcLayer =
     opts.oidc === undefined ? OidcDeferred : makeOidcLive(opts.oidc);
+  // `Email` is live when the Email Routing `send_email` binding + sender are
+  // configured; absent, the no-op Layer logs and skips (notification must never
+  // fail a run).
+  const email = makeEmailCloudflareLive(opts.email);
 
   return Layer.mergeAll(
     sandbox,
@@ -169,6 +186,7 @@ export const makeCFRuntimeLive = (
     io,
     config,
     checks,
+    email,
     GithubDeferred,
     oidcLayer,
     executions,

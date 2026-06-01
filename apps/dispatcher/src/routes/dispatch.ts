@@ -93,6 +93,29 @@ const GithubContext = Schema.Struct({
 });
 
 /**
+ * A syntactically-valid email address. A loose single-`@` check — the
+ * authoritative gate is Cloudflare's verified-destination-address enforcement
+ * at send time; this only rejects obvious garbage (empty, no `@`, whitespace)
+ * before it reaches the Workflow payload.
+ */
+const EmailAddress = Schema.String.pipe(
+  Schema.pattern(/^[^@\s]+@[^@\s]+\.[^@\s]+$/, {
+    message: () => "must be a valid email address",
+  }),
+);
+
+/**
+ * Optional completion-notify block — specs/04-gha-integration.md
+ * § Notifications. When `emails` is present, the Workflow emails each address
+ * the run's verdict + output (artifact / demo / log links) at completion. The
+ * recipients must be verified Email Routing destination addresses on the
+ * deploy's zone for delivery to succeed.
+ */
+const NotifySpec = Schema.Struct({
+  emails: Schema.Array(EmailAddress),
+});
+
+/**
  * The dispatch body — specs/04-gha-integration.md § Dispatch body. `inputs` is
  * left `Unknown` here and validated separately against the *named run's*
  * `inputs` Schema, so the 400 carries the run-specific parse error.
@@ -102,6 +125,7 @@ const DispatchBody = Schema.Struct({
   github: GithubContext,
   inputs: Schema.Unknown,
   trigger: Schema.optional(Schema.Unknown),
+  notify: Schema.optional(NotifySpec),
 });
 
 /** Render an Effect `ParseError` as the multi-line tree a caller can act on. */
@@ -253,6 +277,11 @@ export const handleDispatch = async (
         : {}),
     },
     inputs,
+    // Forward completion-notify recipients (empty `emails` is dropped — the
+    // Workflow treats absent + empty identically: no notification).
+    ...(body.notify !== undefined && body.notify.emails.length > 0
+      ? { notify: { emails: body.notify.emails } }
+      : {}),
   };
 
   // CF Workflows rejects a `create({id})` whose id has been seen before with

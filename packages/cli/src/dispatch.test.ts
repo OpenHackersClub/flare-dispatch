@@ -17,6 +17,7 @@ import {
   computeIdempotencyKey,
   type DispatchEnv,
   type FetchLike,
+  parseEmailList,
   reportFailure,
   resolveHeadSha,
   runDispatch,
@@ -157,6 +158,39 @@ describe("buildBody", () => {
     );
     expect(body.trigger.workflow_run_id).toBe(987654321);
     expect(body.trigger.job_id).toBe("build");
+  });
+
+  it("omits notify when notify-emails is unset", () => {
+    expect(buildBody(baseEnv()).notify).toBeUndefined();
+  });
+
+  it("populates notify.emails from a comma-separated notify-emails input", () => {
+    const body = buildBody(
+      baseEnv({ "INPUT_NOTIFY-EMAILS": "alice@x.com, bob@y.com" }),
+    );
+    expect(body.notify).toEqual({ emails: ["alice@x.com", "bob@y.com"] });
+  });
+});
+
+describe("parseEmailList", () => {
+  it("returns [] for unset/blank", () => {
+    expect(parseEmailList(undefined)).toEqual([]);
+    expect(parseEmailList("   ")).toEqual([]);
+  });
+
+  it("splits comma / whitespace / newline separated lists", () => {
+    expect(parseEmailList("a@x.com, b@y.com\n c@z.com")).toEqual([
+      "a@x.com",
+      "b@y.com",
+      "c@z.com",
+    ]);
+  });
+
+  it("parses a JSON array", () => {
+    expect(parseEmailList('["a@x.com", "b@y.com"]')).toEqual([
+      "a@x.com",
+      "b@y.com",
+    ]);
   });
 });
 

@@ -39,6 +39,15 @@ inputs:
       the App's webhook-registered installation map.
     required: false
     default: "0"
+  notify-emails:
+    description: >-
+      Optional recipients to email the run's result (verdict + artifact / demo /
+      log links) on completion. Comma/whitespace separated or a JSON array, e.g.
+      "alice@x.com, bob@y.com". Each must be a verified Cloudflare Email Routing
+      destination address on the Dispatcher's zone, and the deploy must have the
+      SEND_EMAIL binding + EMAIL_FROM set; otherwise delivery is skipped.
+    required: false
+    default: ""
 
 outputs:
   execution-id:

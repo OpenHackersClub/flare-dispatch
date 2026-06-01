@@ -82,9 +82,12 @@ A GHA workflow — or any HMAC-signing HTTP caller — POSTs `/v1/dispatch/:run`
     "installation_id": 12345
   },
   "inputs": { "baseURL": "...", "shards": 4 },
-  "trigger": { "workflow_run_id": 678901, "job_id": 234567 }
+  "trigger": { "workflow_run_id": 678901, "job_id": 234567 },
+  "notify": { "emails": ["reviewer@example.com"] }
 }
 ```
+
+`notify.emails` is optional — see [§ Notifications](#notifications). Omit it (or pass an empty list) and no email is sent.
 
 HMAC-SHA256 signed; the signature goes in `X-FlareDispatch-Signature: sha256=<hex>`, verified with a constant-time comparison. Direct (non-GHA) callers must also supply an `Idempotency-Key` header so receiver-level dedup applies; the GHA Action generates one per dispatch.
 
@@ -317,6 +320,29 @@ This keeps the single-surface model intact — the check-run is still the only t
 > **Status: Planned (V1)** — `check_run.rerequested` / `check_run.created` handling rides on the Webhook-mode receiver, which is not yet implemented.
 
 Once Webhook mode lands, the App will listen for `check_run.rerequested` and `check_run.created`. Clicking "Re-run failed checks" on a PR fires `POST /v1/webhooks/github`, which the Dispatcher routes to a new Workflow execution with the same inputs. The run re-executes in place — no GHA workflow re-runs, regardless of which mode originally triggered it.
+
+---
+
+## Notifications
+
+The check-run is the PR signal, but stakeholders who don't watch the PR (designers reviewing a demo, an operator on a scheduled sweep) often want the result pushed to them. The dispatch body's optional `notify.emails` list does this: when present, `RunWorkflow` emails each address the run's verdict + output at the finalize boundary, right after completing the check-run.
+
+The email renders the run's **output object** — wherever a run returns shareable URLs (`playwright-demo` → `videoUri`/`logUri`, `deploy-smoke` → a target URL), those become clickable links (artifact / demo / log), so the recipient clicks straight through. On a failed run the email links the Cloudflare step logs instead.
+
+### How to pass recipients
+
+- **Action mode** — the `notify-emails` input (comma/whitespace separated, or a JSON array): `notify-emails: "alice@x.com, bob@y.com"`.
+- **Direct dispatch** — `notify.emails: ["…"]` in the POST body.
+
+Recipients are validated for shape (single `@`, a dot in the domain) at the dispatch gate; a malformed address is a `400`.
+
+### Backend — Cloudflare Email Routing
+
+Delivery uses Cloudflare Email Routing's `send_email` binding (`SEND_EMAIL`), with `EMAIL_FROM` as the verified sender. **Cloudflare only delivers to addresses verified as Email Routing destination addresses on the deploy's zone** — this is Cloudflare's anti-abuse posture, not a FlareDispatch choice. For a fixed reviewer/stakeholder list (verify each once in the dashboard) this is exactly right; for arbitrary external recipients, swap the `Email` capability's Layer for a transactional provider (Resend / MailChannels / SES) — the capability interface is provider-agnostic so no run changes.
+
+Notification is **reporting, never a gate**: an unconfigured backend (no binding / no `EMAIL_FROM`), an unverified recipient, or a provider outage is logged and the run's verdict is unaffected — exactly like a missing check-run. The optional `EMAIL_ALLOWED_RECIPIENTS` var pins an allowlist on top of Cloudflare's verified-destination check.
+
+Setup: see [`specs/05-byoc.md` § Secrets](./05-byoc.md) and the commented `send_email` block + `EMAIL_FROM` var in `wrangler.jsonc`.
 
 ---
 

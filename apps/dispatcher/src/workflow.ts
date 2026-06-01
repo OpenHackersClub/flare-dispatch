@@ -46,13 +46,15 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { Effect, Exit, Schedule, Schema } from "effect";
-import { Checks, Executions } from "@flare-dispatch/core";
+import { Checks, Email, Executions } from "@flare-dispatch/core";
 import {
   type BrowserRenderingConfig,
   type ChecksGithubConfig,
+  type EmailCloudflareConfig,
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
 import { lookupRun } from "./registry";
+import { renderResultEmail } from "./notify";
 import type { Env } from "./env";
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */
@@ -84,6 +86,16 @@ const DispatchPayload = Schema.Struct({
   github: GithubContext,
   /** the run inputs, decoded per-run against `run.inputs`. */
   inputs: Schema.Unknown,
+  /**
+   * Optional completion-notify recipients. When `emails` is non-empty, the
+   * Workflow emails the run's verdict + output (artifact / demo / log links) to
+   * each address at the finalize boundary, via the `email` capability. PR5's
+   * dispatch route fills this in from the request body's `notify`. Delivery is
+   * best-effort: a send failure is logged, never fails the run.
+   */
+  notify: Schema.optional(
+    Schema.Struct({ emails: Schema.Array(Schema.String) }),
+  ),
 });
 type DispatchPayload = Schema.Schema.Type<typeof DispatchPayload>;
 
@@ -130,6 +142,32 @@ const resolveBrowserConfig = (env: Env): BrowserRenderingConfig | undefined =>
         connectUrl: env.BROWSER_CDP_CONNECT_URL,
         apiToken: env.BROWSER_CDP_API_TOKEN,
       };
+
+/**
+ * Resolve the `Email` Layer config from `env`, or `undefined` when Email
+ * Routing is not configured (no `SEND_EMAIL` binding or no `EMAIL_FROM`
+ * sender) — `undefined` selects the no-op `Email` Layer (notifications logged
+ * + skipped). `EMAIL_ALLOWED_RECIPIENTS`, when set, is split on commas into an
+ * operator allowlist.
+ */
+const resolveEmailConfig = (env: Env): EmailCloudflareConfig | undefined => {
+  if (env.SEND_EMAIL === undefined || env.EMAIL_FROM === undefined) {
+    return undefined;
+  }
+  const allowed = env.EMAIL_ALLOWED_RECIPIENTS?.split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return {
+    sendEmail: env.SEND_EMAIL,
+    fromAddress: env.EMAIL_FROM,
+    ...(env.EMAIL_FROM_NAME !== undefined
+      ? { fromName: env.EMAIL_FROM_NAME }
+      : {}),
+    ...(allowed !== undefined && allowed.length > 0
+      ? { allowedRecipients: allowed }
+      : {}),
+  };
+};
 
 /**
  * The Cloudflare Workflows name backing `RUNS_WORKFLOW` — the dashboard
@@ -199,6 +237,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       checks: resolveChecksConfig(this.env, payload.github),
       configKv: this.env.CONFIG_KV,
       browser: resolveBrowserConfig(this.env),
+      email: resolveEmailConfig(this.env),
       sandboxPreviewHostname: this.env.SANDBOX_PREVIEW_HOSTNAME,
       // Wire the live OIDC signing Layer when both the JWK + issuer URL are
       // configured. Subject defaults to `<run>:<execution-id>` so an IAM
@@ -225,6 +264,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     const program = Effect.gen(function* () {
       const executions = yield* Executions;
       const checks = yield* Checks;
+      const email = yield* Email;
 
       const startedAt = yield* Effect.sync(() => Date.now());
       yield* executions.startExecution({
@@ -312,6 +352,49 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
           }),
         },
       });
+
+      // Completion-notify email — the other side of the GitHub check-run, for
+      // recipients who aren't watching the PR. Renders the run's verdict +
+      // output (artifact / demo / log links) and sends to each `notify.emails`
+      // address. Best-effort: a send failure (or an unconfigured backend) is
+      // logged, never failing the already-finished run.
+      const notifyEmails = payload.notify?.emails ?? [];
+      if (notifyEmails.length > 0) {
+        const rendered = renderResultEmail({
+          run: payload.run,
+          status,
+          executionId: payload.executionId,
+          repo: payload.github.repo,
+          sha: payload.github.sha,
+          ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+          output: Exit.match(exit, {
+            onSuccess: (out) => out,
+            onFailure: () => undefined,
+          }),
+        });
+        yield* email
+          .send({
+            to: notifyEmails,
+            subject: rendered.subject,
+            html: rendered.html,
+            text: rendered.text,
+          })
+          .pipe(
+            Effect.tap((result) =>
+              Effect.logInfo(
+                `notify: emailed ${result.accepted.length}/${notifyEmails.length} recipient(s)` +
+                  (result.rejected.length > 0
+                    ? ` (${result.rejected.length} rejected)`
+                    : ""),
+              ),
+            ),
+            // `send` is total, but guard defects so a notify bug never turns a
+            // green run red at the very last step.
+            Effect.catchAllCause((cause) =>
+              Effect.logError(`notify: email send failed — ${cause}`),
+            ),
+          );
+      }
     });
 
     await Effect.runPromise(program.pipe(Effect.provide(runtime)));

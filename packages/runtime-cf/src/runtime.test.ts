@@ -41,6 +41,7 @@ import {
   OidcDeferred,
 } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
+import { makeEmailCloudflareLive } from "./email-cf";
 import { makeIOLive } from "./io-live";
 import { makeStepRunnerCloudflare } from "./step-runner-cf";
 import { countRows, makeTestBindings, type TestBindings } from "./test-support";
@@ -97,6 +98,8 @@ const makeRuntimeUnderTest = (
     OidcDeferred,
     // No App credentials in this Miniflare suite → the no-op `Checks` Layer.
     makeChecksGithubLive(undefined),
+    // No Email Routing in this suite → the no-op `Email` Layer.
+    makeEmailCloudflareLive(undefined),
     executions,
     Layer.provide(stepRunner, Layer.merge(executions, io)),
   );

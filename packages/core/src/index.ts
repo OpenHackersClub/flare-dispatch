@@ -58,6 +58,14 @@ export {
 } from "./services/io";
 export { config, Config, type ConfigService } from "./services/config";
 export {
+  email,
+  Email,
+  type EmailService,
+  type EmailSendRequest,
+  type EmailSendResult,
+  type EmailRejection,
+} from "./services/email";
+export {
   github,
   Github,
   type GithubService,
