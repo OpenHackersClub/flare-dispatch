@@ -47,28 +47,72 @@ export const enqueueInlineEvent = (
 };
 
 /**
- * Fail (as a defect) if a step's success value cannot be structured-cloned —
- * the operation `WorkflowStep.do` performs to checkpoint each result in
- * production. Mirroring it here turns a latent `DataCloneError` (e.g. a value
- * carrying an `Effect`) into a unit-test failure instead of a runtime-only one.
+ * Walk a value's object graph and return a description of the first node CF
+ * Workflows could not checkpoint, or `undefined` if the whole graph is plain
+ * JSON data. CF serializes every step result and accepts only plain objects,
+ * arrays, and primitives; a class instance (an Effect `Option`/`Either`, a
+ * `Map`, a `Date`, a `Response`, …) fails at runtime with "Could not serialize
+ * object of type Object. This type does not support serialization."
+ *
+ * `structuredClone` is too lax to catch this: it does not throw on an Effect
+ * `Option`, it silently strips the prototype + `_tag` (`Option.some(x)` →
+ * `{ value: x }`, `Option.none()` → `{}`), so a step returning an Option looks
+ * fine in a clone-based check yet blows up — or corrupts — under the real
+ * serializer. Rejecting any non-plain-prototype object is the contract that
+ * actually matches production.
+ */
+const findNonSerializable = (
+  value: unknown,
+  path: string,
+): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return undefined;
+  if (t === "bigint" || t === "function" || t === "symbol") {
+    return `${path} is a ${t}, which is not JSON-serializable`;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = findNonSerializable(value[i], `${path}[${i}]`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    const ctor =
+      (value as { constructor?: { name?: string } }).constructor?.name ??
+      "unknown";
+    return `${path} is a non-plain object (${ctor}) — CF Workflows checkpoints only plain data`;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const found = findNonSerializable(v, `${path}.${k}`);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+/**
+ * Fail (as a defect) if a step's success value is not plain JSON data — the
+ * contract `WorkflowStep.do` enforces when it checkpoints each result in
+ * production. Turns a runtime-only serialization failure into a unit-test one.
  */
 const assertStructuredCloneable = (
   name: string,
   value: unknown,
 ): Effect.Effect<void> =>
-  Effect.try({
-    try: () => {
-      structuredClone(value);
-    },
-    catch: (cause) =>
-      new Error(
-        `step "${name}" returned a non-serializable value — CF Workflows ` +
-          `checkpoints every step result via structuredClone, which would ` +
-          `fail at runtime with: ${
-            cause instanceof Error ? cause.message : String(cause)
-          }`,
-      ),
-  }).pipe(Effect.orDie);
+  Effect.suspend(() => {
+    const problem = findNonSerializable(value, "<return>");
+    return problem === undefined
+      ? Effect.void
+      : Effect.die(
+          new Error(
+            `step "${name}" returned a non-serializable value — CF Workflows ` +
+              `checkpoints every step result and accepts only plain JSON data; ` +
+              `${problem}`,
+          ),
+        );
+  });
 
 /** Extract a tagged error's `_tag` from a Cause, without a raw `._tag` branch. */
 const errorTagOf = (cause: Cause.Cause<unknown>): string | undefined =>

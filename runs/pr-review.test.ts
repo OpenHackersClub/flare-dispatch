@@ -78,6 +78,68 @@ describe("pr-review", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "re-review — prior findings cross the step boundary as plain data, seed-prior fires, --previous passed to coordinate",
+    () => {
+      // Seed a previous terminal execution for this PR's family. `load-prior`
+      // resolves it to `Option.some(...)`; the run must hand the step boundary
+      // PLAIN data (not the Option itself), or CF Workflows' result serializer
+      // rejects it at runtime ("Could not serialize object of type Object").
+      // The inline runner asserts the same serializability contract, so a
+      // regression here fails this test rather than only in production.
+      const { layer, handles } = makeCFRuntimeTest({
+        io: {
+          prior: {
+            executionId: "01PREV0000000000000000000",
+            sha: "prev789",
+            finishedAt: 1_700_000_000_000,
+            output: {
+              verdict: "comment",
+              tier: "full",
+              critical: 0,
+              warnings: 1,
+              suggestions: 0,
+              findings: [
+                {
+                  path: "src/a.ts",
+                  startLine: 10,
+                  endLine: 12,
+                  level: "warning",
+                  title: "prior finding",
+                  message: "still open?",
+                },
+              ],
+            },
+          },
+        },
+        sandboxProgram: {
+          "review-agent diff": { exitCode: 0, stdout: "" },
+          "review-agent risk-tier": { exitCode: 0, stdout: "full" },
+          "review-agent run": { exitCode: 0, stdout: "" },
+          "review-agent seed-previous": { exitCode: 0, stdout: "" },
+          "review-agent coordinate": { exitCode: 0, stdout: greenVerdictJson },
+        },
+      });
+
+      return Effect.gen(function* () {
+        const result = yield* prReview.run(baseInput);
+        expect(result.verdict).toBe("approve");
+
+        // The Some path executed: the seed-prior step ran...
+        const seedStep = handles.executions.steps.find(
+          (s) => s.name === "seed-prior",
+        );
+        expect(seedStep).toBeDefined();
+
+        // ...and the coordinator was told to reconcile against the prior set.
+        const coordinate = handles.sandbox.execs.find((e) =>
+          e.command.includes("review-agent coordinate"),
+        );
+        expect(coordinate?.command).toContain("--previous");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("determinism guard — no Date.now / randomUUID / Math.random in run source", () => {
     const src = readFileSync(
       fileURLToPath(new URL("./pr-review.ts", import.meta.url)),
