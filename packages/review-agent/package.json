@@ -1,7 +1,7 @@
 {
   "name": "@flare-dispatch/review-agent",
   "version": "0.0.0",
-  "description": "Provider-agnostic, Worker-side code-review engine built on @effect/ai. Powers the pr-review run.",
+  "description": "Provider-agnostic, Worker-side code-review engine that calls an OpenAI-compatible /chat/completions endpoint over @effect/platform HttpClient. Powers the pr-review run.",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -13,8 +13,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/ai": "^0.35.0",
-    "@effect/ai-openai": "^0.39.2",
     "@effect/platform": "^0.96.0",
     "effect": "^3.21.0"
   },

@@ -22,7 +22,7 @@ AI review should fire on **every PR push**, on every repo, without anyone editin
 | Single consolidated review | a **PR review comment** (`github.pullReview`, `event: COMMENT`) posted on every run — success AND failure — plus the check-run summary |
 | Inline comments on specific lines | each `Finding` in the run output → a check-run **annotation** ([04-gha-integration § Inline findings](../../specs/04-gha-integration.md#inline-findings--annotations)) |
 | Bias toward approval unless critical findings | the coordinator's generic default prompt (overridable via `pr-review.prompt`); surfaced as the `verdict` output |
-| Provider-agnostic model client | `@flare-dispatch/review-agent` built on `@effect/ai` — one `LanguageModel` abstraction, the concrete provider supplied by the configured backend |
+| Provider-agnostic model client | `@flare-dispatch/review-agent` POSTs directly to an OpenAI-compatible `/chat/completions` endpoint over `@effect/platform` `HttpClient`; the concrete provider is the configured backend's `base_url` |
 
 ## Flow
 
@@ -48,7 +48,7 @@ The run is deliberately thin — it orchestrates, it does not contain model logi
 
 ## The review engine runs in the Worker
 
-The review is performed **in the Worker run body**, not in a container CLI. The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` (checkout + `git diff`). Every model call goes through `@flare-dispatch/review-agent` — a provider-agnostic engine built on [`@effect/ai`](https://effect.website): `riskTier` (a pure heuristic, no model call), `reviewDomain` (one structured per-domain reviewer), and `coordinate` (dedup + verdict). Findings are Schema-validated tool-call output, never hand-parsed JSON.
+The review is performed **in the Worker run body**, not in a container CLI. The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` (checkout + `git diff`). Every model call goes through `@flare-dispatch/review-agent`, which POSTs directly to an OpenAI-compatible `/chat/completions` endpoint over `@effect/platform` `HttpClient`: `riskTier` (a pure heuristic, no model call), `reviewDomain` (one structured per-domain reviewer), and `coordinate` (dedup + verdict). In `tools` mode findings come from a Schema-validated `tool_calls` response; in `json` mode from a parsed strict-JSON `message.content`.
 
 > Earlier versions shelled out to a `review-agent` CLI that did **not** exist in the deployed image, so every review silently failed. Moving the engine into the Worker removes that dependency entirely.
 

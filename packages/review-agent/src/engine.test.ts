@@ -1,57 +1,97 @@
 // Engine unit tests — the model-calling reviewers + the pure risk heuristic.
 //
-// The real `LanguageModel` is replaced by a stub Layer whose `generateText`
-// returns a canned response carrying scripted `toolCalls` — exactly the seam
-// demo-agent's play.test uses. So these run with no model provider configured.
+// The model transport (`/chat/completions` over `HttpClient`) is replaced by a
+// stub `HttpClient` Layer whose responses are canned `/chat/completions` JSON.
+// So these run with no model provider configured. `chatResponse` builds the
+// tools/json/empty/error variants; `stubHttp`/`stubHttpSequence` wire them.
 
 import { describe, expect, it } from "vitest";
 import { Effect, Layer } from "effect";
-import { LanguageModel } from "@effect/ai";
-import {
-  classifyRisk,
-  coordinate,
-  reviewDomain,
-  riskTier,
-} from "./engine.js";
+import { HttpClient, HttpClientResponse } from "@effect/platform";
+import { coordinate, classifyRisk, reviewDomain, riskTier } from "./engine.js";
 import type { Finding } from "./schemas.js";
 
-// A stub `LanguageModel` whose `generateText` ignores its prompt and returns a
-// response carrying scripted `toolCalls` — the seam demo-agent's play.test uses.
-const stubModel = (
-  toolCalls: ReadonlyArray<{ name: string; params: unknown }>,
-): Layer.Layer<LanguageModel.LanguageModel> =>
-  Layer.succeed(LanguageModel.LanguageModel, {
-    generateText: () => Effect.succeed({ toolCalls, text: "" } as never),
-  } as unknown as LanguageModel.Service);
+// --- chat/completions response fixtures -------------------------------------
 
-/** A stub whose `generateText` returns free-form text (no tool calls) — json mode. */
-const stubTextModel = (
-  text: string,
-): Layer.Layer<LanguageModel.LanguageModel> =>
-  Layer.succeed(LanguageModel.LanguageModel, {
-    generateText: () => Effect.succeed({ toolCalls: [], text } as never),
-  } as unknown as LanguageModel.Service);
+/** A tools-mode response: one tool call whose `arguments` is a JSON string. */
+const toolsResponse = (name: string, args: unknown): unknown => ({
+  choices: [
+    {
+      message: {
+        content: "",
+        tool_calls: [
+          { function: { name, arguments: JSON.stringify(args) } },
+        ],
+      },
+    },
+  ],
+});
+
+/** An empty-tool-calls response (the DeepSeek-via-AI-Gateway pathology). */
+const emptyToolsResponse = (content = ""): unknown => ({
+  choices: [{ message: { content, tool_calls: [] } }],
+});
+
+/** A json-mode response: free-form `message.content` (may contain <think>). */
+const textResponse = (content: string): unknown => ({
+  choices: [{ message: { content } }],
+});
+
+// --- HttpClient stubs --------------------------------------------------------
+
+/** A stub `HttpClient` Layer returning a fixed JSON body + status. */
+const stubHttp = (
+  json: unknown,
+  status = 200,
+): Layer.Layer<HttpClient.HttpClient> =>
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) =>
+      Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          new Response(JSON.stringify(json), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    ),
+  );
 
 /**
- * A stub that returns a *different* response per call — for the tools→json
- * auto-fallback: first call (tools) returns empty tool_calls, the retry (json)
- * returns text. The engine cannot pass tools to the json retry, so we key on
- * call order, not on the request shape.
+ * A stub `HttpClient` Layer returning a *different* JSON body per call — for the
+ * tools→json auto-fallback (first call returns empty tool_calls, retry returns
+ * text). `calls()` reports how many requests were issued.
  */
-const stubSequence = (
-  responses: ReadonlyArray<{ toolCalls?: ReadonlyArray<{ name: string; params: unknown }>; text?: string }>,
-): { layer: Layer.Layer<LanguageModel.LanguageModel>; calls: () => number } => {
+const stubHttpSequence = (
+  bodies: ReadonlyArray<unknown>,
+): { layer: Layer.Layer<HttpClient.HttpClient>; calls: () => number } => {
   let i = 0;
-  const layer = Layer.succeed(LanguageModel.LanguageModel, {
-    generateText: () =>
+  const layer = Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) =>
       Effect.sync(() => {
-        const r = responses[Math.min(i, responses.length - 1)]!;
+        const body = bodies[Math.min(i, bodies.length - 1)];
         i += 1;
-        return { toolCalls: r.toolCalls ?? [], text: r.text ?? "" } as never;
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }),
-  } as unknown as LanguageModel.Service);
+    ),
+  );
   return { layer, calls: () => i };
 };
+
+/** Common backend coordinates every call needs. */
+const conn = {
+  baseUrl: "https://gw.example/v1/acct/gw/compat",
+  apiKey: "sk-test",
+} as const;
 
 describe("riskTier / classifyRisk", () => {
   it("an empty diff is trivial", () => {
@@ -122,16 +162,18 @@ describe("reviewDomain", () => {
     message: "validate before use",
   };
 
-  it("returns the findings the model reports via the tool call", async () => {
+  it("tools mode — returns findings from the `report` tool call", async () => {
     const result = await Effect.runPromise(
       reviewDomain({
+        ...conn,
         agent: "security",
         diff: "diff --git a/src/a.ts b/src/a.ts",
         tier: "full",
-        model: "test-model",
+        model: "llama-3.3-70b",
         backend: "opencode",
+        mode: "tools",
       }).pipe(
-        Effect.provide(stubModel([{ name: "report", params: { findings: [finding] } }])),
+        Effect.provide(stubHttp(toolsResponse("report", { findings: [finding] }))),
       ),
     );
     expect(result).toEqual([finding]);
@@ -149,13 +191,14 @@ describe("reviewDomain", () => {
 
     const result = await Effect.runPromise(
       reviewDomain({
+        ...conn,
         agent: "security",
         diff: "x",
         tier: "lite",
         model: "deepseek-r1",
         backend: "reasonix",
         mode: "json",
-      }).pipe(Effect.provide(stubTextModel(text))),
+      }).pipe(Effect.provide(stubHttp(textResponse(text)))),
     );
     expect(result).toEqual([finding]);
   });
@@ -163,20 +206,22 @@ describe("reviewDomain", () => {
   it("json mode — accepts a bare JSON object with no fences", async () => {
     const result = await Effect.runPromise(
       reviewDomain({
+        ...conn,
         agent: "security",
         diff: "x",
         tier: "trivial",
         model: "deepseek-r1",
         backend: "reasonix",
         mode: "json",
-      }).pipe(Effect.provide(stubTextModel('{"findings":[]}'))),
+      }).pipe(Effect.provide(stubHttp(textResponse('{"findings":[]}')))),
     );
     expect(result).toEqual([]);
   });
 
-  it("json mode — fails StructuredOutputInvalid on non-JSON / schema mismatch", async () => {
+  it("json mode — fails StructuredOutputInvalid on schema mismatch", async () => {
     const exit = await Effect.runPromiseExit(
       reviewDomain({
+        ...conn,
         agent: "security",
         diff: "x",
         tier: "lite",
@@ -186,38 +231,60 @@ describe("reviewDomain", () => {
       }).pipe(
         // `level` is not in the allowed set → schema mismatch after parse.
         Effect.provide(
-          stubTextModel('{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}'),
+          stubHttp(
+            textResponse(
+              '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
+            ),
+          ),
         ),
       ),
     );
     expect(exit._tag).toBe("Failure");
   });
 
-  it("tools mode — auto-falls-back to json when the model returns no tool call", async () => {
-    // First call (tools) returns zero tool_calls (the DeepSeek pathology);
-    // the engine retries once in json mode, which returns parseable text.
-    const seq = stubSequence([
-      { toolCalls: [] },
-      { text: JSON.stringify({ findings: [finding] }) },
+  it("tools mode — auto-falls-back to json when tool_calls come back empty", async () => {
+    // First call (tools) → empty tool_calls (DeepSeek pathology); the engine
+    // retries once in json mode, which returns parseable <think>-wrapped text.
+    const seq = stubHttpSequence([
+      emptyToolsResponse("<think>I won't use tools</think>"),
+      textResponse(JSON.stringify({ findings: [finding] })),
     ]);
     const result = await Effect.runPromise(
       reviewDomain({
+        ...conn,
         agent: "security",
         diff: "x",
         tier: "lite",
-        model: "test-model",
-        backend: "opencode",
+        model: "deepseek-r1",
+        backend: "reasonix",
         mode: "tools",
       }).pipe(Effect.provide(seq.layer)),
     );
     expect(result).toEqual([finding]);
     expect(seq.calls()).toBe(2); // tools attempt + json fallback
   });
+
+  it("fails ModelCallFailed on a non-2xx response", async () => {
+    const exit = await Effect.runPromiseExit(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "m",
+        backend: "opencode",
+        mode: "json",
+      }).pipe(
+        Effect.provide(stubHttp({ error: "compat: responses not supported" }, 400)),
+      ),
+    );
+    expect(exit._tag).toBe("Failure");
+  });
 });
 
 describe("coordinate", () => {
-  it("returns the consolidated verdict the model emits", async () => {
-    const params = {
+  it("tools mode — returns the consolidated verdict from the tool call", async () => {
+    const verdict = {
       verdict: "request-changes",
       critical: 1,
       warnings: 0,
@@ -235,21 +302,19 @@ describe("coordinate", () => {
     };
     const result = await Effect.runPromise(
       coordinate({
+        ...conn,
         findings: [],
-        model: "test-model",
+        model: "llama-3.3-70b",
         backend: "opencode",
-      }).pipe(
-        Effect.provide(stubModel([{ name: "verdict", params }])),
-      ),
+        mode: "tools",
+      }).pipe(Effect.provide(stubHttp(toolsResponse("verdict", verdict)))),
     );
     expect(result.verdict).toBe("request-changes");
     expect(result.critical).toBe(1);
     expect(result.findings).toHaveLength(1);
   });
 
-  it("a coordinator that dedups two identical findings into one is honored", async () => {
-    // The dedup is the model's job; the engine faithfully returns what the
-    // coordinator emits. Here the stub emits one finding from two inputs.
+  it("returns exactly what the coordinator emits (dedup is the model's job)", async () => {
     const dup: Finding = {
       path: "src/a.ts",
       startLine: 2,
@@ -258,7 +323,7 @@ describe("coordinate", () => {
       title: "dup",
       message: "same issue twice",
     };
-    const params = {
+    const verdict = {
       verdict: "comment",
       critical: 0,
       warnings: 1,
@@ -267,10 +332,12 @@ describe("coordinate", () => {
     };
     const result = await Effect.runPromise(
       coordinate({
+        ...conn,
         findings: [dup, dup],
-        model: "test-model",
+        model: "llama-3.3-70b",
         backend: "opencode",
-      }).pipe(Effect.provide(stubModel([{ name: "verdict", params }]))),
+        mode: "tools",
+      }).pipe(Effect.provide(stubHttp(toolsResponse("verdict", verdict)))),
     );
     expect(result.findings).toHaveLength(1);
   });
@@ -290,17 +357,18 @@ describe("coordinate", () => {
 
     const result = await Effect.runPromise(
       coordinate({
+        ...conn,
         findings: [],
         model: "deepseek-r1",
         backend: "reasonix",
         mode: "json",
-      }).pipe(Effect.provide(stubTextModel(text))),
+      }).pipe(Effect.provide(stubHttp(textResponse(text)))),
     );
     expect(result.verdict).toBe("approve");
     expect(result.suggestions).toBe(1);
   });
 
-  it("tools mode — auto-falls-back to json when the coordinator returns no tool call", async () => {
+  it("tools mode — auto-falls-back to json when tool_calls come back empty", async () => {
     const verdict = {
       verdict: "comment",
       critical: 0,
@@ -308,15 +376,16 @@ describe("coordinate", () => {
       suggestions: 0,
       findings: [],
     };
-    const seq = stubSequence([
-      { toolCalls: [] },
-      { text: "```json\n" + JSON.stringify(verdict) + "\n```" },
+    const seq = stubHttpSequence([
+      emptyToolsResponse(),
+      textResponse("```json\n" + JSON.stringify(verdict) + "\n```"),
     ]);
     const result = await Effect.runPromise(
       coordinate({
+        ...conn,
         findings: [],
-        model: "test-model",
-        backend: "opencode",
+        model: "deepseek-r1",
+        backend: "reasonix",
         mode: "tools",
       }).pipe(Effect.provide(seq.layer)),
     );
@@ -327,12 +396,15 @@ describe("coordinate", () => {
   it("json mode — fails StructuredOutputInvalid when no JSON is present", async () => {
     const exit = await Effect.runPromiseExit(
       coordinate({
+        ...conn,
         findings: [],
         model: "deepseek-r1",
         backend: "reasonix",
         mode: "json",
       }).pipe(
-        Effect.provide(stubTextModel("<think>I cannot decide</think> sorry, no JSON here")),
+        Effect.provide(
+          stubHttp(textResponse("<think>I cannot decide</think> sorry, no JSON here")),
+        ),
       ),
     );
     expect(exit._tag).toBe("Failure");

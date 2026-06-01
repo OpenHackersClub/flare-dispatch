@@ -1,11 +1,12 @@
 // @flare-dispatch/review-agent — configurable model backend.
 //
-// The engine is provider-agnostic by construction: every model call goes
-// through the abstract `LanguageModel` Tag from `@effect/ai`; the concrete
-// provider is supplied as a Layer built here from operator config. This mirrors
-// @flare-dispatch/demo-agent's `makeLanguageModelLayer` — an
-// `OpenAiClient.layerConfig` pointed at an OpenAI-compatible endpoint (in prod,
-// Cloudflare AI Gateway's `/v1/<account>/<gateway>/compat`).
+// The engine is provider-agnostic by construction: every model call is a direct
+// HTTP POST to `${baseUrl}/chat/completions` (see chat.ts) over an `HttpClient`
+// Layer the run provides. The concrete provider is the operator-configured
+// `base_url` — in prod, Cloudflare AI Gateway's OpenAI-compatible
+// `/v1/<account>/<gateway>/compat` endpoint. This module only resolves the
+// backend profile (baseUrl / model / apiKey / mode) from operator config; the
+// values travel with each engine call.
 //
 // ---------------------------------------------------------------------------
 // CONFIG CONTRACT — what an operator sets (out of band) per backend.
@@ -43,10 +44,8 @@
 // a caller-supplied `getConfig` closure so this module has no DSL dependency
 // and stays unit-testable.
 
-import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import { FetchHttpClient } from "@effect/platform";
-import { Config, ConfigProvider, Effect, Layer, Match, Option } from "effect";
-import type { LanguageModel } from "@effect/ai";
+import { FetchHttpClient, type HttpClient } from "@effect/platform";
+import { Effect, type Layer, Match } from "effect";
 import { BackendUnconfigured } from "./errors.js";
 
 /** The selectable backends. Default is the first. */
@@ -174,48 +173,18 @@ export const resolveBackend = <R>(
   });
 
 /**
- * Build a `LanguageModel` Layer for a resolved backend.
+ * The `HttpClient` Layer the engine's model calls require.
  *
- * Mirrors demo-agent's `makeLanguageModelLayer`: an `OpenAiClient.layerConfig`
- * reading `MODEL_API_KEY` + `MODEL_BASE_URL`, then `OpenAiLanguageModel.layer`.
- * The difference — a Worker has no `process.env`, so instead of relying on the
- * ambient `ConfigProvider`, we seed a per-call `ConfigProvider.fromMap` with
- * the resolved values and provide it to the client Layer. The
- * `layerConfig`/`Config.redacted` shape is otherwise identical.
+ * Per-backend config (baseUrl / apiKey / model) is NOT baked into the client —
+ * it travels with each `reviewDomain` / `coordinate` call (the engine POSTs
+ * directly to `${baseUrl}/chat/completions`, see chat.ts). So this is just the
+ * platform fetch client; the run provides it once and reuses it for every call.
+ *
+ * (Kept as a named export so the run wires `Effect.provide(makeModelHttpLayer())`
+ * — the resolved backend's fields are passed to the engine functions instead.)
  */
-export const makeLanguageModelLayer = (
-  resolved: ResolvedBackend,
-): Layer.Layer<LanguageModel.LanguageModel, never, never> => {
-  const provider = ConfigProvider.fromMap(
-    new Map([
-      ["MODEL_API_KEY", resolved.apiKey],
-      ["MODEL_BASE_URL", resolved.baseUrl],
-    ]),
-  );
-
-  const clientLayer = OpenAiClient.layerConfig({
-    apiKey: Config.redacted("MODEL_API_KEY").pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ),
-    apiUrl: Config.string("MODEL_BASE_URL").pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ),
-  }).pipe(
-    Layer.provide(FetchHttpClient.layer),
-    Layer.provide(Layer.setConfigProvider(provider)),
-  );
-
-  const languageModelLayer = OpenAiLanguageModel.layer({
-    model: resolved.model,
-  });
-
-  // `layerConfig` carries a `ConfigError` channel — `orDie` collapses it. With
-  // the values seeded above this never errors; a defect here would mean a bug
-  // in the seeding, which is the right shape to fail loudly on.
-  return Layer.provide(languageModelLayer, clientLayer).pipe(Layer.orDie);
-};
+export const makeModelHttpLayer = (): Layer.Layer<HttpClient.HttpClient> =>
+  FetchHttpClient.layer;
 
 /** Map a `Match`-classified provider error to a `ModelCallFailed.reason`. */
 export const classifyModelError = (

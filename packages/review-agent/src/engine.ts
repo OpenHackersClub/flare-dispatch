@@ -11,25 +11,37 @@
 //   * `coordinate`   — dedup / filter / verdict across all domains' findings,
 //                      reconciled against the previous review.
 //
+// --- Transport: direct /chat/completions over HttpClient --------------------
+//
+// Model calls go through a direct HTTP POST to `${baseUrl}/chat/completions`
+// (see chat.ts) using `@effect/platform` `HttpClient` — the run provides
+// `FetchHttpClient.layer`. We do NOT use `@effect/ai-openai`'s
+// `OpenAiLanguageModel`, which only hits the OpenAI `/responses` API; the target
+// Cloudflare AI Gateway compat endpoint only supports `/chat/completions`.
+//
 // --- Output modes (per backend, resolved from CONFIG_KV) --------------------
 //
-// "tools" mode forces a tool call (`toolChoice: "required"`) and reads
-// `response.toolCalls` — Schema-validated by the tool decoder. Reasoning models
-// (e.g. DeepSeek-R1 distills routed through the AI Gateway) return NO tool_calls
-// and emit `<think>…</think>` prose instead, so for those "json" mode asks the
-// model for a strict JSON object, strips `<think>`/code fences, then
-// `JSON.parse` + Schema-decodes against the same `Finding[]` / `ReviewOutput`
-// schemas. If "tools" mode comes back with zero tool_calls, the engine
-// auto-falls-back to a single "json" retry.
+// "tools" mode sends `tools` + `tool_choice: "required"` and reads
+// `choices[0].message.tool_calls` (arguments are a JSON string we parse +
+// Schema-decode). Reasoning models (e.g. DeepSeek-R1 distills routed through the
+// AI Gateway) return NO tool_calls and emit `<think>…</think>` prose in
+// `message.content` instead, so for those "json" mode sends NO tools and asks
+// for a strict JSON object, strips `<think>`/code fences, then `JSON.parse` +
+// Schema-decodes against the same `Finding[]` / `ReviewOutput` schemas. If
+// "tools" mode comes back with zero tool_calls, the engine auto-falls-back to a
+// single "json" retry.
 //
-// Every model call goes through the abstract `LanguageModel` Tag — the concrete
-// provider Layer is supplied by the run via `makeLanguageModelLayer` (backend.ts).
 // `systemPrompt` is always SUPPLIED by the caller; this module ships only a
 // generic default instruction (no project-specific rubric).
 
-import { LanguageModel, Tool, Toolkit } from "@effect/ai";
-import { Effect, Either, ParseResult, Schema } from "effect";
-import { classifyModelError, type ReviewMode } from "./backend.js";
+import { HttpClient } from "@effect/platform";
+import { Effect, Either, JSONSchema, ParseResult, Schema } from "effect";
+import { type ReviewMode } from "./backend.js";
+import {
+  type ChatTool,
+  chatCompletion,
+  type ChatToolCall,
+} from "./chat.js";
 import { ModelCallFailed, StructuredOutputInvalid } from "./errors.js";
 import { extractJsonText } from "./json-extract.js";
 import {
@@ -40,9 +52,21 @@ import {
   type Tier,
 } from "./schemas.js";
 
+/** Token budgets for the two model surfaces. */
+const REVIEW_MAX_TOKENS = 2048;
+const COORDINATE_MAX_TOKENS = 2048;
+
 /** Max chars of raw model text we attach to a `StructuredOutputInvalid`. */
 const EXCERPT_LEN = 400;
 const excerpt = (text: string): string => text.slice(0, EXCERPT_LEN);
+
+/** A JSON Schema (draft-07) for a tool's `function.parameters`. */
+const toolParametersSchema = (schema: Schema.Schema<any, any>): unknown => {
+  const js = JSONSchema.make(schema) as unknown as Record<string, unknown>;
+  // Providers want a plain parameters object — drop the `$schema` meta key.
+  const { $schema: _drop, ...rest } = js;
+  return rest;
+};
 
 // ---------------------------------------------------------------------------
 // Generic default prompts. The caller (run) SHOULD override `systemPrompt`
@@ -68,21 +92,12 @@ Emit exactly one consolidated review.`;
 // ---------------------------------------------------------------------------
 // Shared helpers.
 
-/** Curried mapper: any provider error → a `ModelCallFailed` for this call. */
-const toModelCallFailed =
-  (ctx: { readonly backend: string; readonly model: string }) =>
-  (e: unknown): ModelCallFailed =>
-    new ModelCallFailed({
-      backend: ctx.backend,
-      model: ctx.model,
-      reason: classifyModelError(e),
-      message: e instanceof Error ? e.message : String(e),
-    });
-
 /**
- * Strip `<think>`/code fences from a model's text response, isolate the JSON
- * value, `JSON.parse`, then Schema-decode. Each failure stage maps to a precise
+ * Strip `<think>`/code fences from text, isolate the JSON value, `JSON.parse`,
+ * then Schema-decode. Each failure stage maps to a precise
  * `StructuredOutputInvalid.reason` so the run's PR comment can name the cause.
+ * Used for both json-mode `message.content` AND a tool call's `arguments`
+ * string (which is already JSON, but stripping is harmless and robust).
  */
 const parseStructured = <A>(
   text: string,
@@ -102,7 +117,7 @@ const parseStructured = <A>(
           reason: "empty",
           excerpt: excerpt(text),
           message:
-            "json mode: no JSON object found in the model response (after stripping <think> + code fences)",
+            "no JSON object found in the model response (after stripping <think> + code fences)",
         }),
       );
     }
@@ -114,7 +129,7 @@ const parseStructured = <A>(
           ...ctx,
           reason: "not-json",
           excerpt: excerpt(candidate),
-          message: "json mode: response text was not valid JSON",
+          message: "response text was not valid JSON",
         }),
     });
 
@@ -125,53 +140,44 @@ const parseStructured = <A>(
             ...ctx,
             reason: "schema-mismatch",
             excerpt: excerpt(candidate),
-            message: `json mode: JSON did not match the expected schema — ${ParseResult.TreeFormatter.formatErrorSync(err)}`,
+            message: `JSON did not match the expected schema — ${ParseResult.TreeFormatter.formatErrorSync(err)}`,
           }),
         ),
       onRight: (a) => Effect.succeed(a),
     });
   });
 
+/**
+ * Pick the tool call to read: the one matching `name`, else the first present
+ * (single-tool requests, tolerant of a provider renaming the call). Returns
+ * `undefined` only when there are NO tool calls — the empty-tool_calls signal
+ * that the caller turns into `bad-response` → the json auto-fallback.
+ */
+const firstToolCall = (
+  calls: ReadonlyArray<ChatToolCall>,
+  name: string,
+): ChatToolCall | undefined =>
+  calls.length === 0 ? undefined : (calls.find((c) => c.name === name) ?? calls[0]);
+
 // ---------------------------------------------------------------------------
-// `reviewDomain` — one domain reviewer, structured output via a tool call.
+// `reviewDomain` — one domain reviewer.
 
-/** A finding as the model emits it — tool params are Schema-validated. */
-const ToolFinding = Schema.Struct({
-  path: Schema.String.annotations({ description: "File path the finding is in." }),
-  startLine: Schema.Number.annotations({ description: "First line (1-based)." }),
-  endLine: Schema.Number.annotations({ description: "Last line (1-based)." }),
-  level: Schema.Literal("notice", "warning", "failure").annotations({
-    description: "Severity: notice (suggestion) | warning | failure (critical).",
-  }),
-  title: Schema.String.annotations({ description: "Short finding title." }),
-  message: Schema.String.annotations({ description: "Explanation + suggested fix." }),
-});
-
-const ReportTool = Tool.make("report", {
-  description:
-    "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.",
-  parameters: {
-    findings: Schema.Array(ToolFinding).annotations({
-      description:
-        "All findings for this domain. Empty array when the diff is clean.",
-    }),
-  },
-});
-
-const ReportToolkit = Toolkit.make(ReportTool);
-
-// `disableToolCallResolution: true` keeps `@effect/ai` from invoking the stub
-// handler; we read `response.toolCalls` ourselves. The handler is `Effect.void`
-// because there is no side effect — the tool call IS the structured output.
-const ReportToolkitHandlersLayer = ReportToolkit.toLayer({
-  report: () => Effect.void,
-});
-
-/** Schema the json-mode domain response is decoded against. */
-const DomainJsonOutput = Schema.Struct({
+/** The `report` tool's argument shape — also the json-mode response shape. */
+const DomainOutput = Schema.Struct({
   findings: Schema.Array(Finding),
 });
-const decodeDomainJson = Schema.decodeUnknownEither(DomainJsonOutput);
+const decodeDomainJson = Schema.decodeUnknownEither(DomainOutput);
+
+/** The `report` tool sent in the chat/completions `tools` array (tools mode). */
+const ReportTool: ChatTool = {
+  type: "function",
+  function: {
+    name: "report",
+    description:
+      "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.",
+    parameters: toolParametersSchema(DomainOutput),
+  },
+};
 
 export type ReviewDomainInput = {
   /** The domain this reviewer owns — e.g. "security", "performance". */
@@ -182,7 +188,11 @@ export type ReviewDomainInput = {
   readonly systemPrompt?: string;
   /** The risk tier — passed to the prompt for context. */
   readonly tier: Tier;
-  /** The model id (for error reporting). */
+  /** The OpenAI-compatible base URL (`…/<gateway>/compat`). */
+  readonly baseUrl: string;
+  /** The API key (Bearer). */
+  readonly apiKey: string;
+  /** The model id. */
   readonly model: string;
   /** The backend name (for error reporting). */
   readonly backend: string;
@@ -194,16 +204,16 @@ export type ReviewDomainInput = {
  * Run one domain reviewer. Returns its findings, Schema-validated.
  *
  * In "tools" mode the model is forced to call the `report` tool; if it returns
- * zero tool calls (a provider that ignores `toolChoice`), the engine
+ * zero tool calls (a provider that ignores `tool_choice`), the engine
  * auto-falls-back to a single "json" retry. In "json" mode it parses a strict
- * JSON object from the text response.
+ * JSON object from `message.content`.
  */
 export const reviewDomain = (
   input: ReviewDomainInput,
 ): Effect.Effect<
   ReadonlyArray<Finding>,
   ModelCallFailed | StructuredOutputInvalid,
-  LanguageModel.LanguageModel
+  HttpClient.HttpClient
 > =>
   (input.mode ?? "tools") === "json"
     ? jsonReviewDomain(input)
@@ -217,69 +227,82 @@ export const reviewDomain = (
         ),
       );
 
-/** "tools" mode — force the `report` tool call and read its Schema-decoded args. */
+/** "tools" mode — force the `report` tool call and Schema-decode its args. */
 const toolsReviewDomain = (
   input: ReviewDomainInput,
 ): Effect.Effect<
   ReadonlyArray<Finding>,
-  ModelCallFailed,
-  LanguageModel.LanguageModel
+  ModelCallFailed | StructuredOutputInvalid,
+  HttpClient.HttpClient
 > =>
   Effect.gen(function* () {
-    const response = yield* LanguageModel.generateText({
-      prompt: renderDomainPrompt(input, "tools"),
-      toolkit: ReportToolkit,
-      toolChoice: "required",
-      disableToolCallResolution: true,
-    }).pipe(
-      Effect.provide(ReportToolkitHandlersLayer),
-      Effect.mapError(toModelCallFailed(input)),
-    );
+    const result = yield* chatCompletion({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      model: input.model,
+      backend: input.backend,
+      systemPrompt: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
+      userMessage: renderDomainUserMessage(input, "tools"),
+      maxTokens: REVIEW_MAX_TOKENS,
+      tools: [ReportTool],
+    });
 
-    const calls = response.toolCalls;
-    if (calls.length === 0) {
+    const call = firstToolCall(result.toolCalls, "report");
+    if (call === undefined) {
+      // Empty / non-`report` tool calls → the bad-response signal the
+      // auto-fallback catches.
       return yield* Effect.fail(
         new ModelCallFailed({
           backend: input.backend,
           model: input.model,
           reason: "bad-response",
           message:
-            "model returned no tool call despite toolChoice=required; check provider tool support",
+            "model returned no `report` tool call despite tool_choice=required; check provider tool support",
         }),
       );
     }
-    const params = calls[0]!.params as { readonly findings: ReadonlyArray<Finding> };
-    return params.findings;
+
+    const parsed = yield* parseStructured(call.arguments, decodeDomainJson, {
+      backend: input.backend,
+      model: input.model,
+      surface: "review",
+    });
+    return parsed.findings;
   });
 
-/** "json" mode — no tools; parse a strict JSON object from the text response. */
+/** "json" mode — no tools; parse a strict JSON object from `message.content`. */
 const jsonReviewDomain = (
   input: ReviewDomainInput,
 ): Effect.Effect<
   ReadonlyArray<Finding>,
   ModelCallFailed | StructuredOutputInvalid,
-  LanguageModel.LanguageModel
+  HttpClient.HttpClient
 > =>
   Effect.gen(function* () {
-    const response = yield* LanguageModel.generateText({
-      prompt: renderDomainPrompt(input, "json"),
-    }).pipe(Effect.mapError(toModelCallFailed(input)));
+    const result = yield* chatCompletion({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      model: input.model,
+      backend: input.backend,
+      systemPrompt: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
+      userMessage: renderDomainUserMessage(input, "json"),
+      maxTokens: REVIEW_MAX_TOKENS,
+    });
 
-    const parsed = yield* parseStructured(
-      response.text,
-      decodeDomainJson,
-      { backend: input.backend, model: input.model, surface: "review" },
-    );
+    const parsed = yield* parseStructured(result.content, decodeDomainJson, {
+      backend: input.backend,
+      model: input.model,
+      surface: "review",
+    });
     return parsed.findings;
   });
 
-const renderDomainPrompt = (
+/** The user-role message for a domain reviewer (system prompt is sent separately). */
+const renderDomainUserMessage = (
   input: ReviewDomainInput,
   mode: ReviewMode,
 ): string => {
   const base = [
-    input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
-    "",
     `Review domain: ${input.agent}`,
     `Risk tier: ${input.tier}`,
     "",
@@ -301,31 +324,20 @@ const DOMAIN_JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no pros
 Use an empty "findings" array when the diff is clean for your domain. Do not wrap the JSON in code fences. Do not include any text before or after the JSON object.`;
 
 // ---------------------------------------------------------------------------
-// `coordinate` — dedup + verdict, structured output via a tool call.
-
-const VerdictTool = Tool.make("verdict", {
-  description:
-    "Emit the consolidated review: a verdict, severity counts, and the deduplicated findings.",
-  parameters: {
-    verdict: Schema.Literal("approve", "comment", "request-changes").annotations({
-      description:
-        "approve (no blocking issues) | comment (non-blocking notes) | request-changes (critical issues).",
-    }),
-    critical: Schema.Number.annotations({ description: "Count of failure-level findings." }),
-    warnings: Schema.Number.annotations({ description: "Count of warning-level findings." }),
-    suggestions: Schema.Number.annotations({ description: "Count of notice-level findings." }),
-    findings: Schema.Array(ToolFinding).annotations({
-      description: "The deduplicated, filtered findings.",
-    }),
-  },
-});
-
-const VerdictToolkit = Toolkit.make(VerdictTool);
-const VerdictToolkitHandlersLayer = VerdictToolkit.toLayer({
-  verdict: () => Effect.void,
-});
+// `coordinate` — dedup + verdict.
 
 const decodeCoordinateJson = Schema.decodeUnknownEither(CoordinatedReview);
+
+/** The `verdict` tool sent in the chat/completions `tools` array (tools mode). */
+const VerdictTool: ChatTool = {
+  type: "function",
+  function: {
+    name: "verdict",
+    description:
+      "Emit the consolidated review: a verdict, severity counts, and the deduplicated findings.",
+    parameters: toolParametersSchema(CoordinatedReview),
+  },
+};
 
 export type CoordinateInput = {
   /** All domains' findings, concatenated. */
@@ -334,6 +346,10 @@ export type CoordinateInput = {
   readonly previous?: ReviewOutput;
   /** Caller-supplied coordinator prompt; falls back to the generic default. */
   readonly systemPrompt?: string;
+  /** The OpenAI-compatible base URL (`…/<gateway>/compat`). */
+  readonly baseUrl: string;
+  /** The API key (Bearer). */
+  readonly apiKey: string;
   readonly model: string;
   readonly backend: string;
   /** Output mode — "tools" (default) forces a tool call; "json" parses text. */
@@ -351,7 +367,7 @@ export const coordinate = (
 ): Effect.Effect<
   CoordinatedReviewType,
   ModelCallFailed | StructuredOutputInvalid,
-  LanguageModel.LanguageModel
+  HttpClient.HttpClient
 > =>
   (input.mode ?? "tools") === "json"
     ? jsonCoordinate(input)
@@ -368,62 +384,72 @@ const toolsCoordinate = (
   input: CoordinateInput,
 ): Effect.Effect<
   CoordinatedReviewType,
-  ModelCallFailed,
-  LanguageModel.LanguageModel
+  ModelCallFailed | StructuredOutputInvalid,
+  HttpClient.HttpClient
 > =>
   Effect.gen(function* () {
-    const response = yield* LanguageModel.generateText({
-      prompt: renderCoordinatePrompt(input, "tools"),
-      toolkit: VerdictToolkit,
-      toolChoice: "required",
-      disableToolCallResolution: true,
-    }).pipe(
-      Effect.provide(VerdictToolkitHandlersLayer),
-      Effect.mapError(toModelCallFailed(input)),
-    );
+    const result = yield* chatCompletion({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      model: input.model,
+      backend: input.backend,
+      systemPrompt: input.systemPrompt ?? DEFAULT_COORDINATE_SYSTEM_PROMPT,
+      userMessage: renderCoordinateUserMessage(input, "tools"),
+      maxTokens: COORDINATE_MAX_TOKENS,
+      tools: [VerdictTool],
+    });
 
-    const calls = response.toolCalls;
-    if (calls.length === 0) {
+    const call = firstToolCall(result.toolCalls, "verdict");
+    if (call === undefined) {
       return yield* Effect.fail(
         new ModelCallFailed({
           backend: input.backend,
           model: input.model,
           reason: "bad-response",
           message:
-            "coordinator returned no tool call despite toolChoice=required",
+            "coordinator returned no `verdict` tool call despite tool_choice=required",
         }),
       );
     }
-    return calls[0]!.params as CoordinatedReviewType;
-  });
-
-/** "json" mode coordinator — parse a strict JSON object from the text. */
-const jsonCoordinate = (
-  input: CoordinateInput,
-): Effect.Effect<
-  CoordinatedReviewType,
-  ModelCallFailed | StructuredOutputInvalid,
-  LanguageModel.LanguageModel
-> =>
-  Effect.gen(function* () {
-    const response = yield* LanguageModel.generateText({
-      prompt: renderCoordinatePrompt(input, "json"),
-    }).pipe(Effect.mapError(toModelCallFailed(input)));
-
-    return yield* parseStructured(response.text, decodeCoordinateJson, {
+    return yield* parseStructured(call.arguments, decodeCoordinateJson, {
       backend: input.backend,
       model: input.model,
       surface: "coordinate",
     });
   });
 
-const renderCoordinatePrompt = (
+/** "json" mode coordinator — parse a strict JSON object from `message.content`. */
+const jsonCoordinate = (
+  input: CoordinateInput,
+): Effect.Effect<
+  CoordinatedReviewType,
+  ModelCallFailed | StructuredOutputInvalid,
+  HttpClient.HttpClient
+> =>
+  Effect.gen(function* () {
+    const result = yield* chatCompletion({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      model: input.model,
+      backend: input.backend,
+      systemPrompt: input.systemPrompt ?? DEFAULT_COORDINATE_SYSTEM_PROMPT,
+      userMessage: renderCoordinateUserMessage(input, "json"),
+      maxTokens: COORDINATE_MAX_TOKENS,
+    });
+
+    return yield* parseStructured(result.content, decodeCoordinateJson, {
+      backend: input.backend,
+      model: input.model,
+      surface: "coordinate",
+    });
+  });
+
+/** The user-role message for the coordinator (system prompt is sent separately). */
+const renderCoordinateUserMessage = (
   input: CoordinateInput,
   mode: ReviewMode,
 ): string => {
   const base = [
-    input.systemPrompt ?? DEFAULT_COORDINATE_SYSTEM_PROMPT,
-    "",
     "Per-domain findings (JSON):",
     JSON.stringify(input.findings, null, 2),
     "",

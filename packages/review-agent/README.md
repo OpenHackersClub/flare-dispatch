@@ -1,23 +1,50 @@
 # @flare-dispatch/review-agent
 
-A provider-agnostic, **Worker-side** code-review engine built on
-[`@effect/ai`](https://effect.website). Powers the `pr-review` run
-(`runs/pr-review.ts`) — there is no `review-agent` container CLI; every model
-call happens in the Worker against a configurable backend.
+A provider-agnostic, **Worker-side** code-review engine that calls an
+OpenAI-compatible `/chat/completions` endpoint directly over
+[`@effect/platform`](https://effect.website) `HttpClient`. Powers the
+`pr-review` run (`runs/pr-review.ts`) — there is no `review-agent` container
+CLI; every model call happens in the Worker against a configurable backend.
+
+> **Why direct `/chat/completions`, not `@effect/ai-openai`:** that adapter's
+> `OpenAiLanguageModel` only hits the OpenAI `/responses` API, but the target
+> Cloudflare AI Gateway compat endpoint (`base_url = …/<gateway>/compat`) only
+> supports `/chat/completions` (a `/responses` call 400s). So the engine builds
+> the chat/completions request itself (see `chat.ts`).
 
 ## Engine surface
 
 | Export | What it does |
 |---|---|
 | `riskTier({ diff })` | Pure heuristic → `"trivial" \| "lite" \| "full"` from diff size + sensitive paths. No model call. |
-| `reviewDomain({ agent, diff, systemPrompt, tier, model, backend, mode })` | One domain reviewer → `ReadonlyArray<Finding>`. `mode: "tools"` forces a tool call; `mode: "json"` parses a strict-JSON text response. Requires a `LanguageModel` Layer. |
-| `coordinate({ findings, previous, systemPrompt, model, backend, mode })` | Dedup / filter / verdict → `CoordinatedReview` (no `tier`). Same `tools` / `json` modes. |
+| `reviewDomain({ agent, diff, systemPrompt, tier, baseUrl, apiKey, model, backend, mode })` | One domain reviewer → `ReadonlyArray<Finding>`. `mode: "tools"` sends `tools` + `tool_choice:"required"`; `mode: "json"` parses a strict-JSON text response. Requires an `HttpClient` Layer. |
+| `coordinate({ findings, previous, systemPrompt, baseUrl, apiKey, model, backend, mode })` | Dedup / filter / verdict → `CoordinatedReview` (no `tier`). Same `tools` / `json` modes. |
+| `chatCompletion(req)` | The transport: POST `${baseUrl}/chat/completions`, returns `{ content, toolCalls }`. Non-2xx / no choices → `ModelCallFailed`. |
 | `stripDiffNoise(diff)` | Drops lockfile / minified / generated / vendored file sections from a unified diff. |
 | `extractJsonText(text)` | Strips `<think>…</think>` blocks + code fences and isolates the outermost JSON value — the `json`-mode parsing front-end. |
 | `resolveBackend(getConfig)` | Resolves the active backend profile (base url + model + api key + mode) from config. |
-| `makeLanguageModelLayer(resolved)` | Builds the provider Layer (mirrors `demo-agent`'s `makeLanguageModelLayer` — an `OpenAiClient.layerConfig` over an OpenAI-compatible endpoint). |
+| `makeModelHttpLayer()` | The `HttpClient` Layer the engine needs (the run provides it; baseUrl/apiKey/model travel on each call). |
 
 `Finding` / `ReviewOutput` are the wire contract shared with the run.
+
+### Request shape (per model call)
+
+```
+POST ${baseUrl}/chat/completions
+Authorization: Bearer ${apiKey}
+Content-Type: application/json
+
+{ "model": <model>,
+  "messages": [ { "role": "system", "content": <systemPrompt> },
+                { "role": "user",   "content": <diff + instruction> } ],
+  "max_tokens": 2048,
+  // tools mode only:
+  "tools": [ { "type": "function", "function": { "name": "report"|"verdict", "description": …, "parameters": <jsonschema> } } ],
+  "tool_choice": "required" }
+```
+
+- **tools mode** reads `choices[0].message.tool_calls[0].function.arguments` (a JSON string) → `JSON.parse` + Schema-decode. Empty `tool_calls` → auto-fallback to one `json`-mode retry.
+- **json mode** reads `choices[0].message.content` → strip `<think>`/fences → `JSON.parse` + Schema-decode.
 
 ### Output mode: `tools` vs `json`
 

@@ -9,8 +9,9 @@
 // Earlier versions shelled out to a `review-agent` CLI baked into the run's
 // container image. That CLI does not exist in the deployed image (every exec
 // exited 127), so reviews silently failed. v3 moves the review into the run
-// body via `@flare-dispatch/review-agent` — a provider-agnostic engine built on
-// `@effect/ai`. The ONE container image (infra/Dockerfile.sandbox: Node + git +
+// body via `@flare-dispatch/review-agent`, which POSTs directly to an
+// OpenAI-compatible `/chat/completions` endpoint over `@effect/platform`
+// HttpClient. The ONE container image (infra/Dockerfile.sandbox: Node + git +
 // curl) is used only for `git` (checkout + diff); every model call happens in
 // the Worker, against a CONFIGURABLE backend resolved from CONFIG_KV + secrets.
 //
@@ -50,7 +51,7 @@ import { workspace } from "@flare-dispatch/core/primitives";
 import {
   coordinate as engineCoordinate,
   type Finding,
-  makeLanguageModelLayer,
+  makeModelHttpLayer,
   resolveBackend,
   reviewDomain,
   riskTier,
@@ -193,7 +194,10 @@ const reviewBody = (input: RunInput) =>
     const resolved = yield* step("resolve-backend", () =>
       resolveBackend((key) => config.get(key)),
     );
-    const modelLayer = makeLanguageModelLayer(resolved);
+    // The engine POSTs directly to `${baseUrl}/chat/completions`; it only needs
+    // an `HttpClient` Layer (the per-backend baseUrl / apiKey / model travel on
+    // each call). The run provides the platform fetch client once.
+    const modelLayer = makeModelHttpLayer();
 
     // 5. Load the previous execution's findings for this same PR. Cross the
     //    step boundary as plain `ReviewOutput | null` (CF Workflows' result
@@ -225,6 +229,8 @@ const reviewBody = (input: RunInput) =>
             agent,
             diff,
             tier: plan.tier,
+            baseUrl: resolved.baseUrl,
+            apiKey: resolved.apiKey,
             model: resolved.model,
             backend: resolved.backend,
             mode: resolved.mode,
@@ -240,6 +246,8 @@ const reviewBody = (input: RunInput) =>
     const coordinated = yield* step("coordinate", () =>
       engineCoordinate({
         findings: allFindings,
+        baseUrl: resolved.baseUrl,
+        apiKey: resolved.apiKey,
         model: resolved.model,
         backend: resolved.backend,
         mode: resolved.mode,
