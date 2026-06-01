@@ -9,6 +9,7 @@ import {
   BACKEND_KEYS,
   DEFAULT_BACKEND,
   parseBackend,
+  parseMode,
   resolveBackend,
 } from "./backend.js";
 
@@ -29,6 +30,17 @@ describe("parseBackend", () => {
   });
 });
 
+describe("parseMode", () => {
+  it("passes through known modes", () => {
+    expect(parseMode("tools", "json")).toBe("tools");
+    expect(parseMode("json", "tools")).toBe("json");
+  });
+  it("falls back to the supplied default for unknown / unset", () => {
+    expect(parseMode(undefined, "json")).toBe("json");
+    expect(parseMode("structured", "tools")).toBe("tools");
+  });
+});
+
 describe("resolveBackend", () => {
   it("resolves the default backend (opencode) from config + shared MODEL_API_KEY", async () => {
     const store = {
@@ -41,6 +53,8 @@ describe("resolveBackend", () => {
     expect(resolved.baseUrl).toBe("https://gw/compat");
     expect(resolved.model).toBe("anthropic/claude-3-5-sonnet");
     expect(resolved.apiKey).toBe("sk-shared");
+    // opencode defaults to forced tool-calls.
+    expect(resolved.mode).toBe("tools");
   });
 
   it("prefers the backend-specific OPENCODE_API_KEY over the shared one", async () => {
@@ -66,6 +80,32 @@ describe("resolveBackend", () => {
     expect(resolved.backend).toBe("reasonix");
     expect(resolved.model).toBe("deepseek/deepseek-chat");
     expect(resolved.apiKey).toBe("sk-deepseek");
+    // reasonix defaults to json mode (DeepSeek doesn't honour tool-calls).
+    expect(resolved.mode).toBe("json");
+  });
+
+  it("honours an explicit per-backend mode override", async () => {
+    const store = {
+      "pr-review.backend": "reasonix",
+      [BACKEND_KEYS.reasonix.baseUrlKey]: "https://gw/compat",
+      [BACKEND_KEYS.reasonix.modelKey]: "m",
+      [BACKEND_KEYS.reasonix.modeKey]: "tools",
+      REASONIX_API_KEY: "sk",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.mode).toBe("tools");
+  });
+
+  it("falls back to the backend default for an unrecognized mode value", async () => {
+    const store = {
+      "pr-review.backend": "opencode",
+      [BACKEND_KEYS.opencode.baseUrlKey]: "https://gw/compat",
+      [BACKEND_KEYS.opencode.modelKey]: "m",
+      [BACKEND_KEYS.opencode.modeKey]: "structured",
+      MODEL_API_KEY: "sk",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.mode).toBe("tools");
   });
 
   it("fails with BackendUnconfigured naming the missing base_url", async () => {

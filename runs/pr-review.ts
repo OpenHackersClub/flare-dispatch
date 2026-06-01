@@ -20,12 +20,16 @@
 //   CONFIG_KV  pr-review.prompt             (optional) override the per-domain reviewer system prompt
 //   CONFIG_KV  pr-review.opencode.base_url  AI Gateway OpenAI-compat endpoint
 //   CONFIG_KV  pr-review.opencode.model     provider-named model id (e.g. anthropic/claude-3-5-sonnet)
+//   CONFIG_KV  pr-review.opencode.mode      "tools" | "json"  (default "tools")
 //   secret     OPENCODE_API_KEY             (or shared MODEL_API_KEY)
 //   CONFIG_KV  pr-review.reasonix.base_url  AI Gateway OpenAI-compat endpoint
 //   CONFIG_KV  pr-review.reasonix.model     provider-named model id (e.g. deepseek/deepseek-chat)
+//   CONFIG_KV  pr-review.reasonix.mode      "tools" | "json"  (default "json" — DeepSeek ignores forced tool-calls)
 //   secret     REASONIX_API_KEY
 //
 // ("secret" = a CONFIG_KV entry — the `loadSecrets` store, per wrangler.jsonc.)
+// A "tools"-mode backend that returns no tool_calls auto-retries once in "json"
+// mode, so a provider that silently drops tool-calling still produces a review.
 //
 // Mode: Webhook mode — fires on every pull_request push, zero GHA minutes.
 // DSL:  see specs/03-dsl.md (uses `config` + `io.priorExecution` + `github`).
@@ -223,6 +227,7 @@ const reviewBody = (input: RunInput) =>
             tier: plan.tier,
             model: resolved.model,
             backend: resolved.backend,
+            mode: resolved.mode,
             ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
           }),
         { concurrency: plan.agents.length },
@@ -237,6 +242,7 @@ const reviewBody = (input: RunInput) =>
         findings: allFindings,
         model: resolved.model,
         backend: resolved.backend,
+        mode: resolved.mode,
         ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
         ...Option.match(prior, {
           onNone: () => ({}),
@@ -351,6 +357,11 @@ const describeError = (err: unknown): string =>
       (e) => e._tag === "ModelCallFailed",
       (e) =>
         `model call failed (${(e as { reason: string }).reason}): ${(e as { message: string }).message}`,
+    ),
+    Match.when(
+      (e) => e._tag === "StructuredOutputInvalid",
+      (e) =>
+        `model returned unparseable ${(e as { surface: string }).surface} output (${(e as { reason: string }).reason}); the backend may need \`mode: "json"\` or a different model`,
     ),
     Match.when(
       (e) => e._tag === "ExecNonZero",

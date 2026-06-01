@@ -13,17 +13,29 @@
 // The active backend is `config.get("pr-review.backend")` →
 //   "opencode" | "reasonix"   (default "opencode").
 //
-// Each backend is a profile of (base url, model id, api key):
+// Each backend is a profile of (base url, model id, api key, output mode):
 //
 //   backend "opencode"  (route Anthropic/Claude-class via the AI Gateway compat endpoint)
 //     CONFIG_KV  pr-review.opencode.base_url   e.g. https://gateway.ai.cloudflare.com/v1/<acct>/<gw>/compat
 //     CONFIG_KV  pr-review.opencode.model      e.g. anthropic/claude-3-5-sonnet  (provider-named)
+//     CONFIG_KV  pr-review.opencode.mode       "tools" | "json"  (default "tools")
 //     secret     OPENCODE_API_KEY              (falls back to the shared MODEL_API_KEY)
 //
 //   backend "reasonix"  (route DeepSeek via the AI Gateway compat endpoint)
 //     CONFIG_KV  pr-review.reasonix.base_url   e.g. https://gateway.ai.cloudflare.com/v1/<acct>/<gw>/compat
 //     CONFIG_KV  pr-review.reasonix.model      e.g. deepseek/deepseek-chat  (provider-named)
+//     CONFIG_KV  pr-review.reasonix.mode       "tools" | "json"  (default "json")
 //     secret     REASONIX_API_KEY
+//
+// --- Output mode: "tools" vs "json" -----------------------------------------
+//
+// Not every provider honours forced tool-calling. Reasoning models routed
+// through the AI Gateway (e.g. DeepSeek-R1 distills) return NO tool_calls and
+// instead emit `<think>…</think>` prose. For those, `mode: "json"` skips tools
+// and asks the model for a strict JSON object the engine parses + Schema-decodes
+// (stripping `<think>` blocks and code fences first). `mode: "tools"` (the
+// default for opencode) keeps the forced-tool-call path; if it comes back with
+// zero tool_calls, the engine auto-falls-back to a single json-mode retry.
 //
 // "Secrets" in flare-dispatch are CONFIG_KV entries (the `loadSecrets` store —
 // see wrangler.jsonc CONFIG_KV note), so they are resolved through the same
@@ -43,6 +55,14 @@ export type Backend = (typeof BACKENDS)[number];
 
 export const DEFAULT_BACKEND: Backend = "opencode";
 
+/**
+ * How the engine coaxes structured output from the model:
+ *   "tools" — forced tool-call (provider must honour `toolChoice: "required"`);
+ *   "json"  — no tools; the model returns a strict JSON object the engine parses.
+ */
+export const REVIEW_MODES = ["tools", "json"] as const;
+export type ReviewMode = (typeof REVIEW_MODES)[number];
+
 /** The CONFIG_KV key naming the active backend. */
 export const BACKEND_CONFIG_KEY = "pr-review.backend";
 
@@ -53,6 +73,10 @@ export const BACKEND_KEYS: Readonly<
     {
       readonly baseUrlKey: string;
       readonly modelKey: string;
+      /** CONFIG_KV key selecting the output mode (`tools` | `json`). */
+      readonly modeKey: string;
+      /** Mode used when `modeKey` is unset/unrecognized. */
+      readonly defaultMode: ReviewMode;
       /** Preferred secret name; `OPENCODE_API_KEY` falls back to `MODEL_API_KEY`. */
       readonly apiKeyName: string;
       readonly apiKeyFallback?: string;
@@ -62,12 +86,18 @@ export const BACKEND_KEYS: Readonly<
   opencode: {
     baseUrlKey: "pr-review.opencode.base_url",
     modelKey: "pr-review.opencode.model",
+    modeKey: "pr-review.opencode.mode",
+    defaultMode: "tools",
     apiKeyName: "OPENCODE_API_KEY",
     apiKeyFallback: "MODEL_API_KEY",
   },
   reasonix: {
     baseUrlKey: "pr-review.reasonix.base_url",
     modelKey: "pr-review.reasonix.model",
+    modeKey: "pr-review.reasonix.mode",
+    // DeepSeek-class reasoning models don't honour forced tool-calls — default
+    // them to json mode (validated against the live AI Gateway → Workers AI).
+    defaultMode: "json",
     apiKeyName: "REASONIX_API_KEY",
   },
 };
@@ -78,11 +108,20 @@ export type ResolvedBackend = {
   readonly baseUrl: string;
   readonly model: string;
   readonly apiKey: string;
+  /** Output mode the engine drives this backend with. */
+  readonly mode: ReviewMode;
 };
 
 /** Narrow an arbitrary config string to a known `Backend`, or the default. */
 export const parseBackend = (raw: string | undefined): Backend =>
   BACKENDS.includes(raw as Backend) ? (raw as Backend) : DEFAULT_BACKEND;
+
+/** Narrow an arbitrary config string to a known `ReviewMode`, or `fallback`. */
+export const parseMode = (
+  raw: string | undefined,
+  fallback: ReviewMode,
+): ReviewMode =>
+  REVIEW_MODES.includes(raw as ReviewMode) ? (raw as ReviewMode) : fallback;
 
 /**
  * Resolve the active backend's profile from operator config. `getConfig` is the
@@ -129,7 +168,9 @@ export const resolveBackend = <R>(
       );
     }
 
-    return { backend, baseUrl, model, apiKey };
+    const mode = parseMode(yield* getConfig(keys.modeKey), keys.defaultMode);
+
+    return { backend, baseUrl, model, apiKey, mode };
   });
 
 /**

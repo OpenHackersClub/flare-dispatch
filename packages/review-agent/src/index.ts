@@ -28,21 +28,31 @@ export {
 export {
   ModelCallFailed,
   BackendUnconfigured,
+  StructuredOutputInvalid,
   type ReviewEngineError,
 } from "./errors.js";
 
 export {
   BACKENDS,
   type Backend,
+  REVIEW_MODES,
+  type ReviewMode,
   DEFAULT_BACKEND,
   BACKEND_CONFIG_KEY,
   BACKEND_KEYS,
   type ResolvedBackend,
   parseBackend,
+  parseMode,
   resolveBackend,
   makeLanguageModelLayer,
   classifyModelError,
 } from "./backend.js";
+
+export {
+  extractJsonText,
+  stripThinkBlocks,
+  stripCodeFences,
+} from "./json-extract.js";
 
 export {
   DEFAULT_REVIEW_SYSTEM_PROMPT,

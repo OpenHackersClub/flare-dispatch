@@ -62,8 +62,10 @@ The engine selects a model backend from config — repoint it in seconds, no red
 | `pr-review.prompt` | *(optional)* override the generic per-domain reviewer system prompt |
 | `pr-review.opencode.base_url` | AI Gateway OpenAI-compatible endpoint (`/v1/<acct>/<gw>/compat`) for the **opencode** backend (route Anthropic/Claude-class models) |
 | `pr-review.opencode.model` | provider-named model id, e.g. `anthropic/claude-3-5-sonnet` |
+| `pr-review.opencode.mode` | `tools` (default) or `json` — how structured output is coaxed (see below) |
 | `pr-review.reasonix.base_url` | AI Gateway OpenAI-compatible endpoint for the **reasonix** backend (route DeepSeek) |
 | `pr-review.reasonix.model` | provider-named model id, e.g. `deepseek/deepseek-chat` |
+| `pr-review.reasonix.mode` | `tools` or `json` (**default `json`** — DeepSeek-class reasoning models ignore forced tool-calls) |
 
 API keys are CONFIG_KV entries (the `loadSecrets` store), resolved through the same `config.get` accessor:
 
@@ -73,6 +75,14 @@ API keys are CONFIG_KV entries (the `loadSecrets` store), resolved through the s
 | `REASONIX_API_KEY` | the **reasonix** backend |
 
 A misconfigured backend fails fast — the run posts a PR comment naming the exact missing key.
+
+#### Output mode: `tools` vs `json`
+
+Not every provider honours forced tool-calling. Validated against the live AI Gateway → Workers AI: `opencode → llama-3.3-70b` returns forced tool-calls fine, but `reasonix → deepseek-r1-distill-qwen-32b` returns **no** `tool_calls` (it emits `<think>…</think>` reasoning instead).
+
+- **`tools`** — forces a tool call (`toolChoice: "required"`) and reads the Schema-validated tool args. Best when the provider supports it.
+- **`json`** — no tools; the model is asked for a strict JSON object. The engine strips `<think>…</think>` blocks and markdown code fences, isolates the JSON value, `JSON.parse`s it, and Schema-decodes against the same `Finding[]` / `ReviewOutput` schemas. A parse/decode failure surfaces a `StructuredOutputInvalid` error (the run posts a PR comment naming it).
+- **Auto-fallback** — a `tools`-mode call that comes back with zero `tool_calls` retries **once** in `json` mode, so a provider that silently drops tool-calling still produces a review.
 
 ### Always a PR comment
 

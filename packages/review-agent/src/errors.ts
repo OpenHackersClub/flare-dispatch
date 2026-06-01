@@ -43,4 +43,28 @@ export class BackendUnconfigured extends Schema.TaggedError<BackendUnconfigured>
   },
 ) {}
 
-export type ReviewEngineError = ModelCallFailed | BackendUnconfigured;
+/**
+ * The model ran in `json` mode but its text response could not be turned into
+ * a Schema-valid object — used when a reasoning model (e.g. DeepSeek-R1) emits
+ * `<think>…</think>` prose or otherwise non-JSON output, or returns JSON that
+ * fails to decode against the `Finding[]` / `ReviewOutput` schema.
+ */
+export class StructuredOutputInvalid extends Schema.TaggedError<StructuredOutputInvalid>()(
+  "StructuredOutputInvalid",
+  {
+    backend: Schema.String,
+    model: Schema.String,
+    /** Which structured surface failed — a domain reviewer or the coordinator. */
+    surface: Schema.Literal("review", "coordinate"),
+    /** Why the parse/decode failed. */
+    reason: Schema.Literal("empty", "not-json", "schema-mismatch"),
+    /** A short, truncated excerpt of the raw model text, for diagnosis. */
+    excerpt: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export type ReviewEngineError =
+  | ModelCallFailed
+  | BackendUnconfigured
+  | StructuredOutputInvalid;
