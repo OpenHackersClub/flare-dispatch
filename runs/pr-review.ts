@@ -176,12 +176,20 @@ export const prReview = defineRun({
       //    re-review (a new push) the coordinator uses them to auto-resolve
       //    fixed threads and re-surface unfixed ones (blog: "re-reviews track
       //    previous findings"). Option.none() on the first push.
-      const prior = yield* step("load-prior", () =>
-        io.priorExecution({
-          family: `pr-review:${input.repo}:${input.pr}`,
-          outputSchema: ReviewOutput,
-        }),
+      // CF Workflows checkpoints every `step` result by serializing it, and it
+      // accepts only plain data — an Effect `Option` is a tagged class instance
+      // it rejects at runtime ("Could not serialize object of type Object. This
+      // type does not support serialization."). So cross the step boundary as
+      // plain `PriorExecution | null` and rebuild the Option outside the step.
+      const priorOrNull = yield* step("load-prior", () =>
+        io
+          .priorExecution({
+            family: `pr-review:${input.repo}:${input.pr}`,
+            outputSchema: ReviewOutput,
+          })
+          .pipe(Effect.map(Option.getOrNull)),
       );
+      const prior = Option.fromNullable(priorOrNull);
 
       // 7. Fan out one tightly-scoped agent per domain, in parallel — only the
       //    agents this tier calls for. The shared per-file patches under DIFF

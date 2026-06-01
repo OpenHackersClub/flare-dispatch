@@ -7,7 +7,7 @@
 // Spec: specs/pm/plan.md § 3 (fakes/), specs/03-dsl.md § io.
 
 import { Effect, Layer, Option } from "effect";
-import { IO, type IOService, type LogLevel } from "../services/io";
+import { IO, type IOService, type LogLevel, type PriorExecution } from "../services/io";
 
 export type LogEntry = {
   readonly level: LogLevel;
@@ -28,6 +28,12 @@ export type IOFakeOptions = {
   readonly startMs?: number;
   /** how much `io.now` advances per call. Default 1000. */
   readonly tickMs?: number;
+  /**
+   * When set, `io.priorExecution` returns `Option.some` of this record (for
+   * every family); when omitted it returns `Option.none()` — the first-run
+   * default. Lets a run test exercise the re-review / prior-findings path.
+   */
+  readonly prior?: PriorExecution<unknown>;
 };
 
 /**
@@ -61,7 +67,12 @@ export const makeIOFake = (
       Effect.sync(() => {
         state.logs.push({ level, msg, attrs });
       }),
-    priorExecution: () => Effect.succeed(Option.none()),
+    priorExecution: <O>() =>
+      Effect.succeed(
+        opts.prior === undefined
+          ? Option.none<PriorExecution<O>>()
+          : Option.some(opts.prior as PriorExecution<O>),
+      ),
   };
 
   return { layer: Layer.succeed(IO, service), state };
