@@ -68,11 +68,11 @@ export {
 
 export {
   DEFAULT_REVIEW_SYSTEM_PROMPT,
-  DEFAULT_COORDINATE_SYSTEM_PROMPT,
   type ReviewDomainInput,
   reviewDomain,
   type CoordinateInput,
   coordinate,
+  coordinateReview,
   type RiskTierInput,
   RISK_THRESHOLDS,
   riskTier,

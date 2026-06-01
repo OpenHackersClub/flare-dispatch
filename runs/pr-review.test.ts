@@ -3,9 +3,9 @@
 // Exercises the run Effect against the in-memory test runtime
 // (`makeCFRuntimeTest`) — no CF, no Docker, no network, no model provider.
 //
-// The model-calling steps (`review`, `coordinate`) need a real provider, so
+// The `review` step calls the model (the `coordinate` step is pure code), so
 // the *model path* is covered exhaustively in the engine's own unit tests
-// (packages/review-agent/src/engine.test.ts) with a stub `LanguageModel`. These
+// (packages/review-agent/src/engine.test.ts) with a stub `HttpClient`. These
 // run-level tests cover the ORCHESTRATION that needs no model:
 //
 //   (a) diff via git    — `prepare-diff` shells out to `git diff` (not a

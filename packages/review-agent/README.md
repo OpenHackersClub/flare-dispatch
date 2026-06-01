@@ -18,8 +18,8 @@ CLI; every model call happens in the Worker against a configurable backend.
 |---|---|
 | `riskTier({ diff })` | Pure heuristic → `"trivial" \| "lite" \| "full"` from diff size + sensitive paths. No model call. |
 | `reviewDomain({ agent, diff, systemPrompt, tier, baseUrl, apiKey, model, backend, mode })` | One domain reviewer → `ReadonlyArray<Finding>`. `mode: "tools"` sends `tools` + `tool_choice:"required"`; `mode: "json"` parses a strict-JSON text response. Requires an `HttpClient` Layer. |
-| `coordinate({ findings, previous, systemPrompt, baseUrl, apiKey, model, backend, mode })` | Dedup / filter / verdict → `CoordinatedReview` (no `tier`). Same `tools` / `json` modes. |
-| `chatCompletion(req)` | The transport: POST `${baseUrl}/chat/completions`, returns `{ content, toolCalls }`. Non-2xx / no choices → `ModelCallFailed`. |
+| `coordinate({ findings, previous })` / `coordinateReview(...)` | **PURE, no model call.** Merge + dedup (by `path,startLine,title`) + counts-by-`level` + verdict-by-rule → `CoordinatedReview` (no `tier`). Can never fail. |
+| `chatCompletion(req)` | The transport (used by `reviewDomain`): POST `${baseUrl}/chat/completions`, returns `{ content, toolCalls }`. Non-2xx / no choices → `ModelCallFailed`. |
 | `stripDiffNoise(diff)` | Drops lockfile / minified / generated / vendored file sections from a unified diff. |
 | `extractJsonText(text)` | Strips `<think>…</think>` blocks + code fences and isolates the outermost JSON value — the `json`-mode parsing front-end. |
 | `resolveBackend(getConfig)` | Resolves the active backend profile (base url + model + api key + mode) from config. |
@@ -27,7 +27,9 @@ CLI; every model call happens in the Worker against a configurable backend.
 
 `Finding` / `ReviewOutput` are the wire contract shared with the run.
 
-### Request shape (per model call)
+### Request shape (per `reviewDomain` model call)
+
+Only `reviewDomain` calls the model; `coordinate` is pure and makes no request.
 
 ```
 POST ${baseUrl}/chat/completions
@@ -39,7 +41,7 @@ Content-Type: application/json
                 { "role": "user",   "content": <diff + instruction> } ],
   "max_tokens": 2048,
   // tools mode only:
-  "tools": [ { "type": "function", "function": { "name": "report"|"verdict", "description": …, "parameters": <jsonschema> } } ],
+  "tools": [ { "type": "function", "function": { "name": "report", "description": …, "parameters": <jsonschema> } } ],
   "tool_choice": "required" }
 ```
 
@@ -52,6 +54,8 @@ Reasoning models routed through the AI Gateway (e.g. DeepSeek-R1 distills) retur
 
 - **`tools`** (opencode default) — forced tool call, Schema-validated tool args. If it returns zero `tool_calls`, the engine **auto-retries once in `json` mode**.
 - **`json`** (reasonix default) — no tools; the model returns a strict JSON object that the engine strips/parses/Schema-decodes. A parse/decode failure raises `StructuredOutputInvalid`.
+
+The mode applies to **`reviewDomain` only**. Coordination is deterministic code — `coordinate` makes no model call, so it has no mode and can never raise `StructuredOutputInvalid`. (Earlier it asked the model to re-emit the full nested `ReviewOutput`; weak models couldn't conform and the tools→json fallback didn't fire on schema mismatch — hence the move to pure assembly.)
 
 ## Configurable backend — operator contract
 

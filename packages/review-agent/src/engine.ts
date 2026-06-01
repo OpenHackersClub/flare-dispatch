@@ -1,25 +1,29 @@
 // @flare-dispatch/review-agent — the Worker-side review engine.
 //
-// Three provider-agnostic Effect functions the `pr-review` run composes:
+// Three Effect functions the `pr-review` run composes:
 //
 //   * `riskTier`     — a PURE heuristic on diff size + touched paths. No model
 //                      call (cheaper, deterministic). trivial | lite | full.
 //   * `reviewDomain` — one domain reviewer (security / performance / …). Gets
-//                      structured findings from the model — either a forced
+//                      structured findings FROM THE MODEL — either a forced
 //                      tool call ("tools" mode) or a strict-JSON text response
 //                      ("json" mode, for models that don't honour tool-calls).
-//   * `coordinate`   — dedup / filter / verdict across all domains' findings,
-//                      reconciled against the previous review.
+//                      This is the only model-calling surface.
+//   * `coordinate`   — PURE deterministic assembly of the reviewers' findings:
+//                      merge + dedup + counts-by-severity + verdict-by-rule. No
+//                      model call (the reviewers already did the work), so it
+//                      can never fail with `StructuredOutputInvalid`.
 //
-// --- Transport: direct /chat/completions over HttpClient --------------------
+// --- Transport (reviewDomain only): direct /chat/completions over HttpClient -
 //
-// Model calls go through a direct HTTP POST to `${baseUrl}/chat/completions`
-// (see chat.ts) using `@effect/platform` `HttpClient` — the run provides
-// `FetchHttpClient.layer`. We do NOT use `@effect/ai-openai`'s
-// `OpenAiLanguageModel`, which only hits the OpenAI `/responses` API; the target
-// Cloudflare AI Gateway compat endpoint only supports `/chat/completions`.
+// `reviewDomain`'s model calls go through a direct HTTP POST to
+// `${baseUrl}/chat/completions` (see chat.ts) using `@effect/platform`
+// `HttpClient` — the run provides `FetchHttpClient.layer`. We do NOT use
+// `@effect/ai-openai`'s `OpenAiLanguageModel`, which only hits the OpenAI
+// `/responses` API; the target Cloudflare AI Gateway compat endpoint only
+// supports `/chat/completions`.
 //
-// --- Output modes (per backend, resolved from CONFIG_KV) --------------------
+// --- reviewDomain output modes (per backend, resolved from CONFIG_KV) --------
 //
 // "tools" mode sends `tools` + `tool_choice: "required"` and reads
 // `choices[0].message.tool_calls` (arguments are a JSON string we parse +
@@ -27,9 +31,8 @@
 // AI Gateway) return NO tool_calls and emit `<think>…</think>` prose in
 // `message.content` instead, so for those "json" mode sends NO tools and asks
 // for a strict JSON object, strips `<think>`/code fences, then `JSON.parse` +
-// Schema-decodes against the same `Finding[]` / `ReviewOutput` schemas. If
-// "tools" mode comes back with zero tool_calls, the engine auto-falls-back to a
-// single "json" retry.
+// Schema-decodes against the same `Finding[]` schema. If "tools" mode comes back
+// with zero tool_calls, the engine auto-falls-back to a single "json" retry.
 //
 // `systemPrompt` is always SUPPLIED by the caller; this module ships only a
 // generic default instruction (no project-specific rubric).
@@ -45,16 +48,14 @@ import {
 import { ModelCallFailed, StructuredOutputInvalid } from "./errors.js";
 import { extractJsonText } from "./json-extract.js";
 import {
-  CoordinatedReview,
   type CoordinatedReview as CoordinatedReviewType,
   Finding,
   type ReviewOutput,
   type Tier,
 } from "./schemas.js";
 
-/** Token budgets for the two model surfaces. */
+/** Token budget for a domain review model call. */
 const REVIEW_MAX_TOKENS = 2048;
-const COORDINATE_MAX_TOKENS = 2048;
 
 /** Max chars of raw model text we attach to a `StructuredOutputInvalid`. */
 const EXCERPT_LEN = 400;
@@ -81,13 +82,8 @@ many low-value ones. If the diff is clean for your domain, report zero findings.
 Call the \`report\` tool exactly once with your findings (an empty array is
 valid). Do not respond with prose — the tool call IS your output.`;
 
-/** Generic coordinator instruction. */
-export const DEFAULT_COORDINATE_SYSTEM_PROMPT = `You are the review coordinator.
-Merge the per-domain findings into ONE consolidated review: deduplicate
-overlapping findings, drop noise, and decide a verdict. Bias toward approval
-unless there is a genuine critical issue. When a previous review is supplied,
-auto-resolve findings that appear fixed and keep surfacing the ones still open.
-Emit exactly one consolidated review.`;
+// (Coordination is deterministic — pure code — so there is no coordinator
+// prompt; see `coordinate` below.)
 
 // ---------------------------------------------------------------------------
 // Shared helpers.
@@ -324,153 +320,78 @@ const DOMAIN_JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no pros
 Use an empty "findings" array when the diff is clean for your domain. Do not wrap the JSON in code fences. Do not include any text before or after the JSON object.`;
 
 // ---------------------------------------------------------------------------
-// `coordinate` — dedup + verdict.
-
-const decodeCoordinateJson = Schema.decodeUnknownEither(CoordinatedReview);
-
-/** The `verdict` tool sent in the chat/completions `tools` array (tools mode). */
-const VerdictTool: ChatTool = {
-  type: "function",
-  function: {
-    name: "verdict",
-    description:
-      "Emit the consolidated review: a verdict, severity counts, and the deduplicated findings.",
-    parameters: toolParametersSchema(CoordinatedReview),
-  },
-};
+// `coordinate` — DETERMINISTIC assembly. No model call.
+//
+// The per-domain reviewers already did the hard work (each emitted a
+// Schema-valid `Finding[]`). Coordination is pure bookkeeping: merge, dedup,
+// count by severity, and pick a verdict by rule. Doing this in code (rather than
+// asking a model to re-emit the whole nested `ReviewOutput` via a tool call)
+// removes the only remaining `StructuredOutputInvalid` failure mode — a weak
+// model could never make the verdict tool-call conform, and the tools→json
+// auto-fallback didn't fire on schema-mismatch.
 
 export type CoordinateInput = {
   /** All domains' findings, concatenated. */
   readonly findings: ReadonlyArray<Finding>;
-  /** The previous execution's output for this PR, when one exists. */
+  /**
+   * The previous execution's output for this PR, when one exists. Its findings
+   * are folded into the dedup so a finding still open from the last push is not
+   * double-reported. (A finding the current reviewers no longer raise is simply
+   * absent — auto-resolved.)
+   */
   readonly previous?: ReviewOutput;
-  /** Caller-supplied coordinator prompt; falls back to the generic default. */
-  readonly systemPrompt?: string;
-  /** The OpenAI-compatible base URL (`…/<gateway>/compat`). */
-  readonly baseUrl: string;
-  /** The API key (Bearer). */
-  readonly apiKey: string;
-  readonly model: string;
-  readonly backend: string;
-  /** Output mode — "tools" (default) forces a tool call; "json" parses text. */
-  readonly mode?: ReviewMode;
 };
 
+/** A finding's dedup identity — same (path, startLine, title) is the same issue. */
+const findingKey = (f: Finding): string =>
+  `${f.path} ${f.startLine} ${f.title}`;
+
 /**
- * Coordinate the per-domain findings into one verdict. Returns
- * `CoordinatedReview` (no `tier` — the run stitches that back on from its plan).
- * Supports the same "tools" / "json" modes (+ tools→json auto-fallback) as
- * `reviewDomain`.
+ * Coordinate the per-domain findings into one verdict — PURE, no model call, so
+ * it can never produce `StructuredOutputInvalid`. Returns `CoordinatedReview`
+ * (no `tier` — the run stitches that back on from its plan).
+ *
+ *   - dedup by (path, startLine, title), keeping the first occurrence
+ *     (current-run findings come first, then `previous`);
+ *   - counts straight from `level` (failure/warning/notice);
+ *   - verdict by rule: any failure → request-changes; else any warning →
+ *     comment; else approve (bias toward approval unless critical).
  */
 export const coordinate = (
   input: CoordinateInput,
-): Effect.Effect<
-  CoordinatedReviewType,
-  ModelCallFailed | StructuredOutputInvalid,
-  HttpClient.HttpClient
-> =>
-  (input.mode ?? "tools") === "json"
-    ? jsonCoordinate(input)
-    : toolsCoordinate(input).pipe(
-        Effect.catchIf(
-          (e): e is ModelCallFailed =>
-            e._tag === "ModelCallFailed" && e.reason === "bad-response",
-          () => jsonCoordinate(input),
-        ),
-      );
+): Effect.Effect<CoordinatedReviewType> =>
+  Effect.sync(() => coordinateReview(input));
 
-/** "tools" mode coordinator — force the `verdict` tool call. */
-const toolsCoordinate = (
+/** The pure core of {@link coordinate} — exported for direct unit testing. */
+export const coordinateReview = (
   input: CoordinateInput,
-): Effect.Effect<
-  CoordinatedReviewType,
-  ModelCallFailed | StructuredOutputInvalid,
-  HttpClient.HttpClient
-> =>
-  Effect.gen(function* () {
-    const result = yield* chatCompletion({
-      baseUrl: input.baseUrl,
-      apiKey: input.apiKey,
-      model: input.model,
-      backend: input.backend,
-      systemPrompt: input.systemPrompt ?? DEFAULT_COORDINATE_SYSTEM_PROMPT,
-      userMessage: renderCoordinateUserMessage(input, "tools"),
-      maxTokens: COORDINATE_MAX_TOKENS,
-      tools: [VerdictTool],
-    });
-
-    const call = firstToolCall(result.toolCalls, "verdict");
-    if (call === undefined) {
-      return yield* Effect.fail(
-        new ModelCallFailed({
-          backend: input.backend,
-          model: input.model,
-          reason: "bad-response",
-          message:
-            "coordinator returned no `verdict` tool call despite tool_choice=required",
-        }),
-      );
-    }
-    return yield* parseStructured(call.arguments, decodeCoordinateJson, {
-      backend: input.backend,
-      model: input.model,
-      surface: "coordinate",
-    });
-  });
-
-/** "json" mode coordinator — parse a strict JSON object from `message.content`. */
-const jsonCoordinate = (
-  input: CoordinateInput,
-): Effect.Effect<
-  CoordinatedReviewType,
-  ModelCallFailed | StructuredOutputInvalid,
-  HttpClient.HttpClient
-> =>
-  Effect.gen(function* () {
-    const result = yield* chatCompletion({
-      baseUrl: input.baseUrl,
-      apiKey: input.apiKey,
-      model: input.model,
-      backend: input.backend,
-      systemPrompt: input.systemPrompt ?? DEFAULT_COORDINATE_SYSTEM_PROMPT,
-      userMessage: renderCoordinateUserMessage(input, "json"),
-      maxTokens: COORDINATE_MAX_TOKENS,
-    });
-
-    return yield* parseStructured(result.content, decodeCoordinateJson, {
-      backend: input.backend,
-      model: input.model,
-      surface: "coordinate",
-    });
-  });
-
-/** The user-role message for the coordinator (system prompt is sent separately). */
-const renderCoordinateUserMessage = (
-  input: CoordinateInput,
-  mode: ReviewMode,
-): string => {
-  const base = [
-    "Per-domain findings (JSON):",
-    JSON.stringify(input.findings, null, 2),
-    "",
-    "Previous review (JSON, or none):",
-    input.previous === undefined
-      ? "(no previous review)"
-      : JSON.stringify(input.previous, null, 2),
-    "",
+): CoordinatedReviewType => {
+  // Current-run findings first so a re-raised finding keeps its current text;
+  // prior findings only contribute ones the current run dropped from a
+  // different line/title (genuinely still-open, not re-emitted this run).
+  const merged: ReadonlyArray<Finding> = [
+    ...input.findings,
+    ...(input.previous?.findings ?? []),
   ];
-  return mode === "json"
-    ? [...base, COORDINATE_JSON_INSTRUCTION].join("\n")
-    : [
-        ...base,
-        "Call the `verdict` tool exactly once with the consolidated review.",
-      ].join("\n");
-};
 
-/** Strict-JSON instruction appended in "json" mode (no tools available). */
-const COORDINATE_JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no prose, no markdown:
-{"verdict":"approve"|"comment"|"request-changes","critical":number,"warnings":number,"suggestions":number,"findings":[{"path":string,"startLine":number,"endLine":number,"level":"notice"|"warning"|"failure","title":string,"message":string}]}
-Do not wrap the JSON in code fences. Do not include any text before or after the JSON object.`;
+  const seen = new Set<string>();
+  const findings: Finding[] = [];
+  for (const f of merged) {
+    const key = findingKey(f);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    findings.push(f);
+  }
+
+  const critical = findings.filter((f) => f.level === "failure").length;
+  const warnings = findings.filter((f) => f.level === "warning").length;
+  const suggestions = findings.filter((f) => f.level === "notice").length;
+
+  const verdict: CoordinatedReviewType["verdict"] =
+    critical > 0 ? "request-changes" : warnings > 0 ? "comment" : "approve";
+
+  return { verdict, critical, warnings, suggestions, findings };
+};
 
 // ---------------------------------------------------------------------------
 // `riskTier` — PURE heuristic. No model call.

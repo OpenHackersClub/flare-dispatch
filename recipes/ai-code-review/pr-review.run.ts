@@ -245,22 +245,17 @@ const reviewBody = (input: RunInput) =>
     );
     const allFindings: ReadonlyArray<Finding> = fanned.flat();
 
-    // 8. Coordinator dedups + filters into one verdict, reconciled against the
-    //    prior review. `tier` is stitched in from the plan.
+    // 8. Coordinate — PURE deterministic assembly (merge + dedup + counts +
+    //    verdict). No model call, reconciled against the prior review. `tier`
+    //    is stitched in from the plan.
     const coordinated = yield* step("coordinate", () =>
       engineCoordinate({
         findings: allFindings,
-        baseUrl: resolved.baseUrl,
-        apiKey: resolved.apiKey,
-        model: resolved.model,
-        backend: resolved.backend,
-        mode: resolved.mode,
-        ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
         ...Option.match(prior, {
           onNone: () => ({}),
           onSome: (p) => ({ previous: p.output }),
         }),
-      }).pipe(Effect.provide(modelLayer)),
+      }),
     );
     const output = { ...coordinated, tier: plan.tier };
 

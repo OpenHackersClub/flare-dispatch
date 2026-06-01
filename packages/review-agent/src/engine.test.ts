@@ -1,14 +1,20 @@
-// Engine unit tests — the model-calling reviewers + the pure risk heuristic.
+// Engine unit tests.
 //
-// The model transport (`/chat/completions` over `HttpClient`) is replaced by a
-// stub `HttpClient` Layer whose responses are canned `/chat/completions` JSON.
-// So these run with no model provider configured. `chatResponse` builds the
-// tools/json/empty/error variants; `stubHttp`/`stubHttpSequence` wire them.
+//   * `reviewDomain` calls the model — the `/chat/completions` transport is
+//     replaced by a stub `HttpClient` Layer (`stubHttp`/`stubHttpSequence`)
+//     returning canned response JSON, so these run with no provider configured.
+//   * `coordinate` / `riskTier` are PURE — tested directly, no stub.
 
 import { describe, expect, it } from "vitest";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientResponse } from "@effect/platform";
-import { coordinate, classifyRisk, reviewDomain, riskTier } from "./engine.js";
+import {
+  classifyRisk,
+  coordinate,
+  coordinateReview,
+  reviewDomain,
+  riskTier,
+} from "./engine.js";
 import type { Finding } from "./schemas.js";
 
 // --- chat/completions response fixtures -------------------------------------
@@ -282,131 +288,117 @@ describe("reviewDomain", () => {
   });
 });
 
-describe("coordinate", () => {
-  it("tools mode — returns the consolidated verdict from the tool call", async () => {
-    const verdict = {
-      verdict: "request-changes",
-      critical: 1,
-      warnings: 0,
-      suggestions: 0,
+describe("coordinate / coordinateReview (pure — no model call)", () => {
+  const mk = (
+    over: Partial<Finding> & Pick<Finding, "path" | "startLine" | "title" | "level">,
+  ): Finding => ({
+    endLine: over.startLine,
+    message: "m",
+    ...over,
+  });
+
+  it("counts by level and approves a clean (notice-only) review", () => {
+    const r = coordinateReview({
       findings: [
-        {
-          path: "src/a.ts",
-          startLine: 1,
-          endLine: 1,
-          level: "failure",
-          title: "sql injection",
-          message: "parameterize the query",
-        },
+        mk({ path: "a.ts", startLine: 1, title: "style", level: "notice" }),
+        mk({ path: "a.ts", startLine: 2, title: "naming", level: "notice" }),
       ],
-    };
-    const result = await Effect.runPromise(
-      coordinate({
-        ...conn,
-        findings: [],
-        model: "llama-3.3-70b",
-        backend: "opencode",
-        mode: "tools",
-      }).pipe(Effect.provide(stubHttp(toolsResponse("verdict", verdict)))),
-    );
-    expect(result.verdict).toBe("request-changes");
-    expect(result.critical).toBe(1);
-    expect(result.findings).toHaveLength(1);
+    });
+    expect(r.critical).toBe(0);
+    expect(r.warnings).toBe(0);
+    expect(r.suggestions).toBe(2);
+    expect(r.verdict).toBe("approve");
+    expect(r.findings).toHaveLength(2);
   });
 
-  it("returns exactly what the coordinator emits (dedup is the model's job)", async () => {
-    const dup: Finding = {
-      path: "src/a.ts",
-      startLine: 2,
-      endLine: 2,
-      level: "warning",
-      title: "dup",
-      message: "same issue twice",
-    };
-    const verdict = {
-      verdict: "comment",
-      critical: 0,
-      warnings: 1,
-      suggestions: 0,
-      findings: [dup],
-    };
-    const result = await Effect.runPromise(
-      coordinate({
-        ...conn,
-        findings: [dup, dup],
-        model: "llama-3.3-70b",
-        backend: "opencode",
-        mode: "tools",
-      }).pipe(Effect.provide(stubHttp(toolsResponse("verdict", verdict)))),
-    );
-    expect(result.findings).toHaveLength(1);
+  it("a warning (no failures) → comment", () => {
+    const r = coordinateReview({
+      findings: [
+        mk({ path: "a.ts", startLine: 1, title: "perf", level: "warning" }),
+        mk({ path: "a.ts", startLine: 9, title: "doc", level: "notice" }),
+      ],
+    });
+    expect(r.warnings).toBe(1);
+    expect(r.suggestions).toBe(1);
+    expect(r.verdict).toBe("comment");
   });
 
-  it("json mode — parses a <think>-wrapped coordinator verdict", async () => {
-    const verdict = {
+  it("any failure → request-changes (bias preserved: only critical blocks)", () => {
+    const r = coordinateReview({
+      findings: [
+        mk({ path: "a.ts", startLine: 1, title: "sqli", level: "failure" }),
+        mk({ path: "a.ts", startLine: 2, title: "perf", level: "warning" }),
+        mk({ path: "a.ts", startLine: 3, title: "style", level: "notice" }),
+      ],
+    });
+    expect(r.critical).toBe(1);
+    expect(r.warnings).toBe(1);
+    expect(r.suggestions).toBe(1);
+    expect(r.verdict).toBe("request-changes");
+  });
+
+  it("an empty review approves with zero counts", () => {
+    const r = coordinateReview({ findings: [] });
+    expect(r).toEqual({
       verdict: "approve",
       critical: 0,
       warnings: 0,
-      suggestions: 1,
-      findings: [],
-    };
-    const text = [
-      "<think>two findings collapse to none after dedup</think>",
-      JSON.stringify(verdict),
-    ].join("\n");
-
-    const result = await Effect.runPromise(
-      coordinate({
-        ...conn,
-        findings: [],
-        model: "deepseek-r1",
-        backend: "reasonix",
-        mode: "json",
-      }).pipe(Effect.provide(stubHttp(textResponse(text)))),
-    );
-    expect(result.verdict).toBe("approve");
-    expect(result.suggestions).toBe(1);
-  });
-
-  it("tools mode — auto-falls-back to json when tool_calls come back empty", async () => {
-    const verdict = {
-      verdict: "comment",
-      critical: 0,
-      warnings: 1,
       suggestions: 0,
       findings: [],
-    };
-    const seq = stubHttpSequence([
-      emptyToolsResponse(),
-      textResponse("```json\n" + JSON.stringify(verdict) + "\n```"),
-    ]);
-    const result = await Effect.runPromise(
-      coordinate({
-        ...conn,
-        findings: [],
-        model: "deepseek-r1",
-        backend: "reasonix",
-        mode: "tools",
-      }).pipe(Effect.provide(seq.layer)),
-    );
-    expect(result.verdict).toBe("comment");
-    expect(seq.calls()).toBe(2);
+    });
   });
 
-  it("json mode — fails StructuredOutputInvalid when no JSON is present", async () => {
-    const exit = await Effect.runPromiseExit(
-      coordinate({
-        ...conn,
-        findings: [],
-        model: "deepseek-r1",
-        backend: "reasonix",
-        mode: "json",
-      }).pipe(
-        Effect.provide(
-          stubHttp(textResponse("<think>I cannot decide</think> sorry, no JSON here")),
-        ),
-      ),
-    );
-    expect(exit._tag).toBe("Failure");
+  it("dedups by (path, startLine, title), keeping the first occurrence", () => {
+    const first = mk({ path: "a.ts", startLine: 5, title: "dup", level: "warning", message: "keep me" });
+    const same = mk({ path: "a.ts", startLine: 5, title: "dup", level: "failure", message: "drop me" });
+    const r = coordinateReview({ findings: [first, same] });
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0]!.message).toBe("keep me");
+    // The dropped duplicate's level does not inflate the counts.
+    expect(r.warnings).toBe(1);
+    expect(r.critical).toBe(0);
+  });
+
+  it("does NOT dedup findings that differ in path / line / title", () => {
+    const r = coordinateReview({
+      findings: [
+        mk({ path: "a.ts", startLine: 5, title: "x", level: "notice" }),
+        mk({ path: "b.ts", startLine: 5, title: "x", level: "notice" }), // diff path
+        mk({ path: "a.ts", startLine: 6, title: "x", level: "notice" }), // diff line
+        mk({ path: "a.ts", startLine: 5, title: "y", level: "notice" }), // diff title
+      ],
+    });
+    expect(r.findings).toHaveLength(4);
+  });
+
+  it("folds previous findings in, deduping ones still re-raised this run", () => {
+    const current = mk({ path: "a.ts", startLine: 1, title: "open", level: "warning" });
+    const stillOpenInPrev = mk({ path: "a.ts", startLine: 1, title: "open", level: "warning" });
+    const onlyInPrev = mk({ path: "z.ts", startLine: 3, title: "old", level: "notice" });
+    const r = coordinateReview({
+      findings: [current],
+      previous: {
+        verdict: "comment",
+        tier: "full",
+        critical: 0,
+        warnings: 1,
+        suggestions: 1,
+        findings: [stillOpenInPrev, onlyInPrev],
+      },
+    });
+    // current "open" (deduped against prev) + prev-only "old" = 2.
+    expect(r.findings).toHaveLength(2);
+    expect(r.warnings).toBe(1);
+    expect(r.suggestions).toBe(1);
+    expect(r.verdict).toBe("comment");
+  });
+
+  it("coordinate is the Effect wrapper of coordinateReview and never fails", async () => {
+    const findings = [
+      mk({ path: "a.ts", startLine: 1, title: "boom", level: "failure" }),
+    ];
+    const r = await Effect.runPromise(coordinate({ findings }));
+    expect(r).toEqual(coordinateReview({ findings }));
+    expect(r.verdict).toBe("request-changes");
   });
 });
