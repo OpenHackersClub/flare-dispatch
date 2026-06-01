@@ -44,6 +44,31 @@ export type PullRequestRef = {
   readonly updatedAt: number;
 };
 
+/**
+ * A top-level PR review to post — `POST /repos/{o}/{r}/pulls/{n}/reviews`.
+ * `event: "COMMENT"` leaves a visible review comment without approving or
+ * requesting changes (the run's *verdict* is reported separately via the
+ * check-run). This is the one *write* on the `github` capability — it exists so
+ * a run can leave an always-visible PR comment (on success AND failure), which
+ * the read-only check-run summary alone does not guarantee.
+ */
+export type PullReviewRequest = {
+  /** "owner/name". */
+  readonly repo: string;
+  /** PR number. */
+  readonly pr: number;
+  /** Head SHA the review is anchored to. */
+  readonly sha: string;
+  /** Markdown body of the review comment. */
+  readonly body: string;
+  /**
+   * The GitHub installation id authenticating the write. A run carries it as an
+   * input (the webhook payload's `installation.id`); the live Layer mints the
+   * installation token from it. Omitted in local dev → the no-op Layer.
+   */
+  readonly installationId?: number;
+};
+
 /** The service contract a runtime Layer implements. */
 export interface GithubService {
   /**
@@ -66,6 +91,16 @@ export interface GithubService {
     includeDrafts?: boolean;
     repos?: readonly string[];
   }) => Effect.Effect<readonly PullRequestRef[], GitHubApiError>;
+
+  /**
+   * Post a top-level PR review comment (`event: "COMMENT"`). The run uses this
+   * to leave an always-visible comment on every review — success or failure.
+   * Best-effort reporting: a live deploy without App credentials degrades to a
+   * logged no-op rather than failing the run.
+   */
+  readonly pullReview: (
+    req: PullReviewRequest,
+  ) => Effect.Effect<void, GitHubApiError>;
 }
 
 /** Context.Tag — the dependency a run carries until a Layer provides it. */
@@ -90,4 +125,6 @@ export const github = {
       repos?: readonly string[];
     } = {},
   ) => Effect.flatMap(Github, (g) => g.openPullRequests(opts)),
+  pullReview: (req: PullReviewRequest) =>
+    Effect.flatMap(Github, (g) => g.pullReview(req)),
 } as const;

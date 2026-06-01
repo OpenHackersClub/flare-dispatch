@@ -71,6 +71,7 @@ export {
   type GithubService,
   type RepoRef,
   type PullRequestRef,
+  type PullReviewRequest,
 } from "./services/github";
 export {
   oidc,

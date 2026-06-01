@@ -78,6 +78,14 @@ export const GithubDeferred: Layer.Layer<Github> = Layer.succeed(
       Effect.die(
         "github.openPullRequests: not implemented in this deploy — V3 capability",
       ),
+    // `pullReview` is *reporting*, not correctness — a deploy without GitHub
+    // App credentials degrades to a logged no-op (the same posture as the no-op
+    // `Checks` Layer), never failing an otherwise-green run. The live
+    // credentialed path is `makeGithubLive` (github-live.ts).
+    pullReview: ({ repo, pr }) =>
+      Effect.logInfo(
+        `github.pullReview skipped (no GitHub App credentials) — PR comment on ${repo}#${pr} not posted`,
+      ),
   }))(),
 );
 

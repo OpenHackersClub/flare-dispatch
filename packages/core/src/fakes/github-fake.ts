@@ -13,6 +13,7 @@ import {
   Github,
   type GithubService,
   type PullRequestRef,
+  type PullReviewRequest,
   type RepoRef,
 } from "../services/github";
 
@@ -32,6 +33,8 @@ export type GithubFakeState = {
     includeDrafts: boolean;
     repos?: readonly string[];
   }>;
+  /** Every `pullReview` call, in order — lets a test assert a comment posted. */
+  readonly pullReviewCalls: PullReviewRequest[];
 };
 
 /** Default reference clock — fakes use this when callers don't override. */
@@ -50,6 +53,7 @@ export const makeGithubFake = (
     pullRequests: [...(opts.pullRequests ?? [])],
     repositoriesCalls: [],
     openPullRequestsCalls: [],
+    pullReviewCalls: [],
   };
   const now = opts.now ?? DEFAULT_NOW;
 
@@ -88,6 +92,11 @@ export const makeGithubFake = (
           }
           return true;
         });
+      }),
+
+    pullReview: (req) =>
+      Effect.sync(() => {
+        state.pullReviewCalls.push(req);
       }),
   };
 

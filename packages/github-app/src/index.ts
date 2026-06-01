@@ -17,8 +17,11 @@
 export { signAppJwt, type SignAppJwtOptions } from "./jwt";
 export {
   getInstallationToken,
+  resolveRepoInstallationId,
   __clearTokenCache,
+  __clearRepoInstallationCache,
   type GetInstallationTokenOptions,
+  type ResolveRepoInstallationOptions,
 } from "./installation-token";
 export {
   createCheckRun,
@@ -28,4 +31,9 @@ export {
   type CreateCheckRunOptions,
   type UpdateCheckRunOptions,
 } from "./check-runs";
+export {
+  createPullReview,
+  type PullReviewEvent,
+  type CreatePullReviewOptions,
+} from "./reviews";
 export { GithubApiError } from "./errors";
