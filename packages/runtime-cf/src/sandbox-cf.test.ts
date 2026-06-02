@@ -365,4 +365,31 @@ describe("makeSandboxCloudflareLive — exec result folding (D)", () => {
       expect(err?._tag).toBe("ExecFailed");
     }),
   );
+
+  it.effect("inlines only a bounded stdout tail; full log streams to R2", () =>
+    Effect.gen(function* () {
+      const big = "x".repeat(200_000);
+      currentBox = makeFakeBox({ proc: null });
+      currentBox.exec = vi.fn(async () => ({
+        exitCode: 0,
+        duration: 1,
+        stdout: big,
+        stderr: "",
+      }));
+      const { bucket, puts } = makeBucket();
+      const layer = makeSandboxCloudflareLive(ns, bucket, "exec-1");
+      const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+        s.exec({ command: "noisy", cwd: "/w", env: {} }),
+      ).pipe(Effect.provide(layer), Effect.exit);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) {
+        // Inline preview is bounded (would otherwise bloat the checkpoint).
+        expect(exit.value.stdout.length).toBeLessThan(20_000);
+        expect(exit.value.stdout).toContain("truncated");
+      }
+      // The FULL output is still written to R2 (the durable log).
+      const logBody = puts.map((p) => String(p.body)).join("");
+      expect(logBody.length).toBeGreaterThan(190_000);
+    }),
+  );
 });

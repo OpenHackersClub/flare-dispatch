@@ -69,6 +69,23 @@ import { authenticateCloneUrl, repoUrl } from "./sandbox-clone-url";
 const asCommand = (command: string | readonly string[]): string =>
   typeof command === "string" ? command : command.join(" ");
 
+/**
+ * Cap the stdout/stderr *preview* carried inline in the `ExecResult`. The FULL
+ * output is always written to R2 (`logPath`); only this tail rides in the
+ * step's RETURN VALUE — which Cloudflare Workflows checkpoints and re-reads on
+ * every engine replay. A multi-MB inline blob (a verbose Playwright run, a
+ * browser-download progress stream) bloats the checkpoint and, when the engine
+ * soft-restarts a step, the replay deserialization trips "Worker exceeded CPU
+ * time limit". Keeping the inline tail small bounds the checkpoint; the
+ * artifact/log uploads still surface the complete output. Matches the
+ * `ExecResult.stdout` contract: "last N KB inlined; full log streamed to R2".
+ */
+const INLINE_TAIL_CHARS = 16 * 1024;
+const inlineTail = (s: string): string =>
+  s.length <= INLINE_TAIL_CHARS
+    ? s
+    : `…[${s.length - INLINE_TAIL_CHARS} chars truncated — full log in R2]…\n${s.slice(s.length - INLINE_TAIL_CHARS)}`;
+
 /** The subset of the SDK's `ExecResult` this layer consumes. */
 interface RawExecResult {
   readonly exitCode: number;
@@ -300,15 +317,16 @@ export const makeSandboxCloudflareLive = (
         try: async () => {
           const result = await execToResult(box, cmd, { cwd, env, timeoutSec });
           const logPath = nextLogKey();
+          // FULL output → R2 (the durable log the artifact step promotes).
           await writeLog(logPath, cmd, result.stdout, result.stderr);
-          // `stdout`/`stderr` here are the inlined tail; the full NDJSON log is
-          // the R2 object at `logPath`.
+          // Only a bounded TAIL is inlined in the step's return value, so the
+          // Workflow checkpoint stays small (see `inlineTail`).
           return {
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             logPath,
-            stdout: result.stdout,
-            stderr: result.stderr,
+            stdout: inlineTail(result.stdout),
+            stderr: inlineTail(result.stderr),
           };
         },
         catch: (cause): ExecFailed | ExecTimeout => {
