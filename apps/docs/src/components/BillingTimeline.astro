@@ -81,15 +81,19 @@ const BAR_H = 38;
       ) : null,
     )}
 
-    <!-- Bar 1: GitHub Actions — the whole run is billed -->
+    <!-- Bar 1: GitHub Actions — the whole run is billed, wait included -->
     <text class="row-name" x="0" y={GHA_Y + 16}>GitHub</text>
     <text class="row-name" x="0" y={GHA_Y + 28}>Actions</text>
-    <rect class="gha-billed" x={BX0} y={GHA_Y} width={BW} height={BAR_H} />
-    {placed
-      .filter((s) => s.kind === "cpu")
-      .map((s) => (
-        <rect class="seg-active" x={s.x} y={GHA_Y} width={s.w} height={BAR_H} />
-      ))}
+    {placed.map((s) => (
+      <rect
+        class={s.kind === "cpu" ? "seg-active" : "gha-wait"}
+        x={s.x}
+        y={GHA_Y}
+        width={s.w}
+        height={BAR_H}
+      />
+    ))}
+    <rect class="gha-frame" x={BX0} y={GHA_Y} width={BW} height={BAR_H} />
     <text class="end-label end-label--gha" x={BX1 + 8} y={GHA_Y + BAR_H / 2 + 4}>
       10 min
     </text>

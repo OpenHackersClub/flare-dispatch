@@ -41,6 +41,8 @@
   --hairline-strong: #b4ad9d;
   --accent: #ff3d00; /* vermillion */
   --accent-soft: #ffe7df;
+  --wait: #4a6193; /* cool slate-blue — idle/IO-wait, complements the accent */
+  --wait-soft: #d3dbeb;
   --code-bg: #fdfbf5;
   --code-border: #e0dac9;
 
@@ -86,6 +88,8 @@
   --hairline-strong: #353846;
   --accent: #ff7041;
   --accent-soft: #2b1810;
+  --wait: #8ba0cf; /* cool slate-blue — idle/IO-wait */
+  --wait-soft: #222a3d;
   --code-bg: #11121a;
   --code-border: #23252e;
 
@@ -1789,10 +1793,14 @@ pre code {
 }
 
 /* The two bars share segment geometry; only the idle gaps differ.
-   GitHub Actions fills them (billed); FlareDispatch leaves them empty (free). */
-.billing__svg .gha-billed {
-  fill: var(--accent-soft);
-  stroke: var(--accent);
+   GitHub Actions fills them in the wait color (billed anyway);
+   FlareDispatch leaves them empty (free). */
+.billing__svg .gha-wait {
+  fill: var(--wait-soft);
+}
+.billing__svg .gha-frame {
+  fill: none;
+  stroke: var(--wait);
   stroke-width: 1.2;
 }
 .billing__svg .fd-envelope {
@@ -1829,7 +1837,7 @@ pre code {
 .billing__svg .phase {
   font-family: var(--font-mono);
   font-size: 7.5px;
-  fill: var(--muted);
+  fill: var(--wait);
   letter-spacing: 0.02em;
 }
 .billing__svg .idle {
@@ -1866,8 +1874,8 @@ pre code {
   stroke-width: 0.5;
 }
 .billing__svg .legend-swatch--wait {
-  fill: var(--accent-soft);
-  stroke: var(--accent);
+  fill: var(--wait-soft);
+  stroke: var(--wait);
 }
 .billing__svg .legend-label {
   font-family: var(--font-mono);
@@ -1925,16 +1933,32 @@ pre code {
   font-weight: 500;
   border-bottom: 2px solid var(--ink);
 }
+.cost-card__table thead th:first-child {
+  text-align: left;
+}
 .cost-card__table tbody th {
   text-align: left;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+.cost-card__table tbody th code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink);
+  background: none;
+  border: none;
+  padding: 0;
+}
+.cost-card__sub {
+  display: block;
   font-family: var(--font-mono);
   font-size: var(--fs-tiny);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  font-weight: 500;
+  color: var(--muted-soft);
+  letter-spacing: 0.02em;
+  margin-top: 0.15rem;
 }
-.cost-card__table td:first-of-type {
+.cost-card__table th:first-child,
+.cost-card__table td:first-child {
   padding-left: 0;
 }
 .cost-card__total td,
@@ -1942,9 +1966,14 @@ pre code {
   font-weight: 600;
   color: var(--ink);
   border-bottom: none;
+  border-top: 2px solid var(--ink);
+}
+.cost-card__total th code {
+  color: var(--accent);
 }
 .cost-card__win {
   color: var(--accent);
+  font-weight: 600;
 }
 .cost-card__verdict {
   margin: 1rem 0 0;
