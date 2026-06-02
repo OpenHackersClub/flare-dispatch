@@ -16,7 +16,7 @@ import {
   HttpClient,
   HttpClientRequest,
 } from "@effect/platform";
-import { Effect, Schema } from "effect";
+import { Effect, Either, Schema } from "effect";
 import { ModelCallFailed } from "./errors.js";
 
 /** A `tools`-array entry in the chat/completions request. */
@@ -160,14 +160,14 @@ export const chatCompletion = (
     );
 
     if (response.status < 200 || response.status >= 300) {
-      const errText = yield* response.text.pipe(
-        Effect.orElseSucceed(() => ""),
-      );
+      // Deliberately do NOT echo the provider/AI-Gateway response body — it can
+      // carry request echoes / internal ids and `ModelCallFailed.message` is
+      // rendered into a public PR comment. Status + reason is enough to act on.
       return yield* Effect.fail(
         fail(
           req,
           reasonForStatus(response.status),
-          `HTTP ${response.status} from /chat/completions: ${errText.slice(0, 500)}`,
+          `HTTP ${response.status} from /chat/completions`,
         ),
       );
     }
@@ -178,18 +178,19 @@ export const chatCompletion = (
       ),
     );
 
-    const decoded = decodeChatCompletion(json);
-    if (decoded._tag === "Left") {
-      return yield* Effect.fail(
-        fail(
-          req,
-          "bad-response",
-          "response did not match the chat/completions shape",
+    const completion = yield* Either.match(decodeChatCompletion(json), {
+      onLeft: () =>
+        Effect.fail(
+          fail(
+            req,
+            "bad-response",
+            "response did not match the chat/completions shape",
+          ),
         ),
-      );
-    }
+      onRight: Effect.succeed,
+    });
 
-    const choice = decoded.right.choices[0];
+    const choice = completion.choices[0];
     if (choice === undefined) {
       return yield* Effect.fail(
         fail(req, "bad-response", "response had no choices"),

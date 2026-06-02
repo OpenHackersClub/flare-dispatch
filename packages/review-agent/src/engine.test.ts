@@ -371,26 +371,20 @@ describe("coordinate / coordinateReview (pure — no model call)", () => {
     expect(r.findings).toHaveLength(4);
   });
 
-  it("folds previous findings in, deduping ones still re-raised this run", () => {
-    const current = mk({ path: "a.ts", startLine: 1, title: "open", level: "warning" });
-    const stillOpenInPrev = mk({ path: "a.ts", startLine: 1, title: "open", level: "warning" });
-    const onlyInPrev = mk({ path: "z.ts", startLine: 3, title: "old", level: "notice" });
-    const r = coordinateReview({
-      findings: [current],
-      previous: {
-        verdict: "comment",
-        tier: "full",
-        critical: 0,
-        warnings: 1,
-        suggestions: 1,
-        findings: [stillOpenInPrev, onlyInPrev],
-      },
+  it("is authoritative on the current run — a fixed finding clears (no carry-over)", () => {
+    // Push 1: a failure finding → request-changes.
+    const push1 = coordinateReview({
+      findings: [mk({ path: "a.ts", startLine: 1, title: "sqli", level: "failure" })],
     });
-    // current "open" (deduped against prev) + prev-only "old" = 2.
-    expect(r.findings).toHaveLength(2);
-    expect(r.warnings).toBe(1);
-    expect(r.suggestions).toBe(1);
-    expect(r.verdict).toBe("comment");
+    expect(push1.verdict).toBe("request-changes");
+    expect(push1.critical).toBe(1);
+
+    // Push 2: the author fixed it, so the reviewers no longer raise it. `coordinate`
+    // is stateless — nothing is carried over from push 1 — so the verdict clears.
+    const push2 = coordinateReview({ findings: [] });
+    expect(push2.verdict).toBe("approve");
+    expect(push2.critical).toBe(0);
+    expect(push2.findings).toHaveLength(0);
   });
 
   it("coordinate is the Effect wrapper of coordinateReview and never fails", async () => {

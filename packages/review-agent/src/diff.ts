@@ -55,3 +55,24 @@ export const stripDiffNoise = (diff: string): string => {
     .map((s) => [...s.header, ...s.body].join("\n"))
     .join("\n");
 };
+
+/**
+ * Max chars of (noise-stripped) diff sent to the model. A huge PR would
+ * otherwise blow the provider context window (every domain reviewer embeds the
+ * whole diff, and `full` tier fans out to seven of them) → the review hard-fails
+ * and the token cost multiplies. ~120 KB ≈ 30k tokens, comfortably under a
+ * typical 128k-context backend with room for the system prompt + response.
+ */
+export const MAX_DIFF_CHARS = 120_000;
+
+/**
+ * Truncate a diff to `maxChars`, appending a visible marker when it was cut so
+ * the review (and the reader of its comment) knows it was based on a prefix.
+ */
+export const capDiff = (
+  diff: string,
+  maxChars: number = MAX_DIFF_CHARS,
+): string =>
+  diff.length <= maxChars
+    ? diff
+    : `${diff.slice(0, maxChars)}\n\n…(diff truncated at ${maxChars} chars — review covers the first portion only)…`;
