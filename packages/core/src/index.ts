@@ -58,6 +58,16 @@ export {
 } from "./services/io";
 export { config, Config, type ConfigService } from "./services/config";
 export {
+  modelGateway,
+  ModelGateway,
+  ModelGatewayError,
+  type ModelGatewayService,
+  type ModelCompletionRequest,
+  type ModelCompletionResult,
+  type ModelTool,
+  type ModelToolCall,
+} from "./services/model-gateway";
+export {
   email,
   Email,
   type EmailService,

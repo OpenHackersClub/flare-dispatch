@@ -9,28 +9,26 @@
 // Earlier versions shelled out to a `review-agent` CLI baked into the run's
 // container image. That CLI does not exist in the deployed image (every exec
 // exited 127), so reviews silently failed. v3 moves the review into the run
-// body via `@flare-dispatch/review-agent`, which POSTs directly to an
-// OpenAI-compatible `/chat/completions` endpoint over `@effect/platform`
-// HttpClient. The ONE container image (infra/Dockerfile.sandbox: Node + git +
-// curl) is used only for `git` (checkout + diff); every model call happens in
-// the Worker, against a CONFIGURABLE backend resolved from CONFIG_KV + secrets.
+// body via `@flare-dispatch/review-agent`, which calls a model through the
+// `modelGateway` capability — backed by the Cloudflare Workers AI binding
+// (`env.AI`) via an AI Gateway. The binding is the auth (Workers AI is
+// account-billed), so NO model API key is configured. The ONE container image
+// (infra/Dockerfile.sandbox: Node + git + curl) is used only for `git`
+// (checkout + diff); every model call happens in the Worker, against a
+// CONFIGURABLE backend resolved from CONFIG_KV.
 //
 // --- CONFIG the operator sets (out of band) ---------------------------------
 //
-//   CONFIG_KV  pr-review.backend            "opencode" | "reasonix"  (default opencode)
-//   CONFIG_KV  pr-review.prompt             (optional) override the per-domain reviewer system prompt
-//   CONFIG_KV  pr-review.opencode.base_url  AI Gateway OpenAI-compat endpoint
-//   CONFIG_KV  pr-review.opencode.model     provider-named model id (e.g. anthropic/claude-3-5-sonnet)
-//   CONFIG_KV  pr-review.opencode.mode      "tools" | "json"  (default "tools")
-//   secret     OPENCODE_API_KEY             (or shared MODEL_API_KEY)
-//   CONFIG_KV  pr-review.reasonix.base_url  AI Gateway OpenAI-compat endpoint
-//   CONFIG_KV  pr-review.reasonix.model     provider-named model id (e.g. deepseek/deepseek-chat)
-//   CONFIG_KV  pr-review.reasonix.mode      "tools" | "json"  (default "json" — DeepSeek ignores forced tool-calls)
-//   secret     REASONIX_API_KEY
+//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix"  (default opencode)
+//   CONFIG_KV  pr-review.prompt          (optional) override the per-domain reviewer system prompt
+//   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
+//   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
+//   CONFIG_KV  pr-review.reasonix.model  bare Workers AI model id (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b)
+//   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
 //
-// ("secret" = a CONFIG_KV entry — the `loadSecrets` store, per wrangler.jsonc.)
-// A "tools"-mode backend that returns no tool_calls auto-retries once in "json"
-// mode, so a provider that silently drops tool-calling still produces a review.
+// No API key: the Workers AI binding is the auth. A "tools"-mode backend that
+// returns no tool calls auto-retries once in "json" mode, so a model that
+// silently drops tool-calling still produces a review.
 //
 // Mode: Webhook mode — fires on every pull_request push, zero GHA minutes.
 // DSL:  see specs/03-dsl.md (uses `config` + `github`).
@@ -53,7 +51,6 @@ import {
   capDiff,
   coordinate as engineCoordinate,
   type Finding,
-  makeModelHttpLayer,
   type ModelCallFailed,
   resolveBackend,
   reviewDomain,
@@ -197,17 +194,14 @@ const reviewBody = (input: RunInput) =>
     const tier = yield* step("classify-risk", () => riskTier({ diff }));
     const plan = planForTier(tier);
 
-    // 4. Resolve the configurable backend (base url + model + api key) from
-    //    CONFIG_KV + secrets, then build the provider-agnostic LanguageModel
-    //    Layer. A misconfigured backend fails here → the error boundary posts
-    //    a PR comment naming the missing key.
+    // 4. Resolve the configurable backend (model id + output mode) from
+    //    CONFIG_KV. No API key — the model is called through the `modelGateway`
+    //    capability (Workers AI binding via an AI Gateway), which the runtime
+    //    provides ambiently. A misconfigured backend fails here → the error
+    //    boundary posts a PR comment naming the missing key.
     const resolved = yield* step("resolve-backend", () =>
       resolveBackend((key) => config.get(key)),
     );
-    // The engine POSTs directly to `${baseUrl}/chat/completions`; it only needs
-    // an `HttpClient` Layer (the per-backend baseUrl / apiKey / model travel on
-    // each call). The run provides the platform fetch client once.
-    const modelLayer = makeModelHttpLayer();
 
     // 5. The per-domain reviewer system prompt — operator override or the
     //    engine's generic default (never a project-specific rubric here).
@@ -216,8 +210,9 @@ const reviewBody = (input: RunInput) =>
     );
 
     // 6. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
-    //    agents this tier calls for. Each calls the LanguageModel via the
-    //    engine; findings are Schema-validated tool-call output.
+    //    agents this tier calls for. Each calls the model via the `modelGateway`
+    //    capability (provided by the runtime, like `config`/`sandbox`); findings
+    //    are Schema-validated tool-call / json output.
     const fanned = yield* step("review", () =>
       Effect.forEach(
         plan.agents,
@@ -226,15 +221,13 @@ const reviewBody = (input: RunInput) =>
             agent,
             diff,
             tier: plan.tier,
-            baseUrl: resolved.baseUrl,
-            apiKey: resolved.apiKey,
             model: resolved.model,
             backend: resolved.backend,
             mode: resolved.mode,
             ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
           }),
         { concurrency: plan.agents.length },
-      ).pipe(Effect.provide(modelLayer)),
+      ),
     );
     const allFindings: ReadonlyArray<Finding> = fanned.flat();
 

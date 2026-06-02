@@ -36,9 +36,11 @@ import {
 import {
   BrowserDeferred,
   ConfigDeferred,
+  ModelGatewayDeferred,
   OidcDeferred,
 } from "./deferred";
 import { makeGithubLive } from "./github-live";
+import { type AiBinding, makeModelGatewayLive } from "./model-gateway-cf";
 import { makeOidcLive, type OidcLiveConfig } from "./oidc-live";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeIOLive } from "./io-live";
@@ -118,6 +120,21 @@ export type CFRuntimeLiveOptions = {
    * gate on the run's verdict.
    */
   readonly email?: EmailCloudflareConfig;
+  /**
+   * Cloudflare Workers AI binding (`env.AI`) for the `modelGateway` capability —
+   * the model backend the `pr-review` engine calls. The binding is the auth
+   * (Workers AI is account-billed), so no model API key is configured. `undefined`
+   * (no `"ai"` binding on this deploy) selects the dying `ModelGateway` stub: a
+   * run that calls a model fails loudly; non-model runs never touch the Tag.
+   */
+  readonly ai?: AiBinding;
+  /**
+   * Optional AI Gateway id (`AI_GATEWAY_ID` var) the `modelGateway` routes
+   * Workers AI calls through — for caching / rate-limiting / observability.
+   * `undefined`/empty → call Workers AI directly (no gateway). Only used when
+   * `ai` is present.
+   */
+  readonly aiGatewayId?: string;
 };
 
 /**
@@ -177,6 +194,18 @@ export const makeCFRuntimeLive = (
   // configured; absent, the no-op Layer logs and skips (notification must never
   // fail a run).
   const email = makeEmailCloudflareLive(opts.email);
+  // `ModelGateway` is live when the Workers AI `"ai"` binding is present; absent,
+  // the dying stub keeps a model-calling run from silently mis-behaving. The
+  // binding is the auth (account-billed) — no model API key is configured.
+  const modelGateway =
+    opts.ai === undefined
+      ? ModelGatewayDeferred
+      : makeModelGatewayLive(
+          opts.ai,
+          opts.aiGatewayId !== undefined && opts.aiGatewayId.length > 0
+            ? opts.aiGatewayId
+            : undefined,
+        );
   // `Github` write surface (`pullReview`) is live when App credentials are
   // present — it reuses the same `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY`
   // the `Checks` capability carries. Absent, `pullReview` is a logged no-op
@@ -202,6 +231,7 @@ export const makeCFRuntimeLive = (
     checks,
     email,
     github,
+    modelGateway,
     oidcLayer,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.

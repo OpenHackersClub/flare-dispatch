@@ -15,7 +15,33 @@
   // exposePort preview-URL host. Requires a wildcard-routed custom domain
   // (workers.dev can't route <port>-<id>.<host>): *.fd-sandbox.numu.gg → this
   // worker, with a proxied wildcard DNS record in the numu.gg zone.
-  "vars": { "SANDBOX_PREVIEW_HOSTNAME": "fd-sandbox.numu.gg" },
+  "vars": {
+    "SANDBOX_PREVIEW_HOSTNAME": "fd-sandbox.numu.gg",
+    "CLOUDFLARE_ACCOUNT_ID": "5c9c9e6f153b3aa62c715a6d4af3c9ef",
+    // EMAIL_FROM — verified Email Routing sender for the completion-notify
+    // email. numu.gg has Email Routing enabled (status: unlocked).
+    "EMAIL_FROM": "flare-dispatch@numu.gg",
+    "EMAIL_FROM_NAME": "FlareDispatch",
+    // Allowlist guard — a dispatch's notify.emails recipient not on this list
+    // is rejected before the provider call, on top of Cloudflare's own
+    // verified-destination enforcement. The two demo recipients.
+    "EMAIL_ALLOWED_RECIPIENTS": "jarvis@fractalbox.dev,numu@fractalbox.dev",
+    // AI Gateway the `modelGateway` routes Workers AI calls through (caching /
+    // rate-limiting / observability). The `pr-review` engine's model backend.
+    "AI_GATEWAY_ID": "numu-staging"
+  },
+
+  // Workers AI binding — backs the `modelGateway` capability the `pr-review`
+  // engine calls. The binding is the auth (account-billed); no model API key.
+  // Routed through the `AI_GATEWAY_ID` gateway above.
+  "ai": { "binding": "AI" },
+
+  // Email Routing `send_email` binding — backs the `email` capability + the
+  // Workflow's completion-notify. Delivers only to verified Email Routing
+  // destination addresses on the numu.gg zone.
+  "send_email": [
+    { "name": "SEND_EMAIL" }
+  ],
 
   // Browser Rendering binding — backs `GET /v1/browser/cdp`, the CDP proxy the
   // cdp-acceptance container connects to. CF Browser Rendering CDP is only

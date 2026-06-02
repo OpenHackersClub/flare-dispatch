@@ -3,9 +3,8 @@
 // `Finding` + `ReviewOutput` are the wire contract between the engine and the
 // `pr-review` run. They MUST stay byte-for-byte identical to the shapes the run
 // declares (runs/pr-review.ts) — the run's `outputs` schema is `ReviewOutput`,
-// and `io.priorExecution` decodes a previous execution's stored output against
-// it. A drift here silently breaks re-review diffing, so both sides import this
-// one definition.
+// rendered into the check-run summary + annotations. A drift here silently
+// breaks the check output, so both sides import this one definition.
 
 import { Schema } from "effect";
 

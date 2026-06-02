@@ -14,37 +14,39 @@
 //                      model call (the reviewers already did the work), so it
 //                      can never fail with `StructuredOutputInvalid`.
 //
-// --- Transport (reviewDomain only): direct /chat/completions over HttpClient -
+// --- Transport (reviewDomain only): the `modelGateway` capability ------------
 //
-// `reviewDomain`'s model calls go through a direct HTTP POST to
-// `${baseUrl}/chat/completions` (see chat.ts) using `@effect/platform`
-// `HttpClient` — the run provides `FetchHttpClient.layer`. We do NOT use
-// `@effect/ai-openai`'s `OpenAiLanguageModel`, which only hits the OpenAI
-// `/responses` API; the target Cloudflare AI Gateway compat endpoint only
-// supports `/chat/completions`.
+// `reviewDomain`'s model calls go through the `modelGateway` capability
+// (`@flare-dispatch/core`), which the runtime backs with the Cloudflare Workers
+// AI binding (`env.AI`) routed through an AI Gateway. The binding is the auth
+// (Workers AI is account-billed), so NO model API key travels with the request —
+// the engine carries no base url and no secret. The engine just yields the
+// `ModelGateway` Tag, the way a run yields `config` / `sandbox`, and the runtime
+// provides it.
 //
 // --- reviewDomain output modes (per backend, resolved from CONFIG_KV) --------
 //
-// "tools" mode sends `tools` + `tool_choice: "required"` and reads
-// `choices[0].message.tool_calls` (arguments are a JSON string we parse +
-// Schema-decode). Reasoning models (e.g. DeepSeek-R1 distills routed through the
-// AI Gateway) return NO tool_calls and emit `<think>…</think>` prose in
-// `message.content` instead, so for those "json" mode sends NO tools and asks
-// for a strict JSON object, strips `<think>`/code fences, then `JSON.parse` +
+// "tools" mode sends a `report` tool and reads the model's `toolCalls`
+// (Workers AI returns each tool call's `arguments` as a parsed OBJECT, though
+// the engine also tolerates the OpenAI-style JSON STRING). Reasoning models
+// (e.g. DeepSeek-R1 distills) return NO tool calls and emit `<think>…</think>`
+// prose in `text` instead, so for those "json" mode sends NO tools and asks for
+// a strict JSON object, strips `<think>`/code fences, then `JSON.parse` +
 // Schema-decodes against the same `Finding[]` schema. If "tools" mode comes back
-// with zero tool_calls, the engine auto-falls-back to a single "json" retry.
+// with zero tool calls, the engine auto-falls-back to a single "json" retry.
 //
 // `systemPrompt` is always SUPPLIED by the caller; this module ships only a
 // generic default instruction (no project-specific rubric).
 
-import { HttpClient } from "@effect/platform";
+import {
+  modelGateway,
+  ModelGateway,
+  ModelGatewayError,
+  type ModelTool,
+  type ModelToolCall,
+} from "@flare-dispatch/core";
 import { Effect, Either, JSONSchema, ParseResult, Schema } from "effect";
 import { type ReviewMode } from "./backend.js";
-import {
-  type ChatTool,
-  chatCompletion,
-  type ChatToolCall,
-} from "./chat.js";
 import { ModelCallFailed, StructuredOutputInvalid } from "./errors.js";
 import { extractJsonText } from "./json-extract.js";
 import {
@@ -87,21 +89,42 @@ valid). Do not respond with prose — the tool call IS your output.`;
 // ---------------------------------------------------------------------------
 // Shared helpers.
 
+type StructuredCtx = {
+  readonly backend: string;
+  readonly model: string;
+  readonly surface: "review" | "coordinate";
+};
+
+/** Schema-decode an already-parsed value, mapping a mismatch to `StructuredOutputInvalid`. */
+const decodeAgainst = <A>(
+  value: unknown,
+  decode: (u: unknown) => Either.Either<A, ParseResult.ParseError>,
+  ctx: StructuredCtx,
+  excerptText: string,
+): Effect.Effect<A, StructuredOutputInvalid> =>
+  Either.match(decode(value), {
+    onLeft: (err) =>
+      Effect.fail(
+        new StructuredOutputInvalid({
+          ...ctx,
+          reason: "schema-mismatch",
+          excerpt: excerpt(excerptText),
+          message: `value did not match the expected schema — ${ParseResult.TreeFormatter.formatErrorSync(err)}`,
+        }),
+      ),
+    onRight: (a) => Effect.succeed(a),
+  });
+
 /**
  * Strip `<think>`/code fences from text, isolate the JSON value, `JSON.parse`,
  * then Schema-decode. Each failure stage maps to a precise
  * `StructuredOutputInvalid.reason` so the run's PR comment can name the cause.
- * Used for both json-mode `message.content` AND a tool call's `arguments`
- * string (which is already JSON, but stripping is harmless and robust).
+ * The json-mode path (the model's free `text`).
  */
 const parseStructured = <A>(
   text: string,
   decode: (u: unknown) => Either.Either<A, ParseResult.ParseError>,
-  ctx: {
-    readonly backend: string;
-    readonly model: string;
-    readonly surface: "review" | "coordinate";
-  },
+  ctx: StructuredCtx,
 ): Effect.Effect<A, StructuredOutputInvalid> =>
   Effect.gen(function* () {
     const candidate = extractJsonText(text);
@@ -128,19 +151,23 @@ const parseStructured = <A>(
         }),
     });
 
-    return yield* Either.match(decode(parsed), {
-      onLeft: (err) =>
-        Effect.fail(
-          new StructuredOutputInvalid({
-            ...ctx,
-            reason: "schema-mismatch",
-            excerpt: excerpt(candidate),
-            message: `JSON did not match the expected schema — ${ParseResult.TreeFormatter.formatErrorSync(err)}`,
-          }),
-        ),
-      onRight: (a) => Effect.succeed(a),
-    });
+    return yield* decodeAgainst(parsed, decode, ctx, candidate);
   });
+
+/**
+ * Decode a tool call's `arguments` against the schema. Workers AI returns a
+ * parsed OBJECT; OpenAI-style backends return a JSON STRING. Handle both: a
+ * string is `JSON.parse`d (via the text path, which also strips any stray
+ * fences); an object is decoded directly.
+ */
+const parseToolArguments = <A>(
+  args: unknown,
+  decode: (u: unknown) => Either.Either<A, ParseResult.ParseError>,
+  ctx: StructuredCtx,
+): Effect.Effect<A, StructuredOutputInvalid> =>
+  typeof args === "string"
+    ? parseStructured(args, decode, ctx)
+    : decodeAgainst(args, decode, ctx, JSON.stringify(args ?? null));
 
 /**
  * Pick the tool call to read: the one matching `name`, else the first present
@@ -149,9 +176,9 @@ const parseStructured = <A>(
  * that the caller turns into `bad-response` → the json auto-fallback.
  */
 const firstToolCall = (
-  calls: ReadonlyArray<ChatToolCall>,
+  calls: ReadonlyArray<ModelToolCall>,
   name: string,
-): ChatToolCall | undefined =>
+): ModelToolCall | undefined =>
   calls.length === 0 ? undefined : (calls.find((c) => c.name === name) ?? calls[0]);
 
 // ---------------------------------------------------------------------------
@@ -163,15 +190,12 @@ const DomainOutput = Schema.Struct({
 });
 const decodeDomainJson = Schema.decodeUnknownEither(DomainOutput);
 
-/** The `report` tool sent in the chat/completions `tools` array (tools mode). */
-const ReportTool: ChatTool = {
-  type: "function",
-  function: {
-    name: "report",
-    description:
-      "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.",
-    parameters: toolParametersSchema(DomainOutput),
-  },
+/** The `report` tool sent to the model in tools mode. */
+const ReportTool: ModelTool = {
+  name: "report",
+  description:
+    "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.",
+  parameters: toolParametersSchema(DomainOutput),
 };
 
 export type ReviewDomainInput = {
@@ -183,32 +207,58 @@ export type ReviewDomainInput = {
   readonly systemPrompt?: string;
   /** The risk tier — passed to the prompt for context. */
   readonly tier: Tier;
-  /** The OpenAI-compatible base URL (`…/<gateway>/compat`). */
-  readonly baseUrl: string;
-  /** The API key (Bearer). */
-  readonly apiKey: string;
-  /** The model id. */
+  /** The model id (a bare `@cf/...` for the Workers AI binding). */
   readonly model: string;
   /** The backend name (for error reporting). */
   readonly backend: string;
-  /** Output mode — "tools" (default) forces a tool call; "json" parses text. */
+  /** Output mode — "tools" (default) sends a tool; "json" parses text. */
   readonly mode?: ReviewMode;
 };
 
 /**
+ * Call the model via the `modelGateway` capability, mapping its provider-agnostic
+ * `ModelGatewayError` onto the engine's `ModelCallFailed` (preserving the
+ * `reason` family the run's error boundary already renders).
+ */
+const complete = (
+  input: ReviewDomainInput,
+  mode: "tools" | "json",
+) =>
+  modelGateway
+    .complete({
+      model: input.model,
+      system: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
+      user: renderDomainUserMessage(input, mode),
+      maxTokens: REVIEW_MAX_TOKENS,
+      ...(mode === "tools" ? { tools: [ReportTool] } : {}),
+    })
+    .pipe(
+      Effect.catchTag("ModelGatewayError", (e) =>
+        Effect.fail(
+          new ModelCallFailed({
+            backend: input.backend,
+            model: e.model,
+            reason: e.reason,
+            message: e.message,
+          }),
+        ),
+      ),
+    );
+
+/**
  * Run one domain reviewer. Returns its findings, Schema-validated.
  *
- * In "tools" mode the model is forced to call the `report` tool; if it returns
- * zero tool calls (a provider that ignores `tool_choice`), the engine
+ * In "tools" mode the model is asked to call the `report` tool; if it returns
+ * zero tool calls (a provider that ignores tool choice), the engine
  * auto-falls-back to a single "json" retry. In "json" mode it parses a strict
- * JSON object from `message.content`.
+ * JSON object from the model's free text.
  */
 export const reviewDomain = (
   input: ReviewDomainInput,
 ): Effect.Effect<
   ReadonlyArray<Finding>,
   ModelCallFailed | StructuredOutputInvalid,
-  HttpClient.HttpClient
+  ModelGateway
 > =>
   (input.mode ?? "tools") === "json"
     ? jsonReviewDomain(input)
@@ -221,25 +271,16 @@ export const reviewDomain = (
         ),
       );
 
-/** "tools" mode — force the `report` tool call and Schema-decode its args. */
+/** "tools" mode — ask for the `report` tool call and Schema-decode its args. */
 const toolsReviewDomain = (
   input: ReviewDomainInput,
 ): Effect.Effect<
   ReadonlyArray<Finding>,
   ModelCallFailed | StructuredOutputInvalid,
-  HttpClient.HttpClient
+  ModelGateway
 > =>
   Effect.gen(function* () {
-    const result = yield* chatCompletion({
-      baseUrl: input.baseUrl,
-      apiKey: input.apiKey,
-      model: input.model,
-      backend: input.backend,
-      systemPrompt: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
-      userMessage: renderDomainUserMessage(input, "tools"),
-      maxTokens: REVIEW_MAX_TOKENS,
-      tools: [ReportTool],
-    });
+    const result = yield* complete(input, "tools");
 
     const call = firstToolCall(result.toolCalls, "report");
     if (call === undefined) {
@@ -251,12 +292,14 @@ const toolsReviewDomain = (
           model: input.model,
           reason: "bad-response",
           message:
-            "model returned no `report` tool call despite tool_choice=required; check provider tool support",
+            "model returned no `report` tool call; check provider tool support",
         }),
       );
     }
 
-    const parsed = yield* parseStructured(call.arguments, decodeDomainJson, {
+    // Workers AI returns tool args as an OBJECT; OpenAI-style as a JSON STRING.
+    // `parseToolArguments` handles both before Schema-decode.
+    const parsed = yield* parseToolArguments(call.arguments, decodeDomainJson, {
       backend: input.backend,
       model: input.model,
       surface: "review",
@@ -264,26 +307,18 @@ const toolsReviewDomain = (
     return parsed.findings;
   });
 
-/** "json" mode — no tools; parse a strict JSON object from `message.content`. */
+/** "json" mode — no tools; parse a strict JSON object from the model's text. */
 const jsonReviewDomain = (
   input: ReviewDomainInput,
 ): Effect.Effect<
   ReadonlyArray<Finding>,
   ModelCallFailed | StructuredOutputInvalid,
-  HttpClient.HttpClient
+  ModelGateway
 > =>
   Effect.gen(function* () {
-    const result = yield* chatCompletion({
-      baseUrl: input.baseUrl,
-      apiKey: input.apiKey,
-      model: input.model,
-      backend: input.backend,
-      systemPrompt: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
-      userMessage: renderDomainUserMessage(input, "json"),
-      maxTokens: REVIEW_MAX_TOKENS,
-    });
+    const result = yield* complete(input, "json");
 
-    const parsed = yield* parseStructured(result.content, decodeDomainJson, {
+    const parsed = yield* parseStructured(result.text, decodeDomainJson, {
       backend: input.backend,
       model: input.model,
       surface: "review",

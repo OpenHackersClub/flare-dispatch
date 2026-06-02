@@ -8,8 +8,8 @@ import { Schema } from "effect";
 
 /**
  * The upstream model call failed or returned an unusable response.
- * Provider-agnostic — works for any OpenAI-compatible `/chat/completions`
- * endpoint (the AI Gateway compat endpoint, Workers AI, a BYOK gateway, …).
+ * Provider-agnostic — the engine maps the `modelGateway` capability's
+ * `ModelGatewayError` (Workers AI / any model backend) onto this.
  */
 export class ModelCallFailed extends Schema.TaggedError<ModelCallFailed>()(
   "ModelCallFailed",

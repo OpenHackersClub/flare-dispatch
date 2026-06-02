@@ -102,7 +102,7 @@ describe("pr-review", () => {
         expect(handles.github.pullReviewCalls).toHaveLength(1);
         const body = handles.github.pullReviewCalls[0]!.body;
         expect(body).toContain("misconfigured");
-        expect(body).toContain("pr-review.opencode.base_url");
+        expect(body).toContain("pr-review.opencode.model");
       }).pipe(Effect.provide(layer));
     },
   );

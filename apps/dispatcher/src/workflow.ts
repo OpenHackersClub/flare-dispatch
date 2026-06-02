@@ -238,6 +238,13 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       configKv: this.env.CONFIG_KV,
       browser: resolveBrowserConfig(this.env),
       email: resolveEmailConfig(this.env),
+      // Workers AI binding backs the `modelGateway` capability (the `pr-review`
+      // engine's model backend). The binding is the auth — no model API key.
+      // `AI_GATEWAY_ID`, when set, routes the calls through an AI Gateway.
+      ...(this.env.AI !== undefined ? { ai: this.env.AI } : {}),
+      ...(this.env.AI_GATEWAY_ID !== undefined
+        ? { aiGatewayId: this.env.AI_GATEWAY_ID }
+        : {}),
       sandboxPreviewHostname: this.env.SANDBOX_PREVIEW_HOSTNAME,
       // Wire the live OIDC signing Layer when both the JWK + issuer URL are
       // configured. Subject defaults to `<run>:<execution-id>` so an IAM

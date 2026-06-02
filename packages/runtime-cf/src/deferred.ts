@@ -21,6 +21,9 @@ import {
   type ConfigService,
   Github,
   type GithubService,
+  ModelGateway,
+  ModelGatewayError,
+  type ModelGatewayService,
   Oidc,
   OidcSigningFailed,
   type OidcService,
@@ -85,6 +88,28 @@ export const GithubDeferred: Layer.Layer<Github> = Layer.succeed(
     pullReview: ({ repo, pr }) =>
       Effect.logInfo(
         `github.pullReview skipped (no GitHub App credentials) — PR comment on ${repo}#${pr} not posted`,
+      ),
+  }))(),
+);
+
+/**
+ * ModelGateway — the fallback when a deploy has no Workers AI `"ai"` binding.
+ * The Tag is always supplied so a model-calling run can be tested against the
+ * `ModelGatewayFake`; a live deploy without the binding fails the run with a
+ * typed `ModelGatewayError` (`reason: "unknown"`) rather than silently
+ * mis-behaving. Wire `makeModelGatewayLive(env.AI, gatewayId)` when the binding
+ * is present. Only model-calling runs (`pr-review`) touch the Tag.
+ */
+export const ModelGatewayDeferred: Layer.Layer<ModelGateway> = Layer.succeed(
+  ModelGateway,
+  ((): ModelGatewayService => ({
+    complete: ({ model }) =>
+      Effect.fail(
+        new ModelGatewayError({
+          model,
+          reason: "unknown",
+          message: "modelGateway.complete: no Workers AI (`AI`) binding on this deploy",
+        }),
       ),
   }))(),
 );
