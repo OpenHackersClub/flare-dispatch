@@ -110,6 +110,25 @@ const PlaywrightDemoOutput = Schema.Struct({
 /** Default `exec` timeout when the caller omits `timeoutSec`. */
 const DEFAULT_TIMEOUT_SEC = 1200;
 
+/**
+ * Headroom added to the `exec` timeout to derive the Workflow STEP timeout.
+ *
+ * The `run-playwright` step wraps a `sandbox.exec` that legitimately runs for
+ * many minutes — `playwright install --with-deps chromium` plus a slowMo'd,
+ * video-recording walkthrough. CF Workflows caps every `step.do` at a 10-minute
+ * default unless a `timeout` is set (see runtime-cf `buildStepConfig`), so
+ * without an explicit step timeout the platform hard-kills the exec at 600s with
+ * `WorkflowTimeoutError`, retries it to exhaustion, and the run never produces
+ * output. We give the STEP a timeout slightly longer than the EXEC's so the
+ * sandbox's own deadline fires first (yielding a clean `ExecTimeout`/`ExecResult`
+ * the run can report) instead of an opaque platform kill. Capped below
+ * `maxDurationSec` so the step can never outlive the run's wall-clock ceiling.
+ */
+const STEP_TIMEOUT_HEADROOM_SEC = 120;
+
+/** Run wall-clock ceiling — also the upper bound on any single step's timeout. */
+const MAX_DURATION_SEC = 1800;
+
 export const playwrightDemo = defineRun({
   name: "playwright-demo",
   version: "1.0.0",
@@ -123,7 +142,7 @@ export const playwrightDemo = defineRun({
     // dominate on a cold container, and a flaky deploy can stretch the
     // first navigation. No Browser Rendering slot is reserved — see
     // header note 1.
-    maxDurationSec: 1800,
+    maxDurationSec: MAX_DURATION_SEC,
   },
 
   run: (input) =>
@@ -149,14 +168,28 @@ export const playwrightDemo = defineRun({
       // secrets with the caller-provided `env` (non-credential knobs
       // like `DEMO_RUN_ID`); secrets win on key collision so a typo in
       // `env` cannot shadow the real credential.
-      const exec = yield* step("run-playwright", () =>
-        sandbox.exec({
-          cwd: dir,
-          container,
-          env: { ...(input.env ?? {}), ...secretEnv },
-          command: input.command,
-          timeoutSec: input.timeoutSec ?? DEFAULT_TIMEOUT_SEC,
-        }),
+      //
+      // The step carries an EXPLICIT timeout (see `STEP_TIMEOUT_HEADROOM_SEC`)
+      // so the multi-minute command isn't hard-killed at CF's 10-minute step
+      // default. `retries: 0` because a demo that fails or times out should
+      // report that once — not be re-run five times over an hour (which is
+      // exactly what the bare default produced).
+      const execTimeoutSec = input.timeoutSec ?? DEFAULT_TIMEOUT_SEC;
+      const stepTimeoutSec = Math.min(
+        execTimeoutSec + STEP_TIMEOUT_HEADROOM_SEC,
+        MAX_DURATION_SEC,
+      );
+      const exec = yield* step(
+        "run-playwright",
+        () =>
+          sandbox.exec({
+            cwd: dir,
+            container,
+            env: { ...(input.env ?? {}), ...secretEnv },
+            command: input.command,
+            timeoutSec: execTimeoutSec,
+          }),
+        { timeoutSec: stepTimeoutSec, retries: 0 },
       );
 
       // upload-video — promote the artifact directory (video.webm +
