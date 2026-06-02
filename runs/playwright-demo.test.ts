@@ -169,3 +169,35 @@ describe("playwright-demo source determinism", () => {
     }),
   );
 });
+
+// --- Source guard: the long `run-playwright` step has an EXPLICIT timeout -----
+//
+// Regression guard for the demo-on-merge failure: without a step-level
+// `timeoutSec`, CF Workflows hard-kills the multi-minute exec at its 600s
+// default (`WorkflowTimeoutError`) and retries it to exhaustion. The
+// StepOpts → CF config mapping is unit-tested in `step-runner-cf.test.ts`; the
+// inline test runner doesn't surface per-step opts, so we assert at the source
+// level that the step is invoked with a timeout opt and `retries: 0`.
+describe("playwright-demo step timeout", () => {
+  it.effect("run-playwright passes a step-level timeoutSec + retries: 0", () =>
+    Effect.sync(() => {
+      const src = readFileSync(
+        fileURLToPath(new URL("./playwright-demo.ts", import.meta.url)),
+        "utf8",
+      );
+      // The step timeout is derived from the exec timeout plus headroom, capped
+      // at the run's wall-clock ceiling — so it scales with `input.timeoutSec`
+      // and can never outlive the run.
+      expect(src).toMatch(
+        /Math\.min\(\s*execTimeoutSec \+ STEP_TIMEOUT_HEADROOM_SEC,\s*MAX_DURATION_SEC,?\s*\)/,
+      );
+      // `run-playwright` is invoked with a step-opts literal carrying that
+      // timeout and `retries: 0` — `retries` appears nowhere else in the run,
+      // so this uniquely pins the long step's config.
+      expect(src).toContain('step(\n        "run-playwright",');
+      expect(src).toMatch(
+        /\{\s*timeoutSec:\s*stepTimeoutSec,\s*retries:\s*0\s*\}/,
+      );
+    }),
+  );
+});
