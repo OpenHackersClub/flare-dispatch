@@ -63,4 +63,15 @@ describe("defineRun", () => {
       defineRun({ ...validSpec, limits: { maxDurationSec } }),
     ).toThrow(/maxDurationSec/);
   });
+
+  describe("sandboxImage", () => {
+    it("defaults to undefined (lean) when omitted", () => {
+      expect(defineRun(validSpec).sandboxImage).toBeUndefined();
+    });
+
+    it("carries an explicit browser selector through", () => {
+      const run = defineRun({ ...validSpec, sandboxImage: "browser" });
+      expect(run.sandboxImage).toBe("browser");
+    });
+  });
 });

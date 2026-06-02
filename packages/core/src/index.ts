@@ -16,6 +16,7 @@ export {
   type Run,
   type RunSpec,
   type RunLimits,
+  type SandboxImage,
   type TriggerSpec,
   type ScheduleSpec,
   type ScheduleContext,

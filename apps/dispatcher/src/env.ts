@@ -18,11 +18,23 @@ export interface Env {
   readonly RUNS_WORKFLOW: Workflow;
 
   /**
-   * Container binding — one sandbox instance per execution. Typed as a
-   * `DurableObjectNamespace<Sandbox>` so `getSandbox(env.RUNS_SANDBOX, id)` in
-   * `@flare-dispatch/runtime-cf` resolves the typed sandbox RPC surface.
+   * Container binding — the LEAN sandbox image, one instance per execution.
+   * Typed as a `DurableObjectNamespace<Sandbox>` so `getSandbox(env.RUNS_SANDBOX,
+   * id)` in `@flare-dispatch/runtime-cf` resolves the typed sandbox RPC surface.
+   * The default for every run except those declaring `sandboxImage: "browser"`.
    */
   readonly RUNS_SANDBOX: DurableObjectNamespace<Sandbox>;
+
+  /**
+   * Container binding — the chromium-baked sandbox image (built from the same
+   * Dockerfile with `WITH_BROWSER=true`). Runs declaring `sandboxImage:
+   * "browser"` (e.g. `playwright-demo`, which launches Playwright's own chromium
+   * inside the container) route here. Optional: a deploy that omits the second
+   * container degrades gracefully — `RunWorkflow` falls back to `RUNS_SANDBOX`,
+   * so a browser run still executes (it just downloads chromium at runtime, the
+   * pre-#66 behaviour) instead of hard-failing.
+   */
+  readonly RUNS_SANDBOX_BROWSER?: DurableObjectNamespace<Sandbox>;
 
   /** R2 bucket — `logs/<execution-id>/<step>.ndjson` + `artifacts/...`. */
   readonly RUNS_STORAGE: R2Bucket;

@@ -53,10 +53,33 @@ export type ScheduleSpec<I> = {
   readonly inputs: (ctx: ScheduleContext) => I;
 };
 
+/**
+ * Which baked sandbox image a run executes in. The dispatcher maps this to a
+ * deployed Container binding (`RUNS_SANDBOX` vs `RUNS_SANDBOX_BROWSER`) — see
+ * apps/dispatcher/src/workflow.ts.
+ *
+ *   - `"lean"` (default) — the base sandbox image. Correct for the majority of
+ *     runs AND for every `limits.requiresBrowser: true` run: those dial CF
+ *     Browser Rendering over CDP (they connect *out* to a CF-managed browser),
+ *     so they need NO chromium baked in the image.
+ *   - `"browser"` — the image with `chromium-headless-shell` baked in. Only for
+ *     runs that launch Playwright's OWN chromium *inside* the sandbox (e.g.
+ *     `playwright-demo`, which is `requiresBrowser: false`).
+ *
+ * NOTE this axis is deliberately distinct from `limits.requiresBrowser`. They
+ * answer different questions: `requiresBrowser` = "reserve a CF Browser
+ * Rendering slot"; `sandboxImage` = "which container image to boot". A run can
+ * be `requiresBrowser: true, sandboxImage: "lean"` (CDP, no in-image browser)
+ * or `requiresBrowser: false, sandboxImage: "browser"` (in-sandbox Playwright).
+ */
+export type SandboxImage = "lean" | "browser";
+
 export type RunSpec<I, O, IEnc, OEnc> = {
   readonly name: string;
   readonly version: string;
   readonly image?: string;
+  /** Baked sandbox image to route this run to. Default `"lean"`. */
+  readonly sandboxImage?: SandboxImage;
   readonly inputs: Schema.Schema<I, IEnc>;
   readonly outputs: Schema.Schema<O, OEnc>;
   readonly limits: RunLimits;

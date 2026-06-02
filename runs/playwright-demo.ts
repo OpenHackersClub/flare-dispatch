@@ -133,6 +133,15 @@ export const playwrightDemo = defineRun({
   name: "playwright-demo",
   version: "1.0.0",
 
+  // Routes to the chromium-baked sandbox image (RUNS_SANDBOX_BROWSER). Unlike
+  // `cdp-acceptance` / `product-demo` (which dial CF Browser Rendering over CDP
+  // and stay on the lean image), this run launches Playwright's OWN bundled
+  // chromium INSIDE the container — so it needs the browser pre-baked. This is
+  // why it's `sandboxImage: "browser"` yet `requiresBrowser` is absent (false):
+  // no CF Browser Rendering slot, but a real in-image browser. See define-run.ts
+  // § SandboxImage and the routing in apps/dispatcher/src/workflow.ts.
+  sandboxImage: "browser",
+
   inputs: PlaywrightDemoInput,
   outputs: PlaywrightDemoOutput,
 
