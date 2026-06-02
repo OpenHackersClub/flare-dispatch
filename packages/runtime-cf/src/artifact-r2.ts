@@ -55,6 +55,7 @@ import {
   type ArtifactService,
 } from "@flare-dispatch/core";
 import { containerTarballPath, splitTarPath } from "./artifact-tar-path";
+import { putStream } from "./r2-put-stream";
 
 /** R2 key prefix for per-execution artifacts. */
 const artifactKey = (executionId: string, name: string): string =>
@@ -88,8 +89,8 @@ export const makeR2ArtifactLive = (
 
           if (container !== undefined) {
             // Container-tar mode — tar the on-disk `path` inside the sandbox
-            // and stream the archive into R2. Mirrors the cache-r2.ts pattern
-            // (`tar czf` + `readFileStream` + buffer + `bucket.put`).
+            // and STREAM the archive into R2 (never buffer it whole). Mirrors
+            // the cache-r2.ts pattern (`tar czf` + `readFile` + `putStream`).
             if (ns === undefined) {
               throw new Error(
                 "artifact.upload({ container }) called but no Sandbox namespace was wired into R2ArtifactLive — see makeR2ArtifactLive's `ns` argument",
@@ -115,17 +116,13 @@ export const makeR2ArtifactLive = (
                 `tar czf exited ${tar.exitCode}: ${tar.stderr.trim()}`,
               );
             }
-            // R2 `put` requires a known length, so the archive is buffered.
-            // Container-emitted artifacts (a Playwright outputDir, a built
-            // site) are typically a few MB; well within a Worker's memory
-            // budget. For genuinely large artifacts a future revision can
-            // chunk via `bucket.createMultipartUpload`.
-            const stream = await box.readFileStream(tarballPath);
-            const body = await new Response(stream).arrayBuffer();
-            await bucket.put(key, body, {
-              httpMetadata: {
-                contentType: contentType ?? "application/gzip",
-              },
+            // `encoding:'none'` returns the raw stream AND the byte length in
+            // one RPC — exactly what R2 needs to stream without a stat hop.
+            const { content, size } = await box.readFile(tarballPath, {
+              encoding: "none",
+            });
+            await putStream(bucket, key, content, size, {
+              contentType: contentType ?? "application/gzip",
             });
             return artifactUrl(executionId, name);
           }
@@ -137,12 +134,10 @@ export const makeR2ArtifactLive = (
           if (source === null) {
             throw new Error(`artifact source object not found at key "${path}"`);
           }
-          const body = await source.arrayBuffer();
-          await bucket.put(key, body, {
-            httpMetadata: {
-              contentType:
-                contentType ?? source.httpMetadata?.contentType ?? "application/octet-stream",
-            },
+          // Stream R2→R2 with the source's own known size — no buffering.
+          await putStream(bucket, key, source.body, source.size, {
+            contentType:
+              contentType ?? source.httpMetadata?.contentType ?? "application/octet-stream",
           });
           return artifactUrl(executionId, name);
         },
