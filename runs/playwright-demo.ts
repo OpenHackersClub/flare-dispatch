@@ -133,14 +133,20 @@ export const playwrightDemo = defineRun({
   name: "playwright-demo",
   version: "1.0.0",
 
-  // Routes to the chromium-baked sandbox image (RUNS_SANDBOX_BROWSER). Unlike
-  // `cdp-acceptance` / `product-demo` (which dial CF Browser Rendering over CDP
-  // and stay on the lean image), this run launches Playwright's OWN bundled
-  // chromium INSIDE the container — so it needs the browser pre-baked. This is
-  // why it's `sandboxImage: "browser"` yet `requiresBrowser` is absent (false):
-  // no CF Browser Rendering slot, but a real in-image browser. See define-run.ts
-  // § SandboxImage and the routing in apps/dispatcher/src/workflow.ts.
-  sandboxImage: "browser",
+  // Runs on the LEAN sandbox image (RUNS_SANDBOX). This run launches
+  // Playwright's OWN bundled chromium INSIDE the container, but it does NOT bake
+  // the browser into the image: the input contract (see `command` below) makes
+  // the CALLER install its browser (`playwright install …`), and the lean base
+  // already carries chromium's shared libs, so a headless launch works without
+  // `--with-deps`. Keeping this on lean means the run depends only on the
+  // always-provisioned default container, not on a separate chromium-baked
+  // image that a `versions upload` (vs `wrangler deploy`) can leave unbuilt — a
+  // missing container fails the FIRST RPC (the checkout clone) with an opaque
+  // `CheckoutFailed` after cold-start CPU-limit thrash. The optional
+  // `sandboxImage: "browser"` route stays available for a future run whose
+  // command DROPS the install and relies on a baked browser; this one doesn't.
+  // `requiresBrowser` is absent (false): no CF Browser Rendering / CDP slot.
+  sandboxImage: "lean",
 
   inputs: PlaywrightDemoInput,
   outputs: PlaywrightDemoOutput,

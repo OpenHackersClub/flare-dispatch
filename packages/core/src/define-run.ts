@@ -62,9 +62,13 @@ export type ScheduleSpec<I> = {
  *     runs AND for every `limits.requiresBrowser: true` run: those dial CF
  *     Browser Rendering over CDP (they connect *out* to a CF-managed browser),
  *     so they need NO chromium baked in the image.
- *   - `"browser"` — the image with `chromium-headless-shell` baked in. Only for
- *     runs that launch Playwright's OWN chromium *inside* the sandbox (e.g.
- *     `playwright-demo`, which is `requiresBrowser: false`).
+ *   - `"browser"` — the image with `chromium-headless-shell` baked in. For a run
+ *     that launches Playwright's OWN chromium *inside* the sandbox AND drops the
+ *     `playwright install` step from its command to rely on the baked browser.
+ *     No run currently does: `playwright-demo` runs chromium in-sandbox but its
+ *     caller installs it, so it stays `"lean"` (depending on a separately-built
+ *     image a `versions upload` can leave unprovisioned regressed it). This
+ *     value is wired and available, just unused until such a run exists.
  *
  * NOTE this axis is deliberately distinct from `limits.requiresBrowser`. They
  * answer different questions: `requiresBrowser` = "reserve a CF Browser

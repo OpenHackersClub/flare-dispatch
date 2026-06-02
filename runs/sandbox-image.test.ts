@@ -28,15 +28,20 @@ describe("sandboxImage catalog", () => {
     for (const r of runs) expect(typeof r.name).toBe("string");
   });
 
-  it("routes EXACTLY the in-sandbox-chromium run(s) to the browser image", () => {
+  it("routes EXACTLY the runs that DROP the browser install to the browser image", () => {
     const onBrowserImage = runs
       .filter((r) => r.sandboxImage === "browser")
       .map((r) => r.name)
       .sort();
-    // `playwright-demo` is the only run that launches Playwright's own chromium
-    // inside the sandbox. If this list grows, the new run had better genuinely
-    // need an in-image browser — update it deliberately, don't auto-pass.
-    expect(onBrowserImage).toEqual(["playwright-demo"]);
+    // No run currently bakes the browser. `playwright-demo` launches chromium
+    // in-sandbox but its caller installs it (the lean image suffices), so it
+    // stays on lean — depending on a separate chromium-baked image that a
+    // `versions upload` can leave unprovisioned regressed the demo with an
+    // opaque `CheckoutFailed`. The `"browser"` route stays available for a
+    // future run whose command DROPS `playwright install` and relies on the
+    // baked browser. If this list grows, that new run had better genuinely need
+    // an in-image browser — update it deliberately, don't auto-pass.
+    expect(onBrowserImage).toEqual([]);
   });
 
   it("never crosses the axes: a requiresBrowser (CDP) run is never on the browser image", () => {
