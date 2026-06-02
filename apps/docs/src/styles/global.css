@@ -1777,10 +1777,10 @@ pre code {
   letter-spacing: 0.08em;
 }
 
-/* ---- Landing: Billing timeline (SVG) ----------------------------------- */
+/* ---- Landing: Billing chart (SVG) -------------------------------------- */
 
 .billing {
-  margin: 2.5rem 0 0;
+  margin: 0;
 }
 .billing__svg {
   width: 100%;
@@ -1788,95 +1788,185 @@ pre code {
   display: block;
 }
 
-/* The run track: solid ink = vCPU burning, hatch = blocked on the model */
-.billing__svg .track-cpu {
-  fill: var(--ink);
-}
-.billing__svg .track-io {
-  fill: url(#bd-wait);
-  stroke: var(--hairline-strong);
-  stroke-width: 1;
-}
-.billing__svg #bd-wait .bg {
-  fill: var(--surface);
-}
-.billing__svg #bd-wait .hatch {
-  stroke: var(--hairline-strong);
-  stroke-width: 1;
-}
-
-/* Vertical bands carrying the active columns down through every bar */
-.billing__svg .col-active {
-  fill: var(--accent);
-  opacity: 0.08;
-}
-
-/* GitHub Actions: the whole width is billed */
-.billing__svg .bill-all {
+/* The two bars share segment geometry; only the idle gaps differ.
+   GitHub Actions fills them (billed); FlareDispatch leaves them empty (free). */
+.billing__svg .gha-billed {
   fill: var(--accent-soft);
   stroke: var(--accent);
-  stroke-width: 1.4;
+  stroke-width: 1.2;
 }
-.billing__svg .bill-note--all {
-  fill: var(--accent);
-  font-weight: 600;
-}
-
-/* FlareDispatch: an empty envelope with only the active slivers billed */
-.billing__svg .bill-envelope {
+.billing__svg .fd-envelope {
   fill: none;
   stroke: var(--hairline-strong);
   stroke-width: 1;
   stroke-dasharray: 3 3;
 }
-.billing__svg .bill-active {
+.billing__svg .seg-active {
   fill: var(--accent);
 }
-.billing__svg .bill-idle {
-  fill: var(--muted-soft);
-  font-family: var(--font-mono);
-  font-size: 8px;
-  letter-spacing: 0.08em;
+
+/* Faint bands tying the active slivers between the two bars */
+.billing__svg .col-active {
+  fill: var(--accent);
+  opacity: 0.07;
 }
 
-/* Labels */
-.billing__svg .row-label {
+.billing__svg .title {
   font-family: var(--font-mono);
   font-size: 9px;
   fill: var(--ink-soft);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: 0.14em;
 }
-.billing__svg .bill-note {
+.billing__svg .row-name {
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.04em;
+  font-size: 10px;
+  fill: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+.billing__svg .row-name--fd {
+  fill: var(--accent);
 }
 .billing__svg .phase {
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 7.5px;
   fill: var(--muted);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
-.billing__svg .phase--cpu {
+.billing__svg .idle {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  fill: var(--muted-soft);
+  letter-spacing: 0.06em;
+}
+.billing__svg .end-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+.billing__svg .end-label--gha {
+  fill: var(--muted);
+}
+.billing__svg .end-label--fd {
   fill: var(--accent);
+  font-weight: 600;
+}
+.billing__svg .axis-line {
+  stroke: var(--hairline-strong);
+  stroke-width: 0.75;
 }
 .billing__svg .axis {
   font-family: var(--font-mono);
   font-size: 8px;
   fill: var(--muted-soft);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .billing__svg .legend-swatch {
   stroke: var(--hairline-strong);
   stroke-width: 0.5;
 }
+.billing__svg .legend-swatch--wait {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+}
 .billing__svg .legend-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8px;
   fill: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+/* Chart + cost card side by side */
+.bottleneck__split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(240px, 1fr);
+  gap: 2.5rem;
+  align-items: center;
+  margin-top: 2.5rem;
+}
+@media (max-width: 760px) {
+  .bottleneck__split {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+}
+
+.cost-card {
+  border: 1px solid var(--hairline);
+  border-top: 2px solid var(--accent);
+  background: var(--surface);
+  padding: 1.5rem;
+}
+.cost-card__eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.cost-card__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  font-size: var(--fs-small);
+}
+.cost-card__table th,
+.cost-card__table td {
+  text-align: right;
+  padding: 0.5rem 0.5rem;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+.cost-card__table thead th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 2px solid var(--ink);
+}
+.cost-card__table tbody th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
   letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 500;
+}
+.cost-card__table td:first-of-type {
+  padding-left: 0;
+}
+.cost-card__total td,
+.cost-card__total th {
+  font-weight: 600;
+  color: var(--ink);
+  border-bottom: none;
+}
+.cost-card__win {
+  color: var(--accent);
+}
+.cost-card__verdict {
+  margin: 1rem 0 0;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-variation-settings: "opsz" 110, "SOFT" 60;
+  color: var(--accent);
+  letter-spacing: -0.01em;
+}
+.cost-card__note {
+  margin: 0.75rem 0 0;
+  font-size: var(--fs-tiny);
+  line-height: 1.5;
+  color: var(--muted);
+}
+.cost-card__note a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cost-card__note a:hover {
+  color: var(--accent);
 }
 
 /* ---- Entrance animations ------------------------------------------------ */

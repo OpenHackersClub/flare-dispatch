@@ -97,7 +97,44 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
           <em>active</em> slivers — here, roughly a fifth of the run.
         </p>
       </div>
-      <BillingTimeline />
+      <div class="bottleneck__split">
+        <BillingTimeline />
+        <aside class="cost-card" aria-label="Sample cost for one code-review run">
+          <span class="cost-card__eyebrow">Sample cost · one review</span>
+          <table class="cost-card__table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>GitHub Actions</th>
+                <th>FlareDispatch</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Billed</th>
+                <td>10&#8239;min wall-clock</td>
+                <td>~2&#8239;min vCPU-active</td>
+              </tr>
+              <tr>
+                <th scope="row">Rate</th>
+                <td>$0.008&#8239;/&#8239;min</td>
+                <td>$0.000020&#8239;/&#8239;vCPU-s</td>
+              </tr>
+              <tr class="cost-card__total">
+                <th scope="row">Per run</th>
+                <td>$0.080</td>
+                <td class="cost-card__win">~$0.004</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="cost-card__verdict">≈&#8239;20× cheaper per run</p>
+          <p class="cost-card__note">
+            Standard Linux runner vs Cloudflare Containers. The model-wait runs in a
+            Workflow step — billed by CPU-time, not wall-clock — so it costs nothing.
+            Illustrative figures; rates from the <a href="/docs/06-cost">cost spec</a>.
+          </p>
+        </aside>
+      </div>
     </div>
   </section>
 
