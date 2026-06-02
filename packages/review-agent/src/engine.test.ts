@@ -167,6 +167,46 @@ describe("reviewDomain", () => {
     expect(result).toEqual([finding]);
   });
 
+  it("tools mode — coerces a double-encoded `findings` (JSON STRING) back to an array", async () => {
+    // Workers AI tool-calling sometimes double-encodes the nested array: the
+    // tool `arguments` object carries `findings` as a JSON string ("[{…}]")
+    // rather than an array. The engine parses it before Schema-decode.
+    const { layer } = withGateway([
+      toolsResult("report", { findings: JSON.stringify([finding]) }),
+    ]);
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "full",
+        backend: "opencode",
+        mode: "tools",
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual([finding]);
+  });
+
+  it("json mode — coerces a double-encoded `findings` (JSON STRING) back to an array", async () => {
+    // Same pathology over the json-text path: a valid outer object whose
+    // `findings` value is itself a JSON string.
+    const { layer } = withGateway([
+      textResult(JSON.stringify({ findings: JSON.stringify([finding]) })),
+    ]);
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        backend: "reasonix",
+        mode: "json",
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual([finding]);
+  });
+
   it("json mode — parses a <think>-wrapped, code-fenced JSON response", async () => {
     const text = [
       "<think>",

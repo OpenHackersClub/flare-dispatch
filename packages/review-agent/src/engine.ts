@@ -188,7 +188,42 @@ const firstToolCall = (
 const DomainOutput = Schema.Struct({
   findings: Schema.Array(Finding),
 });
-const decodeDomainJson = Schema.decodeUnknownEither(DomainOutput);
+
+/**
+ * Coerce a double-encoded `findings` field back to an array before decoding.
+ *
+ * Some providers (notably Workers AI tool-calling) emit a nested array field as
+ * a JSON STRING — `{ "findings": "[{…}]" }` instead of `{ "findings": [{…}] }`
+ * — which fails the `Schema.Array(Finding)` decode with a schema-mismatch on
+ * `["findings"]`. When `findings` is a string, `JSON.parse` it and let the
+ * Schema validate the result. This mirrors how `parseToolArguments` already
+ * tolerates the whole tool `arguments` arriving as a string vs an object. A
+ * parse failure (or a non-string `findings`) falls through unchanged so the
+ * Schema decode still surfaces a precise `StructuredOutputInvalid`.
+ */
+const coerceDomainOutput = (value: unknown): unknown => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("findings" in value) ||
+    typeof (value as { findings: unknown }).findings !== "string"
+  ) {
+    return value;
+  }
+  try {
+    return {
+      ...value,
+      findings: JSON.parse((value as { findings: string }).findings) as unknown,
+    };
+  } catch {
+    return value;
+  }
+};
+
+const decodeDomainJson = (
+  u: unknown,
+): Either.Either<typeof DomainOutput.Type, ParseResult.ParseError> =>
+  Schema.decodeUnknownEither(DomainOutput)(coerceDomainOutput(u));
 
 /** The `report` tool sent to the model in tools mode. */
 const ReportTool: ModelTool = {
