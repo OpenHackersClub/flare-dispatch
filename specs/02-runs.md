@@ -236,16 +236,20 @@ AI-driven product demo. A team hands it a deployed URL (preview / staging / prod
 
 ```ts
 Schema.Struct({
-  targetUrl: Schema.String,                  // deployed URL (preview / staging / prod)
-  stories: Schema.Array(Schema.String),      // user stories as prose
-  viewport: Schema.optional(Schema.Struct({
-    w: Schema.Number,
-    h: Schema.Number,
-  })),
-  model: Schema.optional(Schema.String),     // demo-agent model override
-  secrets: Schema.optional(Schema.Array(Schema.String)), // KV keys → env on demo-agent
+  repo: Schema.String,                       // check-run callback anchor
+  sha: Schema.String,                        // check-run callback anchor
+  deployedUrl: Schema.String,                // deployed URL (preview / staging / prod)
+  // Supply exactly one story source (`stories` wins if both are present):
+  stories: Schema.optional(Schema.Array(     //   structured story list
+    Schema.Struct({ name: Schema.String, prose: Schema.String }),
+  )),
+  storiesMarkdown: Schema.optional(Schema.String), // markdown, each `## ` = one story
+  viewportPreset: Schema.optional(Schema.Literal("desktop", "mobile")),
+  maxDurationSecPerStory: Schema.optional(Schema.Number),
 })
 ```
+
+> **Story sources.** `stories` is the structured `{ name, prose }[]`. `storiesMarkdown` is a markdown doc where each level-2 heading (`## `) is one story (heading = `name`, body = `prose`); it's parsed into the same list before the agent runs, so an operator can keep the demo script as a readable `.md`. Story names must be unique (they're rrweb chapter markers); the run dies on duplicates or an empty resolved list. Model ids + `demo-agent` credentials resolve from `CONFIG_KV` (`product-demo.model.{play,summary}`, `product-demo.secret/*`), not from the input.
 
 **Outputs:**
 

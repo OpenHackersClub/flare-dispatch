@@ -8,6 +8,28 @@ Hand a list of user stories in prose and a deployed URL; get back one continuous
 - [`ci.yml`](ci.yml) — the GitHub Actions workflow that dispatches the run (Action mode, fire-and-forget). Triggers on `pull_request` against `apps/**` and on manual `workflow_dispatch` with a custom story list.
 - [`Dockerfile.example`](Dockerfile.example) — drop-in layers that add the `demo-agent` binary to your own `Dockerfile.sandbox`. FlareDispatch ships no hosted image for the agent; the operator's sandbox image IS the integration point.
 
+## Authoring stories
+
+The run accepts the story script in either of two shapes — pass **exactly one** (`stories` wins if both are present):
+
+- **`stories`** — the structured array, `[{ "name": "...", "prose": "..." }]`. What [`ci.yml`](ci.yml) and the `schedules[].inputs` block pass.
+- **`storiesMarkdown`** — a markdown document where **each level-2 heading (`## `) is one story**: the heading text is the story `name`, everything down to the next `## ` is the `prose`. Content before the first heading (a `# Title`, a preamble) is ignored. Lets you keep the demo script as a readable `.md` and edit it like documentation instead of hand-maintaining JSON.
+
+```markdown
+# Checkout demo
+
+## sign-in
+Open the site, click Sign in, log in with the demo account, and land on the dashboard.
+
+## create-project
+From the dashboard, create a new project called Demo and confirm the empty-state CTA appears.
+
+## invite-member
+Open the new project, invite a teammate by email, and confirm the pending-invite chip shows.
+```
+
+Both formats resolve to the same `{ name, prose }` list before the agent runs, so nothing downstream is markdown-aware. Story names must be unique — they become chapter markers on the rrweb replay timeline; the run dies loudly on duplicates or an empty list.
+
 ## Modes
 
 The recipe runs in either of two trigger modes — pick the one that fits your use case, or wire up both:
