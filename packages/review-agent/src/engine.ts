@@ -50,7 +50,6 @@ import { extractJsonText } from "./json-extract.js";
 import {
   type CoordinatedReview as CoordinatedReviewType,
   Finding,
-  type ReviewOutput,
   type Tier,
 } from "./schemas.js";
 
@@ -215,11 +214,10 @@ export const reviewDomain = (
     ? jsonReviewDomain(input)
     : toolsReviewDomain(input).pipe(
         // Auto-fallback: a "tools" model that returned no tool call retries once
-        // in json mode (the DeepSeek-via-AI-Gateway pathology).
-        Effect.catchIf(
-          (e): e is ModelCallFailed =>
-            e._tag === "ModelCallFailed" && e.reason === "bad-response",
-          () => jsonReviewDomain(input),
+        // in json mode (the DeepSeek-via-AI-Gateway pathology). Any other
+        // `ModelCallFailed` reason (and `StructuredOutputInvalid`) propagates.
+        Effect.catchTag("ModelCallFailed", (e) =>
+          e.reason === "bad-response" ? jsonReviewDomain(input) : Effect.fail(e),
         ),
       );
 
@@ -323,23 +321,17 @@ Use an empty "findings" array when the diff is clean for your domain. Do not wra
 // `coordinate` — DETERMINISTIC assembly. No model call.
 //
 // The per-domain reviewers already did the hard work (each emitted a
-// Schema-valid `Finding[]`). Coordination is pure bookkeeping: merge, dedup,
-// count by severity, and pick a verdict by rule. Doing this in code (rather than
+// Schema-valid `Finding[]`). Coordination is pure bookkeeping over the current
+// run's findings: dedup, count by severity, and pick a verdict by rule. Doing
+// this in code (rather than
 // asking a model to re-emit the whole nested `ReviewOutput` via a tool call)
 // removes the only remaining `StructuredOutputInvalid` failure mode — a weak
 // model could never make the verdict tool-call conform, and the tools→json
 // auto-fallback didn't fire on schema-mismatch.
 
 export type CoordinateInput = {
-  /** All domains' findings, concatenated. */
+  /** All domains' findings for THIS run, concatenated. */
   readonly findings: ReadonlyArray<Finding>;
-  /**
-   * The previous execution's output for this PR, when one exists. Its findings
-   * are folded into the dedup so a finding still open from the last push is not
-   * double-reported. (A finding the current reviewers no longer raise is simply
-   * absent — auto-resolved.)
-   */
-  readonly previous?: ReviewOutput;
 };
 
 /** A finding's dedup identity — same (path, startLine, title) is the same issue. */
@@ -351,11 +343,15 @@ const findingKey = (f: Finding): string =>
  * it can never produce `StructuredOutputInvalid`. Returns `CoordinatedReview`
  * (no `tier` — the run stitches that back on from its plan).
  *
- *   - dedup by (path, startLine, title), keeping the first occurrence
- *     (current-run findings come first, then `previous`);
+ *   - dedup by (path, startLine, title), keeping the first occurrence;
  *   - counts straight from `level` (failure/warning/notice);
  *   - verdict by rule: any failure → request-changes; else any warning →
  *     comment; else approve (bias toward approval unless critical).
+ *
+ * The current run is AUTHORITATIVE — only the findings the reviewers raise on
+ * this push count. Nothing is carried over from a prior run, so a finding the
+ * author has fixed (no longer in the diff → not re-raised) clears on its own and
+ * the verdict can return to `approve`.
  */
 export const coordinate = (
   input: CoordinateInput,
@@ -366,17 +362,9 @@ export const coordinate = (
 export const coordinateReview = (
   input: CoordinateInput,
 ): CoordinatedReviewType => {
-  // Current-run findings first so a re-raised finding keeps its current text;
-  // prior findings only contribute ones the current run dropped from a
-  // different line/title (genuinely still-open, not re-emitted this run).
-  const merged: ReadonlyArray<Finding> = [
-    ...input.findings,
-    ...(input.previous?.findings ?? []),
-  ];
-
   const seen = new Set<string>();
   const findings: Finding[] = [];
-  for (const f of merged) {
+  for (const f of input.findings) {
     const key = findingKey(f);
     if (seen.has(key)) continue;
     seen.add(key);

@@ -79,4 +79,4 @@ export {
   classifyRisk,
 } from "./engine.js";
 
-export { stripDiffNoise } from "./diff.js";
+export { stripDiffNoise, capDiff, MAX_DIFF_CHARS } from "./diff.js";

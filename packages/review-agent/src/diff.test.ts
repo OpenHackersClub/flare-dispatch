@@ -1,7 +1,7 @@
 // Diff noise-stripping unit tests.
 
 import { describe, expect, it } from "vitest";
-import { stripDiffNoise } from "./diff.js";
+import { capDiff, MAX_DIFF_CHARS, stripDiffNoise } from "./diff.js";
 
 const section = (path: string, line = "+x"): string =>
   [
@@ -41,5 +41,25 @@ describe("stripDiffNoise", () => {
 
   it("returns an empty diff unchanged", () => {
     expect(stripDiffNoise("")).toBe("");
+  });
+});
+
+describe("capDiff", () => {
+  it("returns a small diff unchanged", () => {
+    const diff = section("src/app.ts");
+    expect(capDiff(diff)).toBe(diff);
+  });
+
+  it("truncates and marks a diff over the cap", () => {
+    const big = "x".repeat(MAX_DIFF_CHARS + 5_000);
+    const out = capDiff(big);
+    expect(out.length).toBeLessThan(big.length);
+    expect(out.startsWith("x".repeat(MAX_DIFF_CHARS))).toBe(true);
+    expect(out).toContain("diff truncated");
+  });
+
+  it("honours a custom cap and keeps a diff at exactly the cap unchanged", () => {
+    expect(capDiff("abcdef", 3)).toContain("diff truncated");
+    expect(capDiff("abc", 3)).toBe("abc");
   });
 });

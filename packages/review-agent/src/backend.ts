@@ -151,12 +151,14 @@ export const resolveBackend = <R>(
       );
     }
 
-    // Primary secret, then the optional shared fallback.
+    // Primary secret, then the optional shared fallback. `.trim()` so a
+    // whitespace-only secret is treated as unset (consistent with baseUrl/model)
+    // rather than slipping through to fail opaquely at the provider call.
     let apiKey = yield* getConfig(keys.apiKeyName);
-    if ((apiKey === undefined || apiKey === "") && keys.apiKeyFallback) {
+    if ((apiKey === undefined || apiKey.trim() === "") && keys.apiKeyFallback) {
       apiKey = yield* getConfig(keys.apiKeyFallback);
     }
-    if (apiKey === undefined || apiKey === "") {
+    if (apiKey === undefined || apiKey.trim() === "") {
       return yield* Effect.fail(
         new BackendUnconfigured({
           backend,

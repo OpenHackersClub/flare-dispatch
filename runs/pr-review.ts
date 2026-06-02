@@ -33,9 +33,9 @@
 // mode, so a provider that silently drops tool-calling still produces a review.
 //
 // Mode: Webhook mode — fires on every pull_request push, zero GHA minutes.
-// DSL:  see specs/03-dsl.md (uses `config` + `io.priorExecution` + `github`).
+// DSL:  see specs/03-dsl.md (uses `config` + `github`).
 
-import { Effect, Schema, Match, Option } from "effect";
+import { Effect, Schema, Match } from "effect";
 import {
   defineRun,
   step,
@@ -49,14 +49,18 @@ import {
 } from "@flare-dispatch/core";
 import { workspace } from "@flare-dispatch/core/primitives";
 import {
+  type BackendUnconfigured,
+  capDiff,
   coordinate as engineCoordinate,
   type Finding,
   makeModelHttpLayer,
+  type ModelCallFailed,
   resolveBackend,
   reviewDomain,
   riskTier,
   ReviewOutputSchema,
   stripDiffNoise,
+  type StructuredOutputInvalid,
   type Tier,
 } from "@flare-dispatch/review-agent";
 
@@ -80,10 +84,10 @@ const LITE_AGENTS = ["security", "code-quality", "performance", "documentation"]
 const TRIVIAL_AGENTS = ["code-quality"] as const;
 
 // The run's output. `findings` becomes the check-run annotation set; the rest
-// renders in the summary. Persisted as execution metadata so the next push's
-// re-review can read it back via `io.priorExecution`. Imported from the engine
-// package so the run's `outputs` schema and the engine's return type are one
-// source of truth.
+// renders in the summary. Imported from the engine package so the run's
+// `outputs` schema and the engine's return type are one source of truth. Each
+// push re-reviews the full PR diff independently — the current run is
+// authoritative (no carry-over from prior executions), so a fixed finding clears.
 const ReviewOutput = ReviewOutputSchema;
 
 /** Footer marker on every PR comment this run posts — for idempotent updates. */
@@ -140,14 +144,18 @@ export const prReview = defineRun({
         Effect.catchAll((err) =>
           Effect.gen(function* () {
             const reason = describeError(err);
-            yield* postComment(
-              input,
-              `⚠️ **pr-review could not complete**: ${reason}\n\n${COMMENT_MARKER}`,
-            ).pipe(
-              Effect.catchAll((postErr) =>
-                io.log(
-                  "warn",
-                  `pr-review: failure-comment post failed — ${describeError(postErr)}`,
+            // Post inside a step so a CF Workflow instance retry replays from
+            // the checkpoint instead of posting a duplicate failure comment.
+            yield* step("post-failure-comment", () =>
+              postComment(
+                input,
+                `⚠️ **pr-review could not complete**: ${reason}\n\n${COMMENT_MARKER}`,
+              ).pipe(
+                Effect.catchAll((postErr) =>
+                  io.log(
+                    "warn",
+                    `pr-review: failure-comment post failed — ${describeError(postErr)}`,
+                  ),
                 ),
               ),
             );
@@ -180,7 +188,9 @@ const reviewBody = (input: RunInput) =>
         command: ["git", "diff", "--unified=3", input.baseSha, input.sha],
       }).pipe(Effect.map((r) => r.stdout)),
     );
-    const diff = stripDiffNoise(rawDiff);
+    // Strip noise (lockfiles / generated), then cap the size so a huge PR can't
+    // blow the provider context window across the fanned-out domain reviewers.
+    const diff = capDiff(stripDiffNoise(rawDiff));
 
     // 3. Risk tier — a pure heuristic on diff size + touched paths (no model
     //    call). The tier IS the plan: which agents run + the coordinator model.
@@ -199,26 +209,13 @@ const reviewBody = (input: RunInput) =>
     // each call). The run provides the platform fetch client once.
     const modelLayer = makeModelHttpLayer();
 
-    // 5. Load the previous execution's findings for this same PR. Cross the
-    //    step boundary as plain `ReviewOutput | null` (CF Workflows' result
-    //    serializer rejects an Effect `Option`), then rebuild the Option.
-    const priorOrNull = yield* step("load-prior", () =>
-      io
-        .priorExecution({
-          family: `pr-review:${input.repo}:${input.pr}`,
-          outputSchema: ReviewOutput,
-        })
-        .pipe(Effect.map(Option.getOrNull)),
-    );
-    const prior = Option.fromNullable(priorOrNull);
-
-    // 6. The per-domain reviewer system prompt — operator override or the
+    // 5. The per-domain reviewer system prompt — operator override or the
     //    engine's generic default (never a project-specific rubric here).
     const promptOverride = yield* step("resolve-prompt", () =>
       config.get("pr-review.prompt"),
     );
 
-    // 7. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
+    // 6. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
     //    agents this tier calls for. Each calls the LanguageModel via the
     //    engine; findings are Schema-validated tool-call output.
     const fanned = yield* step("review", () =>
@@ -241,21 +238,15 @@ const reviewBody = (input: RunInput) =>
     );
     const allFindings: ReadonlyArray<Finding> = fanned.flat();
 
-    // 8. Coordinate — PURE deterministic assembly (merge + dedup + counts +
-    //    verdict). No model call, reconciled against the prior review. `tier`
-    //    is stitched in from the plan.
+    // 7. Coordinate — PURE deterministic assembly (dedup + counts + verdict) over
+    //    THIS run's findings. No model call; the current run is authoritative, so
+    //    a fixed finding clears. `tier` is stitched in from the plan.
     const coordinated = yield* step("coordinate", () =>
-      engineCoordinate({
-        findings: allFindings,
-        ...Option.match(prior, {
-          onNone: () => ({}),
-          onSome: (p) => ({ previous: p.output }),
-        }),
-      }),
+      engineCoordinate({ findings: allFindings }),
     );
     const output = { ...coordinated, tier: plan.tier };
 
-    // 9. Post the visible top-level PR review comment (the findings additionally
+    // 8. Post the visible top-level PR review comment (the findings additionally
     //    land as check-run annotations via the run output). Best-effort — a
     //    comment failure must not turn a green review red.
     yield* step("post-comment", () =>
@@ -283,21 +274,15 @@ type RunInput = {
 type Plan = {
   readonly tier: Tier;
   readonly agents: readonly string[];
-  readonly model: "sonnet" | "opus";
 };
 
-/** Map the risk tier to its agent set + coordinator-model class. */
+/** Map the risk tier to its agent set. (The model is resolved from the backend
+ *  config, not the tier — see `resolveBackend`.) */
 const planForTier = (tier: Tier): Plan =>
   Match.value(tier).pipe(
-    Match.when("trivial", () => ({
-      tier: "trivial" as const, agents: TRIVIAL_AGENTS, model: "sonnet" as const,
-    })),
-    Match.when("lite", () => ({
-      tier: "lite" as const, agents: LITE_AGENTS, model: "sonnet" as const,
-    })),
-    Match.when("full", () => ({
-      tier: "full" as const, agents: FULL_AGENTS, model: "opus" as const,
-    })),
+    Match.when("trivial", () => ({ tier: "trivial" as const, agents: TRIVIAL_AGENTS })),
+    Match.when("lite", () => ({ tier: "lite" as const, agents: LITE_AGENTS })),
+    Match.when("full", () => ({ tier: "full" as const, agents: FULL_AGENTS })),
     Match.exhaustive,
   );
 
@@ -348,33 +333,60 @@ const postComment = (input: RunInput, body: string) =>
       : {}),
   });
 
+/** The tagged errors the review boundary knows how to describe precisely;
+ *  anything else (e.g. `StepFailed`, a core capability error) falls to the
+ *  `Match.orElse` arm. */
+type DescribableError =
+  | BackendUnconfigured
+  | ModelCallFailed
+  | StructuredOutputInvalid
+  | ExecNonZero;
+
 /** Human-readable one-liner for any error the boundary catches. */
 const describeError = (err: unknown): string =>
-  Match.value(err as { _tag?: string }).pipe(
-    Match.when(
-      (e) => e._tag === "BackendUnconfigured",
-      (e) =>
-        `backend "${(e as { backend: string }).backend}" is misconfigured — set ${(e as { missing: string }).missing}`,
+  Match.value(err as DescribableError).pipe(
+    Match.tag(
+      "BackendUnconfigured",
+      (e) => `backend "${e.backend}" is misconfigured — set ${e.missing}`,
     ),
-    Match.when(
-      (e) => e._tag === "ModelCallFailed",
-      (e) =>
-        `model call failed (${(e as { reason: string }).reason}): ${(e as { message: string }).message}`,
+    Match.tag(
+      "ModelCallFailed",
+      (e) => `model call failed (${e.reason}): ${e.message}`,
     ),
-    Match.when(
-      (e) => e._tag === "StructuredOutputInvalid",
+    Match.tag(
+      "StructuredOutputInvalid",
       (e) =>
-        `model returned unparseable ${(e as { surface: string }).surface} output (${(e as { reason: string }).reason}); the backend may need \`mode: "json"\` or a different model`,
+        `model returned unparseable ${e.surface} output (${e.reason}); the backend may need \`mode: "json"\` or a different model`,
     ),
-    Match.when(
-      (e) => e._tag === "ExecNonZero",
-      (e) =>
-        `\`${(e as { command: string }).command}\` exited ${(e as { exitCode: number }).exitCode}`,
+    Match.tag(
+      "ExecNonZero",
+      (e) => `\`${e.command}\` exited ${e.exitCode}`,
     ),
     Match.orElse(() =>
       err instanceof Error ? err.message : JSON.stringify(err),
     ),
   );
+
+/**
+ * Neutralize model-authored text before it renders in the public PR comment.
+ * The diff is attacker-controllable on a hostile PR and feeds the model, so a
+ * finding's `title`/`message`/`path` could carry `@mention` pings, raw HTML, or
+ * code-fence/backtick break-outs. Collapse to one line, drop angle brackets,
+ * defang `@` and backticks, and bound the length. (Control flow is already safe
+ * — the verdict derives only from the schema-constrained `level`.)
+ */
+const SANITIZE_MAX = 500;
+// U+200B zero-width space — inserted after `@` it breaks GitHub's @mention
+// autolink without visibly altering the text. Built from a code point so the
+// source stays ASCII-only.
+const ZWSP = String.fromCharCode(0x200b);
+const sanitizeModelText = (s: string): string =>
+  s
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[<>]/g, "")
+    .replace(/`/g, "'")
+    .replace(/@(?=[\w-])/g, `@${ZWSP}`)
+    .slice(0, SANITIZE_MAX);
 
 /** Render the consolidated review as a markdown PR comment. */
 const renderReviewComment = (
@@ -405,11 +417,12 @@ const renderReviewComment = (
               Match.when("notice", () => "💡"),
               Match.exhaustive,
             );
+            const path = sanitizeModelText(f.path);
             const loc =
               f.startLine === f.endLine
-                ? `${f.path}:${f.startLine}`
-                : `${f.path}:${f.startLine}-${f.endLine}`;
-            return `- ${icon} **${f.title}** — \`${loc}\`\n  ${f.message}`;
+                ? `${path}:${f.startLine}`
+                : `${path}:${f.startLine}-${f.endLine}`;
+            return `- ${icon} **${sanitizeModelText(f.title)}** — \`${loc}\`\n  ${sanitizeModelText(f.message)}`;
           }),
           ...(output.findings.length > 25
             ? ["", `_…and ${output.findings.length - 25} more (see check annotations)._`]
