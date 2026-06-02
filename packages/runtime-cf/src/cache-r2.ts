@@ -38,6 +38,7 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { Effect, Layer } from "effect";
 import { Cache, CacheError, type CacheService } from "@flare-dispatch/core";
+import { putStream } from "./r2-put-stream";
 import {
   composeRestoreOr,
   type RestoreFn,
@@ -75,12 +76,15 @@ export const makeCacheR2Live = (
         if (tar.exitCode !== 0) {
           throw new Error(`tar czf exited ${tar.exitCode}: ${tar.stderr}`);
         }
-        // R2 `put` needs a known length, so the archive is buffered — V1 cache
-        // sizes (a node_modules tree) are modest enough to hold in memory.
-        const stream = await box.readFileStream(TARBALL_PATH);
-        const body = await new Response(stream).arrayBuffer();
-        await bucket.put(archiveKey(repo, opts.key), body, {
-          httpMetadata: { contentType: "application/gzip" },
+        // STREAM the archive into R2 — a node_modules / pnpm-store tarball can
+        // be hundreds of MB, well past the Worker's 128 MB isolate budget if
+        // buffered whole. `encoding:'none'` yields the stream + byte length in
+        // one RPC, which `putStream` needs for R2's known-length requirement.
+        const { content, size } = await box.readFile(TARBALL_PATH, {
+          encoding: "none",
+        });
+        await putStream(bucket, archiveKey(repo, opts.key), content, size, {
+          contentType: "application/gzip",
         });
       },
       catch: (cause) =>

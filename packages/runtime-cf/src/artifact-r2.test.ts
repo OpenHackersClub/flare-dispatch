@@ -48,6 +48,12 @@ describe("R2ArtifactLive", () => {
     expect(await artifactObj?.text()).toBe(logBody);
   });
 
+  // NB: the >16 MiB multipart path can't be exercised here — the Node
+  // forks-pool's Miniflare R2 binding doesn't implement `createMultipartUpload`
+  // — so `putStream`'s chunking logic is unit-tested directly against a fake
+  // bucket in `r2-put-stream.test.ts`, and the real R2 multipart behavior is a
+  // `wrangler dev` smoke (same gate as the container-tar path).
+
   it("lists uploaded artifacts for an execution", async () => {
     await bindings.bucket.put(`logs/${EXECUTION_ID}/exec.ndjson`, "log");
     const layer = makeR2ArtifactLive(bindings.bucket, EXECUTION_ID);
