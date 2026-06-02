@@ -2,6 +2,7 @@
 import { Code } from "astro:components";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import HeroDiagram from "../components/HeroDiagram.astro";
+import BillingTimeline from "../components/BillingTimeline.astro";
 import { site } from "../lib/site";
 import { recipes } from "../lib/recipes";
 import { readRecipeFile } from "../lib/recipe-files";
@@ -83,11 +84,74 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
     </div>
   </section>
 
+  <section class="bottleneck">
+    <div class="container">
+      <div class="tenets__header">
+        <span class="section-marker">§02 / The bottleneck</span>
+        <h2>Most of a code-review run is the model thinking, not your CPU working.</h2>
+        <p class="bottleneck__lede">
+          An agentic review is mostly LLM I/O — the run sits blocked on the model
+          while the vCPU is idle. GitHub Actions bills that wait by the wall-clock
+          minute. FlareDispatch runs on Cloudflare Containers, billed per
+          vCPU-second, so the idle wait scales toward zero and you pay for the
+          <em>active</em> slivers — here, roughly a fifth of the run.
+        </p>
+      </div>
+      <div class="bottleneck__split">
+        <BillingTimeline />
+        <aside class="cost-card" aria-label="Sample cost for one 10-minute code-review run">
+          <span class="cost-card__eyebrow">Sample cost · one 10-min review</span>
+          <table class="cost-card__table">
+            <thead>
+              <tr>
+                <th>Runner config</th>
+                <th>$&#8239;/&#8239;min</th>
+                <th>/ run</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row"><code>ubuntu-latest</code><span class="cost-card__sub">2-core · GHA</span></th>
+                <td>0.008</td>
+                <td>$0.080</td>
+              </tr>
+              <tr>
+                <th scope="row"><code>ubuntu-latest-4-core</code><span class="cost-card__sub">4-core · GHA</span></th>
+                <td>0.016</td>
+                <td>$0.160</td>
+              </tr>
+              <tr>
+                <th scope="row"><code>ubuntu-latest-8-core</code><span class="cost-card__sub">8-core · GHA</span></th>
+                <td>0.032</td>
+                <td>$0.320</td>
+              </tr>
+              <tr class="cost-card__total">
+                <th scope="row"><code>flare-dispatch</code><span class="cost-card__sub">~2&#8239;min vCPU-active</span></th>
+                <td>vCPU-s</td>
+                <td class="cost-card__win">~$0.004</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="cost-card__verdict">20–80× cheaper per run</p>
+          <p class="cost-card__note">
+            Code review is I/O-bound — it never needs the cores, yet GitHub bills the
+            full 10&#8239;min wall-clock at the runner's rate, so a bigger box only
+            widens the gap. FlareDispatch bills the ~2&#8239;min of vCPU-active work
+            ($0.000020&#8239;/&#8239;vCPU-s); the model-wait sits in a CPU-time-billed
+            Workflow step and costs nothing. CI compute only — model tokens are billed
+            identically either way. Larger-runner labels illustrative; rates from the
+            <a href="/docs/06-cost">cost spec</a>.
+          </p>
+        </aside>
+      </div>
+    </div>
+  </section>
+
   <section class="compare">
     <div class="container">
       <div class="compare__intro">
         <div>
-          <span class="section-marker">§02 / Positioning</span>
+          <span class="section-marker">§03 / Positioning</span>
           <h2>Every option trades away one of three things. FlareDispatch keeps all three.</h2>
         </div>
         <p>
@@ -140,7 +204,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="snippets">
     <div class="container">
       <div class="tenets__header">
-        <span class="section-marker">§03 / The code</span>
+        <span class="section-marker">§04 / The code</span>
         <h2>Every recipe — toggle the workflow against its typed run.</h2>
       </div>
       <div class="snippets__widget">
@@ -211,26 +275,26 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="manifesto">
     <div class="container">
       <div class="manifesto__header">
-        <span class="section-marker">§04 / Design philosophy</span>
+        <span class="section-marker">§05 / Design philosophy</span>
         <h2>Three bets the design is built on.</h2>
       </div>
       <ol class="manifesto__list">
         <li class="manifesto__item">
-          <span class="manifesto__num">§04.01</span>
+          <span class="manifesto__num">§05.01</span>
           <div>
             <p class="manifesto__statement"><strong>Progressive</strong> offloading.</p>
             <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions keeps the cheap jobs and the PR gate; nothing is all-or-nothing.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§04.02</span>
+          <span class="manifesto__num">§05.02</span>
           <div>
             <p class="manifesto__statement">Runs are <strong>typed programs</strong>, not YAML.</p>
             <p class="manifesto__body">A run is an Effect-TS program — Schema-typed inputs and outputs, composable steps, tagged errors, exhaustive matching. Fork it, vendor-edit it, unit-test it without booting a container.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§04.03</span>
+          <span class="manifesto__num">§05.03</span>
           <div>
             <p class="manifesto__statement">BYOC <strong>by construction</strong>.</p>
             <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs are yours.</p>
@@ -243,7 +307,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="container">
     <div class="cta-band">
       <div>
-        <span class="section-marker">§05 / Read on</span>
+        <span class="section-marker">§06 / Read on</span>
         <h2>Pre-implementation. The specs are the contract.</h2>
       </div>
       <div class="cta-band__actions">
