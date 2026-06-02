@@ -43,9 +43,14 @@ export {
 } from "./checks-github";
 export { makeGithubLive, type GithubLiveConfig } from "./github-live";
 export {
+  makeModelGatewayLive,
+  type AiBinding,
+} from "./model-gateway-cf";
+export {
   BrowserDeferred,
   ConfigDeferred,
   GithubDeferred,
+  ModelGatewayDeferred,
   OidcDeferred,
 } from "./deferred";
 export {

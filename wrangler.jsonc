@@ -10,6 +10,12 @@
 
   "observability": { "enabled": true },
 
+  // Workers AI binding — backs the `modelGateway` capability the `pr-review`
+  // engine calls. The binding IS the auth (Workers AI is account-billed), so no
+  // model API key is configured. Optionally routed through an AI Gateway via the
+  // `AI_GATEWAY_ID` var (unset here → call Workers AI directly).
+  "ai": { "binding": "AI" },
+
   // Browser Rendering binding — backs `GET /v1/browser/cdp`, the CDP proxy the
   // cdp-acceptance container connects to. CF Browser Rendering CDP is only
   // reachable via this binding, not a public token-dialable WebSocket.

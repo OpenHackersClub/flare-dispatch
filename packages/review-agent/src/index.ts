@@ -1,18 +1,19 @@
 // @flare-dispatch/review-agent — public API.
 //
-// A provider-agnostic, Worker-side code-review engine that talks to an
-// OpenAI-compatible `/chat/completions` endpoint over `@effect/platform`
-// `HttpClient`. The `pr-review` run composes these into a real review:
+// A provider-agnostic, Worker-side code-review engine that calls a model
+// through the `modelGateway` capability (`@flare-dispatch/core`) — backed by the
+// Cloudflare Workers AI binding via an AI Gateway, so NO model API key is
+// configured (the binding is the auth). The `pr-review` run composes these into
+// a real review:
 //
 //   import {
-//     resolveBackend, makeModelHttpLayer,
+//     resolveBackend,
 //     riskTier, reviewDomain, coordinate,
 //     stripDiffNoise, ReviewOutput, type Finding,
 //   } from "@flare-dispatch/review-agent";
 //
 // Backend selection + the operator config contract live in `backend.ts`; the
-// model-calling engine in `engine.ts`; the chat/completions transport in
-// `chat.ts`; the shared wire schemas in `schemas.ts`.
+// model-calling engine in `engine.ts`; the shared wire schemas in `schemas.ts`.
 
 export {
   type Finding,
@@ -46,19 +47,8 @@ export {
   parseBackend,
   parseMode,
   resolveBackend,
-  makeModelHttpLayer,
   classifyModelError,
 } from "./backend.js";
-
-export {
-  type ChatRequest,
-  type ChatResult,
-  type ChatTool,
-  type ChatToolCall,
-  buildChatBody,
-  chatCompletionsUrl,
-  chatCompletion,
-} from "./chat.js";
 
 export {
   extractJsonText,

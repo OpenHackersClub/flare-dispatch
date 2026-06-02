@@ -20,6 +20,7 @@ import type { Email } from "./services/email";
 import type { Executions } from "./services/executions";
 import type { Github } from "./services/github";
 import type { IO } from "./services/io";
+import type { ModelGateway } from "./services/model-gateway";
 import type { Oidc } from "./services/oidc";
 import type { Sandbox } from "./services/sandbox";
 import type { StepRunner } from "./services/step-runner";
@@ -35,6 +36,7 @@ export type RunContext =
   | Checks
   | Email
   | Github
+  | ModelGateway
   | Oidc
   | Executions
   | StepRunner;

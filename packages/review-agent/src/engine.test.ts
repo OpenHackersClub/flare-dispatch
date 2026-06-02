@@ -1,13 +1,19 @@
 // Engine unit tests.
 //
-//   * `reviewDomain` calls the model — the `/chat/completions` transport is
-//     replaced by a stub `HttpClient` Layer (`stubHttp`/`stubHttpSequence`)
-//     returning canned response JSON, so these run with no provider configured.
-//   * `coordinate` / `riskTier` are PURE — tested directly, no stub.
+//   * `reviewDomain` calls the model — the `modelGateway` capability is replaced
+//     by the core `ModelGatewayFake`, scripted with canned `{ toolCalls, text }`
+//     results (and `ModelGatewayError` for the failure path), so these run with
+//     no provider configured.
+//   * `coordinate` / `riskTier` are PURE — tested directly, no fake.
 
 import { describe, expect, it } from "vitest";
 import { Effect, Layer } from "effect";
-import { HttpClient, HttpClientResponse } from "@effect/platform";
+import {
+  ModelGateway,
+  ModelGatewayError,
+  type ModelCompletionResult,
+} from "@flare-dispatch/core";
+import { makeModelGatewayFake } from "@flare-dispatch/core/testing";
 import {
   classifyRisk,
   coordinate,
@@ -17,87 +23,46 @@ import {
 } from "./engine.js";
 import type { Finding } from "./schemas.js";
 
-// --- chat/completions response fixtures -------------------------------------
+// --- ModelGateway result fixtures -------------------------------------------
 
-/** A tools-mode response: one tool call whose `arguments` is a JSON string. */
-const toolsResponse = (name: string, args: unknown): unknown => ({
-  choices: [
-    {
-      message: {
-        content: "",
-        tool_calls: [
-          { function: { name, arguments: JSON.stringify(args) } },
-        ],
-      },
-    },
-  ],
+/** A tools-mode result: one tool call whose `arguments` is a parsed OBJECT
+ *  (the Workers AI shape). */
+const toolsResult = (name: string, args: unknown): ModelCompletionResult => ({
+  toolCalls: [{ name, arguments: args }],
+  text: "",
 });
 
-/** An empty-tool-calls response (the DeepSeek-via-AI-Gateway pathology). */
-const emptyToolsResponse = (content = ""): unknown => ({
-  choices: [{ message: { content, tool_calls: [] } }],
+/** A tools-mode result whose `arguments` is a JSON STRING (the OpenAI shape). */
+const toolsResultString = (
+  name: string,
+  args: unknown,
+): ModelCompletionResult => ({
+  toolCalls: [{ name, arguments: JSON.stringify(args) }],
+  text: "",
 });
 
-/** A json-mode response: free-form `message.content` (may contain <think>). */
-const textResponse = (content: string): unknown => ({
-  choices: [{ message: { content } }],
+/** An empty-tool-calls result (the DeepSeek-via-AI-Gateway pathology). */
+const emptyToolsResult = (text = ""): ModelCompletionResult => ({
+  toolCalls: [],
+  text,
 });
 
-// --- HttpClient stubs --------------------------------------------------------
+/** A json-mode result: free-form `text` (may contain <think>). */
+const textResult = (text: string): ModelCompletionResult => ({
+  toolCalls: [],
+  text,
+});
 
-/** A stub `HttpClient` Layer returning a fixed JSON body + status. */
-const stubHttp = (
-  json: unknown,
-  status = 200,
-): Layer.Layer<HttpClient.HttpClient> =>
-  Layer.succeed(
-    HttpClient.HttpClient,
-    HttpClient.make((request) =>
-      Effect.succeed(
-        HttpClientResponse.fromWeb(
-          request,
-          new Response(JSON.stringify(json), {
-            status,
-            headers: { "Content-Type": "application/json" },
-          }),
-        ),
-      ),
-    ),
-  );
-
-/**
- * A stub `HttpClient` Layer returning a *different* JSON body per call — for the
- * tools→json auto-fallback (first call returns empty tool_calls, retry returns
- * text). `calls()` reports how many requests were issued.
- */
-const stubHttpSequence = (
-  bodies: ReadonlyArray<unknown>,
-): { layer: Layer.Layer<HttpClient.HttpClient>; calls: () => number } => {
-  let i = 0;
-  const layer = Layer.succeed(
-    HttpClient.HttpClient,
-    HttpClient.make((request) =>
-      Effect.sync(() => {
-        const body = bodies[Math.min(i, bodies.length - 1)];
-        i += 1;
-        return HttpClientResponse.fromWeb(
-          request,
-          new Response(JSON.stringify(body), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }),
-    ),
-  );
-  return { layer, calls: () => i };
+/** Provide a ModelGateway fake scripted with the given responses. */
+const withGateway = (
+  responses: ReadonlyArray<ModelCompletionResult | ModelGatewayError>,
+): { layer: Layer.Layer<ModelGateway>; calls: () => number } => {
+  const fake = makeModelGatewayFake({ responses });
+  return { layer: fake.layer, calls: () => fake.state.requests.length };
 };
 
 /** Common backend coordinates every call needs. */
-const conn = {
-  baseUrl: "https://gw.example/v1/acct/gw/compat",
-  apiKey: "sk-test",
-} as const;
+const conn = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as const;
 
 describe("riskTier / classifyRisk", () => {
   it("an empty diff is trivial", () => {
@@ -168,19 +133,36 @@ describe("reviewDomain", () => {
     message: "validate before use",
   };
 
-  it("tools mode — returns findings from the `report` tool call", async () => {
+  it("tools mode — returns findings from the `report` tool call (object args)", async () => {
+    const { layer } = withGateway([
+      toolsResult("report", { findings: [finding] }),
+    ]);
     const result = await Effect.runPromise(
       reviewDomain({
         ...conn,
         agent: "security",
         diff: "diff --git a/src/a.ts b/src/a.ts",
         tier: "full",
-        model: "llama-3.3-70b",
         backend: "opencode",
         mode: "tools",
-      }).pipe(
-        Effect.provide(stubHttp(toolsResponse("report", { findings: [finding] }))),
-      ),
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual([finding]);
+  });
+
+  it("tools mode — also accepts a JSON-STRING `arguments` (OpenAI shape)", async () => {
+    const { layer } = withGateway([
+      toolsResultString("report", { findings: [finding] }),
+    ]);
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "full",
+        backend: "opencode",
+        mode: "tools",
+      }).pipe(Effect.provide(layer)),
     );
     expect(result).toEqual([finding]);
   });
@@ -195,55 +177,54 @@ describe("reviewDomain", () => {
       "```",
     ].join("\n");
 
+    const { layer } = withGateway([textResult(text)]);
     const result = await Effect.runPromise(
       reviewDomain({
         ...conn,
         agent: "security",
         diff: "x",
         tier: "lite",
-        model: "deepseek-r1",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         backend: "reasonix",
         mode: "json",
-      }).pipe(Effect.provide(stubHttp(textResponse(text)))),
+      }).pipe(Effect.provide(layer)),
     );
     expect(result).toEqual([finding]);
   });
 
   it("json mode — accepts a bare JSON object with no fences", async () => {
+    const { layer } = withGateway([textResult('{"findings":[]}')]);
     const result = await Effect.runPromise(
       reviewDomain({
         ...conn,
         agent: "security",
         diff: "x",
         tier: "trivial",
-        model: "deepseek-r1",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         backend: "reasonix",
         mode: "json",
-      }).pipe(Effect.provide(stubHttp(textResponse('{"findings":[]}')))),
+      }).pipe(Effect.provide(layer)),
     );
     expect(result).toEqual([]);
   });
 
   it("json mode — fails StructuredOutputInvalid on schema mismatch", async () => {
+    const { layer } = withGateway([
+      // `level` is not in the allowed set → schema mismatch after parse.
+      textResult(
+        '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
+      ),
+    ]);
     const exit = await Effect.runPromiseExit(
       reviewDomain({
         ...conn,
         agent: "security",
         diff: "x",
         tier: "lite",
-        model: "deepseek-r1",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         backend: "reasonix",
         mode: "json",
-      }).pipe(
-        // `level` is not in the allowed set → schema mismatch after parse.
-        Effect.provide(
-          stubHttp(
-            textResponse(
-              '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
-            ),
-          ),
-        ),
-      ),
+      }).pipe(Effect.provide(layer)),
     );
     expect(exit._tag).toBe("Failure");
   });
@@ -251,9 +232,9 @@ describe("reviewDomain", () => {
   it("tools mode — auto-falls-back to json when tool_calls come back empty", async () => {
     // First call (tools) → empty tool_calls (DeepSeek pathology); the engine
     // retries once in json mode, which returns parseable <think>-wrapped text.
-    const seq = stubHttpSequence([
-      emptyToolsResponse("<think>I won't use tools</think>"),
-      textResponse(JSON.stringify({ findings: [finding] })),
+    const { layer, calls } = withGateway([
+      emptyToolsResult("<think>I won't use tools</think>"),
+      textResult(JSON.stringify({ findings: [finding] })),
     ]);
     const result = await Effect.runPromise(
       reviewDomain({
@@ -261,16 +242,23 @@ describe("reviewDomain", () => {
         agent: "security",
         diff: "x",
         tier: "lite",
-        model: "deepseek-r1",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         backend: "reasonix",
         mode: "tools",
-      }).pipe(Effect.provide(seq.layer)),
+      }).pipe(Effect.provide(layer)),
     );
     expect(result).toEqual([finding]);
-    expect(seq.calls()).toBe(2); // tools attempt + json fallback
+    expect(calls()).toBe(2); // tools attempt + json fallback
   });
 
-  it("fails ModelCallFailed on a non-2xx response", async () => {
+  it("fails ModelCallFailed on a gateway error", async () => {
+    const { layer } = withGateway([
+      new ModelGatewayError({
+        model: conn.model,
+        reason: "bad-response",
+        message: "Workers AI run failed: boom",
+      }),
+    ]);
     const exit = await Effect.runPromiseExit(
       reviewDomain({
         ...conn,
@@ -280,9 +268,7 @@ describe("reviewDomain", () => {
         model: "m",
         backend: "opencode",
         mode: "json",
-      }).pipe(
-        Effect.provide(stubHttp({ error: "compat: responses not supported" }, 400)),
-      ),
+      }).pipe(Effect.provide(layer)),
     );
     expect(exit._tag).toBe("Failure");
   });

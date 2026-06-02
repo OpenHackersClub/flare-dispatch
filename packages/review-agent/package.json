@@ -1,7 +1,7 @@
 {
   "name": "@flare-dispatch/review-agent",
   "version": "0.0.0",
-  "description": "Provider-agnostic, Worker-side code-review engine that calls an OpenAI-compatible /chat/completions endpoint over @effect/platform HttpClient. Powers the pr-review run.",
+  "description": "Provider-agnostic, Worker-side code-review engine that calls a model through the `modelGateway` capability (Workers AI binding via an AI Gateway — no model API key). Powers the pr-review run.",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform": "^0.96.0",
+    "@flare-dispatch/core": "workspace:*",
     "effect": "^3.21.0"
   },
   "devDependencies": {

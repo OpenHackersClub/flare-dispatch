@@ -1,7 +1,8 @@
 // Backend-selection unit tests — the operator config contract.
 //
 // `resolveBackend` reads a `config.get`-shaped accessor; here we back it with a
-// plain in-memory map so the selection logic is tested without the DSL.
+// plain in-memory map so the selection logic is tested without the DSL. No API
+// key is read — the Workers AI binding (the `modelGateway` backend) is the auth.
 
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
@@ -42,44 +43,29 @@ describe("parseMode", () => {
 });
 
 describe("resolveBackend", () => {
-  it("resolves the default backend (opencode) from config + shared MODEL_API_KEY", async () => {
+  it("resolves the default backend (opencode) from config — no API key", async () => {
     const store = {
-      [BACKEND_KEYS.opencode.baseUrlKey]: "https://gw/compat",
-      [BACKEND_KEYS.opencode.modelKey]: "anthropic/claude-3-5-sonnet",
-      MODEL_API_KEY: "sk-shared",
+      [BACKEND_KEYS.opencode.modelKey]:
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.backend).toBe("opencode");
-    expect(resolved.baseUrl).toBe("https://gw/compat");
-    expect(resolved.model).toBe("anthropic/claude-3-5-sonnet");
-    expect(resolved.apiKey).toBe("sk-shared");
-    // opencode defaults to forced tool-calls.
+    expect(resolved.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    // opencode defaults to the tool-calling path.
     expect(resolved.mode).toBe("tools");
   });
 
-  it("prefers the backend-specific OPENCODE_API_KEY over the shared one", async () => {
-    const store = {
-      "pr-review.backend": "opencode",
-      [BACKEND_KEYS.opencode.baseUrlKey]: "https://gw/compat",
-      [BACKEND_KEYS.opencode.modelKey]: "m",
-      OPENCODE_API_KEY: "sk-opencode",
-      MODEL_API_KEY: "sk-shared",
-    };
-    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
-    expect(resolved.apiKey).toBe("sk-opencode");
-  });
-
-  it("resolves the reasonix backend with REASONIX_API_KEY", async () => {
+  it("resolves the reasonix backend", async () => {
     const store = {
       "pr-review.backend": "reasonix",
-      [BACKEND_KEYS.reasonix.baseUrlKey]: "https://gw/compat",
-      [BACKEND_KEYS.reasonix.modelKey]: "deepseek/deepseek-chat",
-      REASONIX_API_KEY: "sk-deepseek",
+      [BACKEND_KEYS.reasonix.modelKey]:
+        "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.backend).toBe("reasonix");
-    expect(resolved.model).toBe("deepseek/deepseek-chat");
-    expect(resolved.apiKey).toBe("sk-deepseek");
+    expect(resolved.model).toBe(
+      "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    );
     // reasonix defaults to json mode (DeepSeek doesn't honour tool-calls).
     expect(resolved.mode).toBe("json");
   });
@@ -87,10 +73,8 @@ describe("resolveBackend", () => {
   it("honours an explicit per-backend mode override", async () => {
     const store = {
       "pr-review.backend": "reasonix",
-      [BACKEND_KEYS.reasonix.baseUrlKey]: "https://gw/compat",
       [BACKEND_KEYS.reasonix.modelKey]: "m",
       [BACKEND_KEYS.reasonix.modeKey]: "tools",
-      REASONIX_API_KEY: "sk",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.mode).toBe("tools");
@@ -99,30 +83,15 @@ describe("resolveBackend", () => {
   it("falls back to the backend default for an unrecognized mode value", async () => {
     const store = {
       "pr-review.backend": "opencode",
-      [BACKEND_KEYS.opencode.baseUrlKey]: "https://gw/compat",
       [BACKEND_KEYS.opencode.modelKey]: "m",
       [BACKEND_KEYS.opencode.modeKey]: "structured",
-      MODEL_API_KEY: "sk",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.mode).toBe("tools");
   });
 
-  it("fails with BackendUnconfigured naming the missing base_url", async () => {
-    const exit = await Effect.runPromiseExit(
-      resolveBackend(getter({ MODEL_API_KEY: "sk" })),
-    );
-    expect(exit._tag).toBe("Failure");
-  });
-
-  it("fails when the api key is absent for the selected backend", async () => {
-    const store = {
-      "pr-review.backend": "reasonix",
-      [BACKEND_KEYS.reasonix.baseUrlKey]: "https://gw/compat",
-      [BACKEND_KEYS.reasonix.modelKey]: "m",
-      // no REASONIX_API_KEY, and reasonix has no shared fallback
-    };
-    const exit = await Effect.runPromiseExit(resolveBackend(getter(store)));
+  it("fails with BackendUnconfigured naming the missing model key", async () => {
+    const exit = await Effect.runPromiseExit(resolveBackend(getter({})));
     expect(exit._tag).toBe("Failure");
   });
 });
