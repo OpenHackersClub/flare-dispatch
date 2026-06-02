@@ -58,3 +58,29 @@ ENV PATH=/opt/node24/bin:$PATH
 # that crashes ~2-3s later with PortNeverOpened. Corepack resolves the pinned
 # version from each repo's `packageManager` field at first use.
 RUN corepack enable
+
+# Bake the Playwright headless browser into the image so Playwright runs (e.g.
+# `playwright-demo`) don't download it on every `sandbox.exec`. A cold chromium
+# download (~170MB) is the slowest, most failure-prone step of those runs: in
+# the Sandbox it routinely exceeded the caller's install budget and got killed
+# mid-fetch, leaving no browser and a test that fails instantly. Baking it once
+# at build time takes that cost to ~0s at runtime.
+#
+# `chromium-headless-shell` (not full `chromium`) — it's ~3x smaller and is
+# exactly the browser a headless run uses (a Playwright project with no pinned
+# `channel` resolves to the bundled chromium → headless shell when running
+# headless). The base image already carries chromium's shared libs (a headless
+# run launches without `playwright install --with-deps`), so we skip the apt
+# step entirely — which is also what made callers' runtime `--with-deps` hang
+# the Sandbox indefinitely. Browsers land in a shared, image-baked path that
+# every `sandbox.exec` sees via PLAYWRIGHT_BROWSERS_PATH, so callers DROP the
+# `playwright install` step from their command.
+#
+# VERSION LOCKSTEP: Playwright pins each browser build to the library version.
+# PLAYWRIGHT_VERSION MUST track the `@playwright/test` version consuming repos
+# run. If a consumer floats ahead, Playwright re-downloads the matching build at
+# runtime (graceful — just slower); bump this with consumers to keep it at ~0s.
+ARG PLAYWRIGHT_VERSION=1.59.1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium-headless-shell \
+    && chmod -R a+rX /opt/pw-browsers
