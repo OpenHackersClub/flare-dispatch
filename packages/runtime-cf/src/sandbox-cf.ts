@@ -40,7 +40,11 @@
 //
 // Spec: specs/01-architecture.md § Sandbox, specs/03-dsl.md § sandbox.
 
-import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
+import {
+  getSandbox,
+  type Sandbox,
+  SessionTerminatedError,
+} from "@cloudflare/sandbox";
 import { Duration, Effect, Layer } from "effect";
 import {
   CheckoutFailed,
@@ -64,6 +68,102 @@ import { authenticateCloneUrl, repoUrl } from "./sandbox-clone-url";
 /** Normalise a `command` (string | array) to a single shell string. */
 const asCommand = (command: string | readonly string[]): string =>
   typeof command === "string" ? command : command.join(" ");
+
+/**
+ * Cap the stdout/stderr *preview* carried inline in the `ExecResult`. The FULL
+ * output is always written to R2 (`logPath`); only this tail rides in the
+ * step's RETURN VALUE — which Cloudflare Workflows checkpoints and re-reads on
+ * every engine replay. A multi-MB inline blob (a verbose Playwright run, a
+ * browser-download progress stream) bloats the checkpoint and, when the engine
+ * soft-restarts a step, the replay deserialization trips "Worker exceeded CPU
+ * time limit". Keeping the inline tail small bounds the checkpoint; the
+ * artifact/log uploads still surface the complete output. Matches the
+ * `ExecResult.stdout` contract: "last N KB inlined; full log streamed to R2".
+ */
+const INLINE_TAIL_CHARS = 16 * 1024;
+const inlineTail = (s: string): string =>
+  s.length <= INLINE_TAIL_CHARS
+    ? s
+    : `…[${s.length - INLINE_TAIL_CHARS} chars truncated — full log in R2]…\n${s.slice(s.length - INLINE_TAIL_CHARS)}`;
+
+/** The subset of the SDK's `ExecResult` this layer consumes. */
+interface RawExecResult {
+  readonly exitCode: number;
+  readonly durationMs: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Run a command and ALWAYS resolve to a result when the command *ran* —
+ * regardless of its exit code or how its shell ended. Only a genuine
+ * could-not-launch / timeout failure rejects (→ `ExecFailed`/`ExecTimeout`).
+ *
+ * The `@cloudflare/sandbox` SDK rejects `exec` in two cases that are really a
+ * *completed* command, not an infra failure:
+ *   - `CommandError` — the command exited non-zero (carries exitCode + the
+ *     captured stdout/stderr).
+ *   - `SessionTerminatedError` — the session's shell exited (the command ran
+ *     `exit`, or its last process took the shell down). Carries the exitCode;
+ *     stdout/stderr are gone with the session, but anything the command already
+ *     wrote to disk (e.g. a Playwright `playwright-report/` + report.json) is
+ *     intact for the run's artifact upload.
+ *
+ * Folding both back into a result is what lets a *failing* `playwright-demo`
+ * still upload its `videoUri` (report/trace/video) and `logUri` instead of
+ * dying with no output. A failing test is data, not an error.
+ *
+ * `CommandError` is not exported from the SDK package root, so it's matched by
+ * `name` and its public getters (`exitCode`/`stdout`/`stderr`) are read off the
+ * instance directly.
+ */
+const execToResult = async (
+  box: Sandbox,
+  cmd: string,
+  opts: { cwd?: string; env?: Record<string, string>; timeoutSec?: number },
+): Promise<RawExecResult> => {
+  try {
+    const r = await box.exec(cmd, {
+      cwd: opts.cwd,
+      env: opts.env,
+      timeout: opts.timeoutSec === undefined ? undefined : opts.timeoutSec * 1000,
+    });
+    return {
+      exitCode: r.exitCode,
+      durationMs: r.duration,
+      stdout: r.stdout,
+      stderr: r.stderr,
+    };
+  } catch (cause) {
+    if (cause instanceof SessionTerminatedError) {
+      return {
+        exitCode: cause.exitCode ?? 1,
+        durationMs: 0,
+        stdout: "",
+        stderr: `[session shell exited ${cause.exitCode ?? "?"} — stdout/stderr lost with the session; on-disk artifacts (report/trace/video) preserved]`,
+      };
+    }
+    // `CommandError` (non-zero exit) — not exported, matched structurally.
+    if (
+      cause instanceof Error &&
+      cause.name === "CommandError" &&
+      typeof (cause as { exitCode?: unknown }).exitCode === "number"
+    ) {
+      const ce = cause as Error & {
+        exitCode: number;
+        stdout?: string;
+        stderr?: string;
+      };
+      return {
+        exitCode: ce.exitCode,
+        durationMs: 0,
+        stdout: ce.stdout ?? "",
+        stderr: ce.stderr ?? "",
+      };
+    }
+    throw cause; // genuine could-not-launch / timeout → classified by caller
+  }
+};
 
 
 /**
@@ -210,24 +310,23 @@ export const makeSandboxCloudflareLive = (
       const cmd = asCommand(command);
       return Effect.tryPromise({
         // `tryPromise` failure path is `ExecFailed | ExecTimeout` — a command
-        // that *could not run as a process*. A non-zero exit of a command that
-        // *did* run is a normal `ExecResult` (a failing test), returned below.
+        // that *could not run as a process*. A command that DID run — any exit
+        // code, even one whose shell then exited — is a normal `ExecResult`,
+        // folded back from the SDK's CommandError/SessionTerminatedError by
+        // `execToResult` so a failing demo still uploads its report + log.
         try: async () => {
-          const result = await box.exec(cmd, {
-            cwd,
-            env,
-            timeout: timeoutSec === undefined ? undefined : timeoutSec * 1000,
-          });
+          const result = await execToResult(box, cmd, { cwd, env, timeoutSec });
           const logPath = nextLogKey();
+          // FULL output → R2 (the durable log the artifact step promotes).
           await writeLog(logPath, cmd, result.stdout, result.stderr);
-          // `stdout`/`stderr` here are the inlined tail; the full NDJSON log is
-          // the R2 object at `logPath`.
+          // Only a bounded TAIL is inlined in the step's return value, so the
+          // Workflow checkpoint stays small (see `inlineTail`).
           return {
             exitCode: result.exitCode,
-            durationMs: result.duration,
+            durationMs: result.durationMs,
             logPath,
-            stdout: result.stdout,
-            stderr: result.stderr,
+            stdout: inlineTail(result.stdout),
+            stderr: inlineTail(result.stderr),
           };
         },
         catch: (cause): ExecFailed | ExecTimeout => {

@@ -57,6 +57,13 @@ const makeFakeBox = (opts: {
           getLogs,
         };
   return {
+    // Default `exec` — tests that exercise the exec path override this.
+    exec: vi.fn(async () => ({
+      exitCode: 0,
+      duration: 0,
+      stdout: "",
+      stderr: "",
+    })),
     getProcess: vi.fn(async () => proc),
     exposePort: vi.fn(
       opts.exposePort ??
@@ -71,11 +78,27 @@ const makeFakeBox = (opts: {
   };
 };
 
+// A stand-in for the SDK's `SessionTerminatedError` (thrown when a command's
+// shell exits). `vi.hoisted` so it exists before the hoisted `vi.mock` factory
+// runs and so the tests can construct instances the Layer will `instanceof`.
+const { FakeSessionTerminatedError } = vi.hoisted(() => ({
+  FakeSessionTerminatedError: class SessionTerminatedError extends Error {
+    readonly exitCode?: number;
+    constructor(exitCode?: number) {
+      super(`session terminated (exit ${exitCode})`);
+      this.name = "SessionTerminatedError";
+      this.exitCode = exitCode;
+    }
+  },
+}));
+
 // `getSandbox(ns, id)` is the only thing the Layer pulls from the SDK; the mock
-// returns whatever the current test installed via `currentBox`.
+// returns whatever the current test installed via `currentBox`. The error class
+// is needed for `execToResult`'s `instanceof` recovery path.
 let currentBox: ReturnType<typeof makeFakeBox>;
 vi.mock("@cloudflare/sandbox", () => ({
   getSandbox: () => currentBox,
+  SessionTerminatedError: FakeSessionTerminatedError,
 }));
 
 // Imported AFTER the mock is registered so the Layer binds the mocked SDK.
@@ -261,5 +284,112 @@ describe("makeSandboxCloudflareLive — exposePort (C)", () => {
         expect(currentBox.exposePort).not.toHaveBeenCalled();
       });
     },
+  );
+});
+
+// (D) exec result folding — a command that RAN (any exit code, even one whose
+// shell then exited) is a result the run can report + upload artifacts for;
+// only a could-not-launch error is an Effect failure. This is what lets a
+// failing `playwright-demo` still surface its videoUri/logUri.
+describe("makeSandboxCloudflareLive — exec result folding (D)", () => {
+  const execLayer = () =>
+    makeSandboxCloudflareLive(ns, makeBucket().bucket, "exec-1");
+
+  it.effect("a non-zero exit is a result, not a failure", () =>
+    Effect.gen(function* () {
+      currentBox = makeFakeBox({ proc: null });
+      currentBox.exec = vi.fn(async () => ({
+        exitCode: 1,
+        duration: 5,
+        stdout: "boom",
+        stderr: "e",
+      }));
+      const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+        s.exec({ command: "playwright test", cwd: "/w", env: {} }),
+      ).pipe(Effect.provide(execLayer()), Effect.exit);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) expect(exit.value.exitCode).toBe(1);
+    }),
+  );
+
+  it.effect("SessionTerminatedError folds into a result with its exitCode", () =>
+    Effect.gen(function* () {
+      currentBox = makeFakeBox({ proc: null });
+      currentBox.exec = vi.fn(async () => {
+        throw new FakeSessionTerminatedError(7);
+      });
+      const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+        s.exec({ command: "run-test; exit 7", cwd: "/w", env: {} }),
+      ).pipe(Effect.provide(execLayer()), Effect.exit);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) expect(exit.value.exitCode).toBe(7);
+    }),
+  );
+
+  it.effect("CommandError folds into a result, preserving stdout/stderr", () =>
+    Effect.gen(function* () {
+      currentBox = makeFakeBox({ proc: null });
+      currentBox.exec = vi.fn(async () => {
+        const e = new Error("non-zero") as Error & {
+          exitCode: number;
+          stdout: string;
+          stderr: string;
+        };
+        e.name = "CommandError";
+        e.exitCode = 2;
+        e.stdout = "out-tail";
+        e.stderr = "err-tail";
+        throw e;
+      });
+      const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+        s.exec({ command: "false", cwd: "/w", env: {} }),
+      ).pipe(Effect.provide(execLayer()), Effect.exit);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) {
+        expect(exit.value.exitCode).toBe(2);
+        expect(exit.value.stdout).toBe("out-tail");
+      }
+    }),
+  );
+
+  it.effect("a genuine launch error still fails as ExecFailed", () =>
+    Effect.gen(function* () {
+      currentBox = makeFakeBox({ proc: null });
+      currentBox.exec = vi.fn(async () => {
+        throw new Error("container vanished");
+      });
+      const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+        s.exec({ command: "anything", cwd: "/w", env: {} }),
+      ).pipe(Effect.provide(execLayer()), Effect.exit);
+      const err = failureOf<{ _tag: string }>(exit);
+      expect(err?._tag).toBe("ExecFailed");
+    }),
+  );
+
+  it.effect("inlines only a bounded stdout tail; full log streams to R2", () =>
+    Effect.gen(function* () {
+      const big = "x".repeat(200_000);
+      currentBox = makeFakeBox({ proc: null });
+      currentBox.exec = vi.fn(async () => ({
+        exitCode: 0,
+        duration: 1,
+        stdout: big,
+        stderr: "",
+      }));
+      const { bucket, puts } = makeBucket();
+      const layer = makeSandboxCloudflareLive(ns, bucket, "exec-1");
+      const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+        s.exec({ command: "noisy", cwd: "/w", env: {} }),
+      ).pipe(Effect.provide(layer), Effect.exit);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) {
+        // Inline preview is bounded (would otherwise bloat the checkpoint).
+        expect(exit.value.stdout.length).toBeLessThan(20_000);
+        expect(exit.value.stdout).toContain("truncated");
+      }
+      // The FULL output is still written to R2 (the durable log).
+      const logBody = puts.map((p) => String(p.body)).join("");
+      expect(logBody.length).toBeGreaterThan(190_000);
+    }),
   );
 });
