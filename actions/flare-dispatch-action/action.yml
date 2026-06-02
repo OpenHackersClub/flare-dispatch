@@ -52,6 +52,11 @@ inputs:
 outputs:
   execution-id:
     description: ULID of the execution on Cloudflare — returned by the Dispatcher in the 202.
+  details-url:
+    description: >-
+      Cloudflare Workflows instance URL for this execution (the run's
+      steps/logs), surfaced for BOTH success and failure. Empty when the
+      Dispatcher runs BYOC (no CLOUDFLARE_ACCOUNT_ID) or predates this field.
 
 runs:
   using: node20

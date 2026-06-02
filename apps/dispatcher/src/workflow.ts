@@ -56,6 +56,7 @@ import {
 import { lookupRun } from "./registry";
 import { selectSandboxNs } from "./sandbox-routing";
 import { renderResultEmail } from "./notify";
+import { workflowDashboardUrl } from "./dashboard-url";
 import type { Env } from "./env";
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */
@@ -174,23 +175,6 @@ const resolveEmailConfig = (env: Env): EmailCloudflareConfig | undefined => {
  * The Cloudflare Workflows name backing `RUNS_WORKFLOW` — the dashboard
  * URL segment. MUST stay in sync with `wrangler.jsonc` → `workflows[0].name`.
  */
-const WORKFLOWS_DASHBOARD_NAME = "runs-workflow";
-
-/**
- * Build the Cloudflare dashboard deep-link for this execution's Workflow
- * instance (the `executionId` doubles as the CF Workflow `instanceId` —
- * `RUNS_WORKFLOW.create({ id: executionId })`), or `undefined` when the
- * account id is not configured (the BYOC default). Used as the check-run's
- * `details_url` so a reviewer jumps from the PR check to the step logs.
- */
-const workflowDashboardUrl = (
-  accountId: string | undefined,
-  executionId: string,
-): string | undefined =>
-  accountId !== undefined && accountId.length > 0
-    ? `https://dash.cloudflare.com/${accountId}/workers/workflows/${WORKFLOWS_DASHBOARD_NAME}/instance/${encodeURIComponent(executionId)}`
-    : undefined;
-
 export class RunWorkflow extends WorkflowEntrypoint<Env> {
   override async run(
     event: WorkflowEvent<unknown>,

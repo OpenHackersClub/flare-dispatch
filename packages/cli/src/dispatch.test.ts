@@ -7,7 +7,7 @@
 // contract is broken.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Exit } from "effect";
@@ -336,6 +336,53 @@ describe("runDispatch", () => {
       new TextEncoder().encode(calls[0]?.body ?? ""),
     );
     expect(calls[0]?.headers["X-FlareDispatch-Signature"]).toBe(expected);
+  });
+
+  it("HTTP 202 with detailsUrl → returns it AND writes both GITHUB_OUTPUTs", async () => {
+    const detailsUrl =
+      "https://dash.cloudflare.com/acct123/workers/workflows/runs-workflow/instance/01HXYZ";
+    const { fetch } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "01HXYZ", detailsUrl }) },
+    ]);
+    const outFile = join(
+      mkdtempSync(join(tmpdir(), "flare-out-")),
+      "github_output",
+    );
+    writeFileSync(outFile, "");
+    const env = baseEnv({ GITHUB_OUTPUT: outFile });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isSuccess(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.executionId).toBe("01HXYZ");
+      expect(exit.value.detailsUrl).toBe(detailsUrl);
+    }
+    const written = readFileSync(outFile, "utf8");
+    expect(written).toContain("execution-id=01HXYZ\n");
+    expect(written).toContain(`details-url=${detailsUrl}\n`);
+  });
+
+  it("HTTP 202 without detailsUrl (BYOC / older dispatcher) → detailsUrl is ''", async () => {
+    const { fetch } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "01OLD" }) },
+    ]);
+    const outFile = join(
+      mkdtempSync(join(tmpdir(), "flare-out-")),
+      "github_output",
+    );
+    writeFileSync(outFile, "");
+    const env = baseEnv({ GITHUB_OUTPUT: outFile });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isSuccess(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.detailsUrl).toBe("");
+    }
+    // The output key is still written (empty value) so a consuming step can
+    // unconditionally reference `steps.<id>.outputs.details-url`.
+    expect(readFileSync(outFile, "utf8")).toContain("details-url=\n");
   });
 
   it("strips a single trailing slash from the endpoint", async () => {
