@@ -47,13 +47,15 @@
 // Spec: specs/02-runs.md § 4, specs/03-dsl.md § browser + § Primitives,
 //       specs/pm/plan.md § V1 / V2 plan — PR9.
 
-import { Duration, Effect, Schema } from "effect";
+import { Duration, Effect, Option, Schema } from "effect";
 import {
   AcceptanceFailed,
   artifact,
   browser,
   type Container,
   defineRun,
+  ExecFailed,
+  type ExecResult,
   ExecTimeout,
   io,
   sandbox,
@@ -77,6 +79,17 @@ const SENTINEL_RE = /DONE:(-?\d+)/;
  * until the step timeout, which then retries and never resolves). Returns the
  * suite's exit code; fails `ExecTimeout` only if the sentinel never appears
  * within `maxAttempts` (the durable step's own timeout is the real ceiling).
+ *
+ * Transient-`ExecFailed` tolerance: a poll `cat` exec can have its container
+ * connection killed (the CF Sandbox kills a container exec non-deterministically
+ * — the very flake the detached+poll design exists to avoid for the *suite*).
+ * A killed POLL connection says nothing about the detached suite, which keeps
+ * running and will still write the sentinel — so a single `ExecFailed` here
+ * must NOT fail the run. We swallow it, log, and keep polling. Only
+ * `maxConsecutiveExecFailures` killed polls IN A ROW (a genuinely dead
+ * container) re-surface the last `ExecFailed`, so a real outage still fails the
+ * run instead of spinning silently to `maxAttempts`. A successful poll resets
+ * the streak.
  */
 export const pollSentinelExit = ({
   container,
@@ -84,21 +97,55 @@ export const pollSentinelExit = ({
   sentinel = SENTINEL_PATH,
   pollEvery = "5 seconds",
   maxAttempts = 360,
+  maxConsecutiveExecFailures = 12,
 }: {
   readonly container: Container;
   readonly dir: string;
   readonly sentinel?: string;
   readonly pollEvery?: Duration.DurationInput;
   readonly maxAttempts?: number;
+  readonly maxConsecutiveExecFailures?: number;
 }) =>
   Effect.gen(function* () {
+    let consecutiveExecFailures = 0;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const r = yield* sandbox.exec({
-        cwd: dir,
-        container,
-        command: `cat ${sentinel} 2>/dev/null || true`,
-      });
-      const match = SENTINEL_RE.exec(r.stdout);
+      // `Option.none()` == this poll's exec connection was killed (transient).
+      const polled = yield* sandbox
+        .exec({
+          cwd: dir,
+          container,
+          command: `cat ${sentinel} 2>/dev/null || true`,
+        })
+        .pipe(
+          Effect.map(Option.some),
+          // `Effect.logWarning` (built-in, no service requirement) — keeps this
+          // helper's dependency surface at just `Sandbox`, so it stays unit-
+          // testable with a bare Sandbox Layer. The run still threads `io.log`
+          // for its own checkpointed lines.
+          Effect.catchTag("ExecFailed", (cause: ExecFailed) =>
+            Effect.logWarning(
+              `run-tests-wait: poll exec killed (transient, ${consecutiveExecFailures + 1}/${maxConsecutiveExecFailures}), continuing`,
+              { stderrTail: cause.stderrTail },
+            ).pipe(Effect.as(Option.none<ExecResult>())),
+          ),
+        );
+
+      if (Option.isNone(polled)) {
+        consecutiveExecFailures += 1;
+        if (consecutiveExecFailures >= maxConsecutiveExecFailures) {
+          return yield* Effect.fail(
+            new ExecFailed({
+              exitCode: -1,
+              stderrTail: `run-tests-wait: ${maxConsecutiveExecFailures} consecutive poll execs killed — container appears dead`,
+            }),
+          );
+        }
+        yield* Effect.sleep(pollEvery);
+        continue;
+      }
+
+      consecutiveExecFailures = 0;
+      const match = SENTINEL_RE.exec(polled.value.stdout);
       if (match) return Number(match[1]);
       yield* Effect.sleep(pollEvery);
     }
