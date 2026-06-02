@@ -21,10 +21,58 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { it } from "@effect/vitest";
-import { Cause, Effect, Exit, Option } from "effect";
+import { Cause, Effect, Exit, Layer, Option } from "effect";
 import { describe, expect } from "vitest";
+import {
+  ExecFailed,
+  type ExecResult,
+  Sandbox,
+  type SandboxService,
+} from "@flare-dispatch/core";
 import { makeCFRuntimeTest, makeSandboxFake } from "@flare-dispatch/core/testing";
 import { cdpAcceptance, pollSentinelExit } from "./cdp-acceptance";
+
+/**
+ * A `Sandbox` Layer whose `exec` runs a scripted sequence — `"fail"` raises a
+ * transient `ExecFailed` (a killed poll connection); any other entry is the
+ * `cat <sentinel>` stdout. The last entry is sticky (so `["fail"]` = a
+ * permanently dead container). `state.calls` lets a test assert the loop gave
+ * up at the consecutive-failure ceiling rather than spinning to `maxAttempts`.
+ * Only `exec` is implemented — `pollSentinelExit` touches nothing else.
+ */
+const scriptedSandbox = (script: ReadonlyArray<"fail" | string>) => {
+  const state = { calls: 0 };
+  const exec = (): Effect.Effect<ExecResult, ExecFailed> => {
+    const entry = script[Math.min(state.calls, script.length - 1)];
+    state.calls += 1;
+    return entry === "fail"
+      ? Effect.fail(
+          new ExecFailed({
+            exitCode: -1,
+            stderrTail: "session shell exited — connection reset",
+          }),
+        )
+      : Effect.succeed({
+          exitCode: 0,
+          durationMs: 1,
+          logPath: "logs/fake/poll.ndjson",
+          stdout: entry ?? "",
+          stderr: "",
+        });
+  };
+  return {
+    layer: Layer.succeed(Sandbox, { exec } as unknown as SandboxService),
+    state,
+  };
+};
+
+const failureTag = (exit: Exit.Exit<unknown, unknown>): string | undefined =>
+  Exit.isFailure(exit)
+    ? Option.match(Cause.failureOption(exit.cause), {
+        onSome: (f) => (f as { _tag?: string })._tag,
+        onNone: () => undefined,
+      })
+    : undefined;
 
 const baseInput = {
   repo: "owner/app",
@@ -148,6 +196,50 @@ describe("cdp-acceptance", () => {
         })
       : undefined;
     expect(tag).toBe("ExecTimeout");
+  });
+
+  // A killed POLL connection (the CF Sandbox kills container execs
+  // non-deterministically) says nothing about the detached suite, which keeps
+  // running and will still write the sentinel. A transient `ExecFailed` here
+  // must NOT fail the run — swallow it and keep polling until the sentinel
+  // lands. Regression for the `run-tests-wait → ExecFailed` aborts.
+  it("pollSentinelExit — tolerates transient ExecFailed and returns the exit once the sentinel appears", async () => {
+    const { layer, state } = scriptedSandbox(["fail", "fail", "DONE:0"]);
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        pollSentinelExit({
+          container: { id: "c1" },
+          dir: "/workspace/app",
+          maxAttempts: 10,
+          pollEvery: "1 millis",
+          maxConsecutiveExecFailures: 5,
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(Exit.isSuccess(exit) ? exit.value : undefined).toBe(0);
+    expect(state.calls).toBe(3); // two killed polls tolerated, third read the sentinel
+  });
+
+  // A genuinely dead container (every poll killed) must still fail the run —
+  // and give up AT the ceiling, not spin to `maxAttempts`. Surfaces `ExecFailed`
+  // (process could not run), distinct from the `ExecTimeout` sentinel-absent case.
+  it("pollSentinelExit — surfaces ExecFailed after maxConsecutiveExecFailures killed polls (gives up early)", async () => {
+    const { layer, state } = scriptedSandbox(["fail"]);
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        pollSentinelExit({
+          container: { id: "c1" },
+          dir: "/workspace/app",
+          maxAttempts: 100,
+          pollEvery: "1 millis",
+          maxConsecutiveExecFailures: 3,
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(failureTag(exit)).toBe("ExecFailed");
+    expect(state.calls).toBe(3); // stopped at the ceiling, not after 100 attempts
   });
 
   it.effect(
