@@ -301,6 +301,19 @@ const parseDispatcherFingerprint = (body: string): string => {
 };
 
 /**
+ * Pull a string field off the parsed 202 body, or `""` when absent / not a
+ * string. Used for both `executionId` and the optional `detailsUrl` so a
+ * malformed or older-dispatcher response degrades to empty rather than throwing.
+ */
+const stringField = (parsed: unknown, key: string): string =>
+  parsed !== null &&
+  typeof parsed === "object" &&
+  key in parsed &&
+  typeof (parsed as Record<string, unknown>)[key] === "string"
+    ? ((parsed as Record<string, string>)[key] as string)
+    : "";
+
+/**
  * Categorize an HTTP status into the retry policy.
  *   * 202        → success (handled by caller)
  *   * 400/401/404 → permanent (no retry); 401 also carries the two
@@ -406,7 +419,7 @@ const postOnce = (
 export const runDispatch = (
   deps: DispatchDeps,
 ): Effect.Effect<
-  { executionId: string },
+  { executionId: string; detailsUrl: string },
   | BadMode
   | MissingInput
   | InvalidEndpoint
@@ -534,28 +547,37 @@ export const runDispatch = (
         }),
     });
 
-    const executionId =
-      parsed !== null &&
-      typeof parsed === "object" &&
-      "executionId" in parsed &&
-      typeof (parsed as { executionId: unknown }).executionId === "string"
-        ? (parsed as { executionId: string }).executionId
-        : "";
+    const executionId = stringField(parsed, "executionId");
+    // The Cloudflare Workflows instance URL the dispatcher computes from the
+    // executionId + its account id (apps/dispatcher/src/dashboard-url.ts).
+    // Empty when the dispatcher runs BYOC (no CLOUDFLARE_ACCOUNT_ID) — older
+    // dispatchers that predate this field also yield "" and degrade cleanly.
+    const detailsUrl = stringField(parsed, "detailsUrl");
 
-    // `safeForCmd` keeps a hostile `run` or `executionId` from injecting a
-    // second workflow command into the runner log (security review H2/L1).
+    // `safeForCmd` keeps a hostile `run` / `executionId` / `detailsUrl` from
+    // injecting a second workflow command into the runner log (security review
+    // H2/L1). The link works for BOTH a passing and a failing run — it points
+    // at the Workflow instance, not the run's (success-only) output.
     yield* Console.log(
       `FlareDispatch: dispatched '${safeForCmd(run)}' — executionId=${safeForCmd(executionId)}`,
     );
+    if (detailsUrl !== "") {
+      yield* Console.log(
+        `FlareDispatch: Cloudflare Workflows run — ${safeForCmd(detailsUrl)}`,
+      );
+    }
 
     const outputFile = env.GITHUB_OUTPUT;
     if (outputFile) {
       yield* Effect.sync(() =>
-        appendFileSync(outputFile, `execution-id=${executionId}\n`),
+        appendFileSync(
+          outputFile,
+          `execution-id=${executionId}\ndetails-url=${detailsUrl}\n`,
+        ),
       );
     }
 
-    return { executionId };
+    return { executionId, detailsUrl };
   });
 
 /**

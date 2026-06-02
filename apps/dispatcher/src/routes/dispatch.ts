@@ -23,6 +23,7 @@
 
 import { Either, ParseResult, Schema } from "effect";
 import type { ParseError } from "effect/ParseResult";
+import { workflowDashboardUrl } from "../dashboard-url";
 import type { Env } from "../env";
 import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
 import { lookupRun } from "../registry";
@@ -242,6 +243,19 @@ export const handleDispatch = async (
       ? headerKey
       : semanticInstanceId(body.run, body.github.repo, body.github.sha);
 
+  // The Cloudflare Workflows instance page for this execution. Returned in the
+  // 202 (below) so the caller — the GHA Action — can surface a clickable link
+  // immediately, for BOTH success and failure (the check-run + email only carry
+  // it once the run finishes, and omit it on a failed run). `undefined` when
+  // CLOUDFLARE_ACCOUNT_ID is unset (BYOC default): the field is then omitted
+  // and the response is byte-identical to the pre-feature shape.
+  const detailsUrl = workflowDashboardUrl(env.CLOUDFLARE_ACCOUNT_ID, executionId);
+  const accepted = (): Response =>
+    json(
+      { executionId, ...(detailsUrl !== undefined ? { detailsUrl } : {}) },
+      202,
+    );
+
   // 7. Receiver-level dedup: write the KV entry FIRST (before touching
   //    Workflows) so a concurrent duplicate request sees the key and
   //    short-circuits. `put` with `expirationTtl` is idempotent — two
@@ -251,7 +265,7 @@ export const handleDispatch = async (
   if (env.IDEMPOTENCY_KV !== undefined) {
     const existing = await env.IDEMPOTENCY_KV.get(executionId);
     if (existing !== null) {
-      return json({ executionId }, 202);
+      return accepted();
     }
     // Pre-record the dedup key so a concurrent request sees it.
     await env.IDEMPOTENCY_KV.put(executionId, executionId, {
@@ -297,6 +311,6 @@ export const handleDispatch = async (
   }
 
   // 9. KV entry was already written in step 7 (before the create call) to
-  //    close the TOCTOU window. Return the execution id.
-  return json({ executionId }, 202);
+  //    close the TOCTOU window. Return the execution id (+ dashboard link).
+  return accepted();
 };

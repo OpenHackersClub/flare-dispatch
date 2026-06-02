@@ -28565,6 +28565,7 @@ var parseDispatcherFingerprint = (body) => {
   }
   return "<not provided>";
 };
+var stringField = (parsed, key) => parsed !== null && typeof parsed === "object" && key in parsed && typeof parsed[key] === "string" ? parsed[key] : "";
 var categorize = (status, body, attempt, localFingerprint) => Match_exports.value(status).pipe(
   Match_exports.when(
     (s) => s === 401,
@@ -28688,18 +28689,28 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
       reason: cause3 instanceof Error ? `JSON parse failed: ${cause3.message}` : "JSON parse failed"
     })
   });
-  const executionId = parsed !== null && typeof parsed === "object" && "executionId" in parsed && typeof parsed.executionId === "string" ? parsed.executionId : "";
+  const executionId = stringField(parsed, "executionId");
+  const detailsUrl = stringField(parsed, "detailsUrl");
   yield* Console_exports.log(
     `FlareDispatch: dispatched '${safeForCmd(run3)}' \u2014 executionId=${safeForCmd(executionId)}`
   );
+  if (detailsUrl !== "") {
+    yield* Console_exports.log(
+      `FlareDispatch: Cloudflare Workflows run \u2014 ${safeForCmd(detailsUrl)}`
+    );
+  }
   const outputFile = env.GITHUB_OUTPUT;
   if (outputFile) {
     yield* Effect_exports.sync(
-      () => (0, import_node_fs.appendFileSync)(outputFile, `execution-id=${executionId}
-`)
+      () => (0, import_node_fs.appendFileSync)(
+        outputFile,
+        `execution-id=${executionId}
+details-url=${detailsUrl}
+`
+      )
     );
   }
-  return { executionId };
+  return { executionId, detailsUrl };
 });
 var reportFailure = (e) => Match_exports.value(e).pipe(
   Match_exports.tag(
