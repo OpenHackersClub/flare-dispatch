@@ -8,37 +8,53 @@
 //     chromium-baked image, declared `sandboxImage: "browser"`.
 //
 // Getting these crossed would either bloat every run with a browser it never
-// uses, or route an in-sandbox Playwright run to an image with no browser. This
-// test pins the intended mapping so a future edit can't silently flip it.
+// uses, or route an in-sandbox Playwright run to an image with no browser.
+//
+// These assertions derive from the WHOLE catalog (every run exported from
+// `./index`) rather than a hand-maintained list, so a newly added run is
+// guarded the moment it ships — a new run that wrongly sets `"browser"`, or a
+// new CDP run, can't slip past an out-of-date table.
 
 import { describe, expect, it } from "vitest";
-import {
-  cdpAcceptance,
-  deploySmoke,
-  matrixFanout,
-  offloadTest,
-  playwrightDemo,
-  playwrightE2E,
-  prReview,
-  productDemo,
-} from "./index";
+import type { Run } from "@flare-dispatch/core";
+import * as catalog from "./index";
+
+// `./index` exports run values only; surface them as the catalog under test.
+const runs = Object.values(catalog) as ReadonlyArray<Run<unknown, unknown>>;
 
 describe("sandboxImage catalog", () => {
-  it("routes ONLY the in-sandbox-chromium run to the browser image", () => {
-    expect(playwrightDemo.sandboxImage).toBe("browser");
+  it("has runs to guard (the catalog import resolved)", () => {
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) expect(typeof r.name).toBe("string");
   });
 
-  it.each([
-    ["offload-test", offloadTest],
-    ["pr-review", prReview],
-    ["deploy-smoke", deploySmoke],
-    ["matrix-fanout", matrixFanout],
-    // CDP / Browser Rendering runs: they reserve a CF browser slot but launch no
-    // in-image browser — so they MUST stay lean.
-    ["cdp-acceptance", cdpAcceptance],
-    ["playwright-e2e", playwrightE2E],
-    ["product-demo", productDemo],
-  ])("keeps %s on the lean image", (_name, run) => {
-    expect(run.sandboxImage).not.toBe("browser");
+  it("routes EXACTLY the in-sandbox-chromium run(s) to the browser image", () => {
+    const onBrowserImage = runs
+      .filter((r) => r.sandboxImage === "browser")
+      .map((r) => r.name)
+      .sort();
+    // `playwright-demo` is the only run that launches Playwright's own chromium
+    // inside the sandbox. If this list grows, the new run had better genuinely
+    // need an in-image browser — update it deliberately, don't auto-pass.
+    expect(onBrowserImage).toEqual(["playwright-demo"]);
+  });
+
+  it("never crosses the axes: a requiresBrowser (CDP) run is never on the browser image", () => {
+    const crossed = runs
+      .filter((r) => r.limits.requiresBrowser === true && r.sandboxImage === "browser")
+      .map((r) => r.name);
+    expect(crossed).toEqual([]);
+  });
+
+  it("uses only known sandboxImage values", () => {
+    const unknown = runs
+      .filter(
+        (r) =>
+          r.sandboxImage !== undefined &&
+          r.sandboxImage !== "lean" &&
+          r.sandboxImage !== "browser",
+      )
+      .map((r) => r.name);
+    expect(unknown).toEqual([]);
   });
 });

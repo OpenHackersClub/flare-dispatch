@@ -19,10 +19,11 @@ import type { SandboxImage } from "@flare-dispatch/core";
  *
  * Rules:
  *   - `"browser"` + a bound browser image → the browser binding.
- *   - `"browser"` + NO browser binding → the lean binding (graceful degrade: a
- *     deploy without the second container still runs the browser run, it just
- *     downloads chromium at runtime — the pre-#66 behaviour — rather than
- *     crashing on an unbound namespace).
+ *   - `"browser"` + NO browser binding → the lean binding (soft degrade against
+ *     a missing binding: routes somewhere valid instead of crashing on an
+ *     unbound namespace. The browser run only actually SUCCEEDS on lean if its
+ *     command still installs a browser itself — one relying on the baked image
+ *     finds no chromium and fails. Not a guarantee, just a non-crash).
  *   - `"lean"` / `undefined` (the default) → the lean binding.
  */
 export const selectSandboxNs = <T>(

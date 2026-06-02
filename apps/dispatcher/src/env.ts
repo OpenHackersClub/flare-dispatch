@@ -30,9 +30,13 @@ export interface Env {
    * Dockerfile with `WITH_BROWSER=true`). Runs declaring `sandboxImage:
    * "browser"` (e.g. `playwright-demo`, which launches Playwright's own chromium
    * inside the container) route here. Optional: a deploy that omits the second
-   * container degrades gracefully — `RunWorkflow` falls back to `RUNS_SANDBOX`,
-   * so a browser run still executes (it just downloads chromium at runtime, the
-   * pre-#66 behaviour) instead of hard-failing.
+   * container degrades by falling back to `RUNS_SANDBOX` rather than crashing on
+   * an unbound namespace. NOTE the fallback is only non-fatal if the run's
+   * command installs a browser itself (`playwright install …`) — a command that
+   * relies on the baked image (the Dockerfile tells those callers to DROP the
+   * install step) finds no chromium on the lean image and fails. So this is a
+   * soft guard against a missing binding, not a guarantee browser runs work
+   * without the second container.
    */
   readonly RUNS_SANDBOX_BROWSER?: DurableObjectNamespace<Sandbox>;
 

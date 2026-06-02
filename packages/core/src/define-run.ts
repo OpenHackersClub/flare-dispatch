@@ -77,8 +77,22 @@ export type SandboxImage = "lean" | "browser";
 export type RunSpec<I, O, IEnc, OEnc> = {
   readonly name: string;
   readonly version: string;
+  /**
+   * A fully-qualified container image URI override (e.g.
+   * `registry.cloudflare.com/<acct>/<repo>:<tag>`) declaring the image this run
+   * is BUILT to run in. Documentary today — several runs set it (`pr-review`,
+   * `playwright-e2e`, `release-notes`) but the CF runtime does not yet pull a
+   * per-run registry image; Container images are bound to DO classes at deploy.
+   *
+   * Do NOT confuse with `sandboxImage` below: `image` names a *specific
+   * registry artifact* (a future per-run image-pull knob); `sandboxImage`
+   * selects which of the deploy's ALREADY-BOUND images (`"lean" | "browser"`)
+   * the dispatcher routes to — and is the field that actually drives routing.
+   */
   readonly image?: string;
-  /** Baked sandbox image to route this run to. Default `"lean"`. */
+  /** Which baked, deploy-bound sandbox image to route this run to. Default
+   * `"lean"`. Drives the dispatcher's Container-binding selection — see
+   * `SandboxImage` above. */
   readonly sandboxImage?: SandboxImage;
   readonly inputs: Schema.Schema<I, IEnc>;
   readonly outputs: Schema.Schema<O, OEnc>;
