@@ -164,9 +164,9 @@ importers:
 
   packages/review-agent:
     dependencies:
-      '@effect/platform':
-        specifier: ^0.96.0
-        version: 0.96.1(effect@3.21.2)
+      '@flare-dispatch/core':
+        specifier: workspace:*
+        version: link:../core
       effect:
         specifier: ^3.21.0
         version: 3.21.2

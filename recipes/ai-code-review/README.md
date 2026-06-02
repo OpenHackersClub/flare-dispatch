@@ -14,15 +14,14 @@ AI review should fire on **every PR push**, on every repo, without anyone editin
 | Noise filtering — lockfiles, minified, generated | `prepare-diff` step → plain `git diff`, then `stripDiffNoise` drops lockfile / minified / generated / vendored file sections **in the Worker** |
 | Risk tiers — trivial / lite / full | `classify-risk` step → the engine's pure `riskTier` heuristic (diff size + sensitive paths); `Match` on the tier selects the agent set (1 / 4 / 7) |
 | Cheaper model on trivial diffs | the tier gates how many domain reviewers fan out; the model is the operator-pinned backend (see below) |
-| Workers + KV control plane — model routing without redeploy | `resolve-backend` step → `config.get("pr-review.backend")` + the backend's `base_url` / `model` keys ([03-dsl § `config`](../../specs/03-dsl.md#config)) — repoint a backend in seconds, no redeploy |
+| Workers + KV control plane — model routing without redeploy | `resolve-backend` step → `config.get("pr-review.backend")` + the backend's `model` / `mode` keys ([03-dsl § `config`](../../specs/03-dsl.md#config)) — repoint a backend in seconds, no redeploy |
 | Up to seven domain-specific agents, each tightly scoped | `FULL_AGENTS`; the tier's subset is fanned out in the `review` step (`Effect.forEach` with `concurrency`), each calling `reviewDomain` **in the Worker** |
-| Shared context to cut token duplication | the single noise-stripped diff passed to every domain reviewer |
-| Re-reviews track previous findings | `load-prior` step → `io.priorExecution` loads the last execution's output for this PR; `coordinate` reconciles fixed/open threads ([03-dsl § `io`](../../specs/03-dsl.md#io)) |
-| Coordinator dedups + filters into one verdict | `coordinate` step → the engine's `coordinate`, **pure deterministic code** (merge + dedup + counts-by-severity + verdict-by-rule) — no model call |
+| Shared context to cut token duplication | the single noise-stripped, size-capped diff passed to every domain reviewer |
+| Coordinator dedups + filters into one verdict | `coordinate` step → the engine's `coordinate`, **pure deterministic code** (dedup + counts-by-severity + verdict-by-rule) — no model call. The current run is authoritative (no carry-over), so a fixed finding clears on its own |
 | Single consolidated review | a **PR review comment** (`github.pullReview`, `event: COMMENT`) posted on every run — success AND failure — plus the check-run summary |
 | Inline comments on specific lines | each `Finding` in the run output → a check-run **annotation** ([04-gha-integration § Inline findings](../../specs/04-gha-integration.md#inline-findings--annotations)) |
 | Bias toward approval unless critical findings | the verdict rule in `coordinate`: any `failure` → request-changes; else any `warning` → comment; else approve |
-| Provider-agnostic model client | `@flare-dispatch/review-agent` POSTs directly to an OpenAI-compatible `/chat/completions` endpoint over `@effect/platform` `HttpClient`; the concrete provider is the configured backend's `base_url` |
+| Provider-agnostic model client | `@flare-dispatch/review-agent` calls the model through the `modelGateway` capability — backed by the Cloudflare **Workers AI binding** (`env.AI`) via an AI Gateway. The binding is the auth (account-billed); **no model API key** |
 
 ## Flow
 
@@ -42,47 +41,40 @@ flowchart LR
 
 The run is deliberately thin — it orchestrates, it does not contain model logic. Three pieces of the framework carry the weight:
 
-- **`config`** ([03-dsl](../../specs/03-dsl.md#config)) — a KV-backed control plane. The reviewer backend (base url + model + mode) is resolved at run time, so an operator can repoint it at a fallback in seconds when a provider degrades — no redeploy. This is the seam for the blog's "Workers + KV control plane."
-- **`io.priorExecution`** ([03-dsl](../../specs/03-dsl.md#io)) — reads the last execution's recorded output for the same `(repo, PR)` family. That is how re-reviews stay incremental: `coordinate` folds the previous findings into its dedup so a still-open issue isn't double-reported.
+- **`config`** ([03-dsl](../../specs/03-dsl.md#config)) — a KV-backed control plane. The reviewer backend (model id + mode) is resolved at run time, so an operator can repoint it at a fallback in seconds when a model degrades — no redeploy. This is the seam for the blog's "Workers + KV control plane."
+- **`modelGateway`** ([03-dsl](../../specs/03-dsl.md#config)) — the model-calling capability, backed by the Cloudflare **Workers AI binding** (`env.AI`) via an AI Gateway. The binding is the auth (account-billed), so the run carries **no model API key**. The engine yields the Tag; the runtime provides it ambiently, like `config` / `sandbox`.
 - **Check-run annotations** ([04-gha-integration](../../specs/04-gha-integration.md#inline-findings--annotations)) — the run returns a `findings` array; the Dispatcher posts each as an inline annotation on the PR's Files-changed tab. The GitHub-native equivalent of GitLab's per-line DiffNotes, with no separate review thread to manage.
 
 ## The review engine runs in the Worker
 
-The review is performed **in the Worker run body**, not in a container CLI. The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` (checkout + `git diff`). The engine is `@flare-dispatch/review-agent`: `riskTier` (a pure heuristic, no model call), `reviewDomain` (the one model-calling surface — POSTs directly to an OpenAI-compatible `/chat/completions` endpoint over `@effect/platform` `HttpClient`), and `coordinate` (**pure deterministic assembly** — merge + dedup + counts + verdict-by-rule, no model call). `reviewDomain`'s findings come from a Schema-validated `tool_calls` response (`tools` mode) or a parsed strict-JSON `message.content` (`json` mode).
+The review is performed **in the Worker run body**, not in a container CLI. The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` (checkout + `git diff`). The engine is `@flare-dispatch/review-agent`: `riskTier` (a pure heuristic, no model call), `reviewDomain` (the one model-calling surface — calls the model through the `modelGateway` capability, backed by the Cloudflare **Workers AI binding** via an AI Gateway, **no API key**), and `coordinate` (**pure deterministic assembly** — dedup + counts + verdict-by-rule, no model call). `reviewDomain`'s findings come from a Schema-validated tool call (`tools` mode) or a parsed strict-JSON text response (`json` mode).
 
 > Earlier versions shelled out to a `review-agent` CLI that did **not** exist in the deployed image, so every review silently failed. Moving the engine into the Worker removes that dependency entirely.
 
 ### Configurable backend
 
-The engine selects a model backend from config — repoint it in seconds, no redeploy:
+The engine selects a model backend from config — repoint it in seconds, no redeploy. **No API key** — the model is called through the `modelGateway` capability (the Workers AI binding is the auth):
 
 | Key (CONFIG_KV) | Meaning |
 |---|---|
 | `pr-review.backend` | `opencode` (default) or `reasonix` |
 | `pr-review.prompt` | *(optional)* override the generic per-domain reviewer system prompt |
-| `pr-review.opencode.base_url` | AI Gateway OpenAI-compatible endpoint (`/v1/<acct>/<gw>/compat`) for the **opencode** backend (route Anthropic/Claude-class models) |
-| `pr-review.opencode.model` | provider-named model id, e.g. `anthropic/claude-3-5-sonnet` |
+| `pr-review.opencode.model` | bare Workers AI model id for the **opencode** backend, e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 | `pr-review.opencode.mode` | `tools` (default) or `json` — how structured output is coaxed (see below) |
-| `pr-review.reasonix.base_url` | AI Gateway OpenAI-compatible endpoint for the **reasonix** backend (route DeepSeek) |
-| `pr-review.reasonix.model` | provider-named model id, e.g. `deepseek/deepseek-chat` |
-| `pr-review.reasonix.mode` | `tools` or `json` (**default `json`** — DeepSeek-class reasoning models ignore forced tool-calls) |
+| `pr-review.reasonix.model` | bare Workers AI model id for the **reasonix** backend, e.g. `@cf/deepseek-ai/deepseek-r1-distill-qwen-32b` |
+| `pr-review.reasonix.mode` | `tools` or `json` (**default `json`** — DeepSeek-class reasoning models ignore tool-calls) |
 
-API keys are CONFIG_KV entries (the `loadSecrets` store), resolved through the same `config.get` accessor:
+Model ids are bare `@cf/...` (the Workers AI binding's own naming) — **not** the `workers-ai/@cf/...` compat-endpoint prefix. An AI Gateway can front all calls by setting the `AI_GATEWAY_ID` var on the Worker.
 
-| Key (CONFIG_KV / secret) | Used by |
-|---|---|
-| `OPENCODE_API_KEY` *(or shared `MODEL_API_KEY`)* | the **opencode** backend |
-| `REASONIX_API_KEY` | the **reasonix** backend |
-
-A misconfigured backend fails fast — the run posts a PR comment naming the exact missing key.
+A misconfigured backend (no `model` key) fails fast — the run posts a PR comment naming the exact missing key.
 
 #### Output mode: `tools` vs `json`
 
-Not every provider honours forced tool-calling. Validated against the live AI Gateway → Workers AI: `opencode → llama-3.3-70b` returns forced tool-calls fine, but `reasonix → deepseek-r1-distill-qwen-32b` returns **no** `tool_calls` (it emits `<think>…</think>` reasoning instead).
+Not every model honours tool-calling. Validated against Workers AI: a tool-calling-capable model (e.g. `@cf/meta/llama-3.3-70b-…`) returns tool calls fine, but a reasoning model (`@cf/deepseek-ai/deepseek-r1-distill-qwen-32b`) returns **no** tool calls (it emits `<think>…</think>` reasoning instead).
 
-- **`tools`** — forces a tool call (`toolChoice: "required"`) and reads the Schema-validated tool args. Best when the provider supports it.
-- **`json`** — no tools; the model is asked for a strict JSON object. The engine strips `<think>…</think>` blocks and markdown code fences, isolates the JSON value, `JSON.parse`s it, and Schema-decodes against the same `Finding[]` / `ReviewOutput` schemas. A parse/decode failure surfaces a `StructuredOutputInvalid` error (the run posts a PR comment naming it).
-- **Auto-fallback** — a `tools`-mode call that comes back with zero `tool_calls` retries **once** in `json` mode, so a provider that silently drops tool-calling still produces a review.
+- **`tools`** — sends the `report` tool and reads the Schema-validated tool args. Workers AI returns the args as a parsed object (the engine also tolerates an OpenAI-style JSON string). Best when the model supports it.
+- **`json`** — no tools; the model is asked for a strict JSON object. The engine strips `<think>…</think>` blocks and markdown code fences, isolates the JSON value, `JSON.parse`s it, and Schema-decodes against the same `Finding[]` schema. A parse/decode failure surfaces a `StructuredOutputInvalid` error (the run posts a PR comment naming it).
+- **Auto-fallback** — a `tools`-mode call that comes back with zero tool calls retries **once** in `json` mode, so a model that silently drops tool-calling still produces a review.
 
 ### Always a PR comment
 

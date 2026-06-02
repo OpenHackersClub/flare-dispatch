@@ -185,6 +185,24 @@ export interface Env {
   readonly EMAIL_ALLOWED_RECIPIENTS?: string;
 
   /**
+   * Cloudflare Workers AI binding — backs the `modelGateway` capability the
+   * `pr-review` engine calls. The binding IS the auth (Workers AI is
+   * account-billed), so no model API key is configured. Declared as
+   * `"ai": { "binding": "AI" }` in wrangler. Absent (no `"ai"` binding) → the
+   * dying `ModelGateway` stub: a model-calling run fails loudly, others are
+   * unaffected.
+   */
+  readonly AI?: Ai;
+
+  /**
+   * Optional AI Gateway id the `modelGateway` routes Workers AI calls through
+   * (for caching / rate-limiting / observability). A var, not a secret. Absent
+   * / empty → call Workers AI directly (no gateway). Set per-deploy via the
+   * `vars` block in wrangler (e.g. wrangler.numu.jsonc).
+   */
+  readonly AI_GATEWAY_ID?: string;
+
+  /**
    * Cloudflare account id (the 32-hex id in the dashboard URL) — a var, not a
    * secret. When set, `RunWorkflow` builds a `details_url` on the GitHub
    * check-run pointing at the Cloudflare Workflows instance page

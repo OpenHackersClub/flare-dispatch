@@ -49,6 +49,11 @@ import {
   makeGithubFake,
 } from "./fakes/github-fake";
 import {
+  makeModelGatewayFake,
+  ModelGatewayFake,
+  type ModelGatewayFakeState,
+} from "./fakes/model-gateway-fake";
+import {
   OidcFake,
   type OidcFakeState,
   makeOidcFake,
@@ -110,6 +115,13 @@ export {
   type GithubFakeState,
 } from "./fakes/github-fake";
 export {
+  ModelGatewayFake,
+  makeModelGatewayFake,
+  type ModelGatewayFakeState,
+  type ModelGatewayFakeOptions,
+  type ModelGatewayFakeResponse,
+} from "./fakes/model-gateway-fake";
+export {
   OidcFake,
   makeOidcFake,
   type OidcFakeState,
@@ -149,6 +161,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   ChecksFake,
   EmailFake,
   GithubFake,
+  ModelGatewayFake,
   OidcFake,
   ExecutionsFake,
   // StepRunnerInline needs Executions + IO — supply them from the merge above.
@@ -165,6 +178,7 @@ export type CFRuntimeTestHandles = {
   readonly email: EmailFakeState;
   readonly executions: ExecutionsFakeState;
   readonly github: GithubFakeState;
+  readonly modelGateway: ModelGatewayFakeState;
   readonly oidc: OidcFakeState;
   /** The inline runner's event queue — feed `step.waitForEvent` from tests. */
   readonly eventQueue: import("./fakes/step-runner-inline").InlineEventQueue;
@@ -179,6 +193,8 @@ export type CFRuntimeTestOptions = {
   readonly config?: Record<string, string>;
   /** Github fake seed — repos + PRs returned by `github.*`. */
   readonly github?: Parameters<typeof makeGithubFake>[0];
+  /** ModelGateway fake script — answers `modelGateway.complete` returns. */
+  readonly modelGateway?: Parameters<typeof makeModelGatewayFake>[0];
   /** Oidc fake options — issuer override + deterministic `iat` clock. */
   readonly oidc?: Parameters<typeof makeOidcFake>[0];
   /** the execution id `StepRunnerInline` records steps under. */
@@ -210,6 +226,7 @@ export const makeCFRuntimeTest = (
   const checks = makeChecksFake();
   const emailFake = makeEmailFake();
   const github = makeGithubFake(opts.github);
+  const modelGateway = makeModelGatewayFake(opts.modelGateway);
   const oidcLayer = makeOidcFake(opts.oidc);
   const executions = makeExecutionsFake();
   const eventQueue = opts.eventQueue ?? new Map<string, unknown[]>();
@@ -228,6 +245,7 @@ export const makeCFRuntimeTest = (
     checks.layer,
     emailFake.layer,
     github.layer,
+    modelGateway.layer,
     oidcLayer.layer,
     executions.layer,
     Layer.provide(stepRunner, Layer.merge(executions.layer, io.layer)),
@@ -243,6 +261,7 @@ export const makeCFRuntimeTest = (
       checks: checks.state,
       email: emailFake.state,
       github: github.state,
+      modelGateway: modelGateway.state,
       oidc: oidcLayer.state,
       executions: executions.state,
       eventQueue,
