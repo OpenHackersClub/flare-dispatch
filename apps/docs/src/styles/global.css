@@ -663,6 +663,20 @@ pre code {
   margin: 0;
 }
 
+/* ---- Landing: Bottleneck (billing graphic) ----------------------------- */
+
+.bottleneck {
+  padding: 5rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.bottleneck__lede {
+  margin-top: 1rem;
+  max-width: 60ch;
+  color: var(--ink-soft);
+  font-size: var(--fs-lead);
+  line-height: 1.55;
+}
+
 /* ---- Landing: Compare block -------------------------------------------- */
 
 .compare {
@@ -1761,6 +1775,108 @@ pre code {
   font-size: 9px;
   fill: var(--muted);
   letter-spacing: 0.08em;
+}
+
+/* ---- Landing: Billing timeline (SVG) ----------------------------------- */
+
+.billing {
+  margin: 2.5rem 0 0;
+}
+.billing__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* The run track: solid ink = vCPU burning, hatch = blocked on the model */
+.billing__svg .track-cpu {
+  fill: var(--ink);
+}
+.billing__svg .track-io {
+  fill: url(#bd-wait);
+  stroke: var(--hairline-strong);
+  stroke-width: 1;
+}
+.billing__svg #bd-wait .bg {
+  fill: var(--surface);
+}
+.billing__svg #bd-wait .hatch {
+  stroke: var(--hairline-strong);
+  stroke-width: 1;
+}
+
+/* Vertical bands carrying the active columns down through every bar */
+.billing__svg .col-active {
+  fill: var(--accent);
+  opacity: 0.08;
+}
+
+/* GitHub Actions: the whole width is billed */
+.billing__svg .bill-all {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.4;
+}
+.billing__svg .bill-note--all {
+  fill: var(--accent);
+  font-weight: 600;
+}
+
+/* FlareDispatch: an empty envelope with only the active slivers billed */
+.billing__svg .bill-envelope {
+  fill: none;
+  stroke: var(--hairline-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.billing__svg .bill-active {
+  fill: var(--accent);
+}
+.billing__svg .bill-idle {
+  fill: var(--muted-soft);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+/* Labels */
+.billing__svg .row-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  fill: var(--ink-soft);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.billing__svg .bill-note {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.billing__svg .phase {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  fill: var(--muted);
+  letter-spacing: 0.04em;
+}
+.billing__svg .phase--cpu {
+  fill: var(--accent);
+}
+.billing__svg .axis {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  fill: var(--muted-soft);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.billing__svg .legend-swatch {
+  stroke: var(--hairline-strong);
+  stroke-width: 0.5;
+}
+.billing__svg .legend-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  fill: var(--muted);
+  letter-spacing: 0.06em;
 }
 
 /* ---- Entrance animations ------------------------------------------------ */
