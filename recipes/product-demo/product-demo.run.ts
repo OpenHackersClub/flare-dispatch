@@ -45,6 +45,34 @@ const Story = Schema.Struct({
   prose: Schema.String,
 });
 
+/**
+ * Parse a markdown stories doc into `{ name, prose }[]` — each level-2 ATX
+ * heading (`## `) is one story (heading = name, body until the next `## ` =
+ * prose). Content before the first heading is ignored. Pure + deterministic.
+ * The canonical copy lives in `runs/product-demo.ts`; kept in sync here so the
+ * teaching example shows the markdown-authoring path.
+ */
+export const parseStoriesMarkdown = (
+  markdown: string,
+): ReadonlyArray<{ name: string; prose: string }> => {
+  const headingRe = /^ {0,3}##\s+(.+?)\s*#*\s*$/;
+  const stories: Array<{ name: string; prose: string[] }> = [];
+  let current: { name: string; prose: string[] } | null = null;
+  for (const line of markdown.split(/\r?\n/)) {
+    const match = headingRe.exec(line);
+    if (match) {
+      current = { name: match[1]!.trim(), prose: [] };
+      stories.push(current);
+      continue;
+    }
+    if (current) current.prose.push(line);
+  }
+  return stories.map((s) => ({
+    name: s.name,
+    prose: s.prose.join("\n").trim(),
+  }));
+};
+
 const Input = Schema.Struct({
   // The deployed URL the demo runs against. No checkout — this is the
   // target site, not the repo. `repo` and `sha` are still required because
@@ -53,7 +81,11 @@ const Input = Schema.Struct({
   repo: Schema.String,
   sha: Schema.String,
   deployedUrl: Schema.String,
-  stories: Schema.Array(Story),
+  // Provide exactly one: `stories` (structured `{ name, prose }[]`) or
+  // `storiesMarkdown` (a markdown doc, one `## ` heading per story). `stories`
+  // wins if both are present; the run resolves the effective list below.
+  stories: Schema.optional(Schema.Array(Story)),
+  storiesMarkdown: Schema.optional(Schema.String),
   // The viewport preset is passed through to the agent — it sets the CDP
   // viewport once at attach time via Emulation.setDeviceMetricsOverride so
   // every rrweb event in the session uses one resolution. Default desktop;
@@ -118,6 +150,36 @@ export const productDemo = defineRun({
     Effect.gen(function* () {
       const viewport = input.viewportPreset ?? "desktop";
       const perStorySec = input.maxDurationSecPerStory ?? 180;
+
+      // -1. Resolve the effective story list before any browser/sandbox work.
+      //     `stories` wins over `storiesMarkdown`; the markdown is parsed into
+      //     the same `{ name, prose }` shape, so nothing downstream is markdown
+      //     -aware. Die loudly on a payload with neither / on duplicate names.
+      const resolvedStories =
+        input.stories !== undefined && input.stories.length > 0
+          ? input.stories
+          : input.storiesMarkdown !== undefined
+            ? parseStoriesMarkdown(input.storiesMarkdown)
+            : [];
+      if (resolvedStories.length === 0) {
+        return yield* Effect.die(
+          "product-demo: no stories to play — supply a non-empty `stories` array, " +
+            "or a `storiesMarkdown` doc with at least one `## ` heading.",
+        );
+      }
+      const duplicateNames = [
+        ...new Set(
+          resolvedStories
+            .map((s) => s.name)
+            .filter((n, i, a) => a.indexOf(n) !== i),
+        ),
+      ];
+      if (duplicateNames.length > 0) {
+        return yield* Effect.die(
+          `product-demo: duplicate story names ${JSON.stringify(duplicateNames)} — ` +
+            "each story name becomes a unique rrweb chapter marker.",
+        );
+      }
 
       // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
       //    container holds NO ambient credentials. The agent is
@@ -205,7 +267,7 @@ export const productDemo = defineRun({
       //    key-screenshot path. Concurrency 1 — see `limits` above.
       const playResults = yield* step("play-stories", () =>
         Effect.forEach(
-          input.stories,
+          resolvedStories,
           (story) =>
             sandbox.exec({
               command: [
@@ -257,7 +319,7 @@ export const productDemo = defineRun({
       const parsed = playResults.map((r, i) => {
         const lastLine = r.stdout.trim().split("\n").pop() ?? "{}";
         return {
-          story: input.stories[i],
+          story: resolvedStories[i],
           json: JSON.parse(lastLine) as PlayJson,
         };
       });

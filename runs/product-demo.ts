@@ -7,6 +7,13 @@
 // narrative, and then produces a holistic markdown summary across all
 // stories that a reviewer can paste into the PR.
 //
+// Stories arrive in one of two shapes (provide exactly one):
+//   - `stories`        — the structured `{ name, prose }[]` array.
+//   - `storiesMarkdown` — a markdown doc where each `## ` heading is one
+//     story (heading = name, body = prose). See `parseStoriesMarkdown`.
+//     Lets an operator keep the demo script as a readable `.md` and edit it
+//     like documentation rather than hand-maintaining JSON.
+//
 // No checkout — the target is a deployed URL, not the repo. The run only
 // attaches to Browser Run over CDP and shells out to the bundled
 // `demo-agent` CLI (baked into the `flare-dispatch-demo:latest` image, the
@@ -51,6 +58,53 @@ const Story = Schema.Struct({
   prose: Schema.String,
 });
 
+/**
+ * Parse a markdown stories document into the run's `{ name, prose }` list.
+ *
+ * Authoring contract — **each level-2 ATX heading (`## `) is one story**:
+ *   - the heading text (trimmed, any trailing `#` stripped) becomes the
+ *     story `name`;
+ *   - every line from that heading down to the next `## ` (or EOF) becomes
+ *     the `prose`, trimmed. Deeper headings (`###`+) are kept verbatim as
+ *     part of the enclosing story's prose.
+ * Content before the first `## ` — a `# Title`, a preamble paragraph — is
+ * ignored, so an author can open the doc with context the agent never sees.
+ *
+ * This is the markdown counterpart to the structured `stories` array: it lets
+ * an operator keep the demo script as a readable `.md` (one heading per
+ * journey step) instead of hand-maintaining JSON. The dispatch passes the raw
+ * file as `storiesMarkdown`; the run parses it here so the `demo-agent`
+ * contract (`{ name, prose }`) is unchanged.
+ *
+ * Pure + deterministic (no Date / random / I/O) so it is safe in a run body
+ * and unit-testable without a runtime.
+ */
+export const parseStoriesMarkdown = (
+  markdown: string,
+): ReadonlyArray<{ name: string; prose: string }> => {
+  // Level-2 ATX only: `##` + whitespace + text. `##\s+` cannot match `###…`
+  // (the char after `##` would be `#`, not whitespace), so deeper headings
+  // fall through into the current story's prose. Up to 3 leading spaces are
+  // tolerated per the CommonMark ATX rule.
+  const headingRe = /^ {0,3}##\s+(.+?)\s*#*\s*$/;
+  const stories: Array<{ name: string; prose: string[] }> = [];
+  let current: { name: string; prose: string[] } | null = null;
+  for (const line of markdown.split(/\r?\n/)) {
+    const match = headingRe.exec(line);
+    if (match) {
+      // Group 1 always present when `match` is truthy — the pattern requires it.
+      current = { name: match[1]!.trim(), prose: [] };
+      stories.push(current);
+      continue;
+    }
+    if (current) current.prose.push(line);
+  }
+  return stories.map((s) => ({
+    name: s.name,
+    prose: s.prose.join("\n").trim(),
+  }));
+};
+
 const Input = Schema.Struct({
   // The deployed URL the demo runs against. No checkout — this is the
   // target site, not the repo. `repo` and `sha` are still required because
@@ -59,7 +113,16 @@ const Input = Schema.Struct({
   repo: Schema.String,
   sha: Schema.String,
   deployedUrl: Schema.String,
-  stories: Schema.Array(Story),
+  // Two ways to supply the story script — provide exactly one:
+  //   - `stories`: the structured `{ name, prose }[]` list (the original
+  //     contract; what `schedules[].inputs` and the recipe `ci.yml` pass).
+  //   - `storiesMarkdown`: a markdown doc where each `## ` heading is one
+  //     story (see `parseStoriesMarkdown`). Lets an operator keep the demo
+  //     script as a readable `.md` instead of hand-rolled JSON.
+  // If both are present, `stories` wins. The run resolves the effective list
+  // and dies loudly on a payload with neither (see § "resolve stories").
+  stories: Schema.optional(Schema.Array(Story)),
+  storiesMarkdown: Schema.optional(Schema.String),
   // The viewport preset is passed through to the agent — it sets the CDP
   // viewport once at attach time via Emulation.setDeviceMetricsOverride so
   // every rrweb event in the session uses one resolution. Default desktop;
@@ -153,6 +216,41 @@ export const productDemo = defineRun({
     Effect.gen(function* () {
       const viewport = input.viewportPreset ?? "desktop";
       const perStorySec = input.maxDurationSecPerStory ?? 180;
+
+      // -1. Resolve the effective story list BEFORE any browser/sandbox work,
+      //     so a misconfigured payload dies cheaply (no CDP session leaked, no
+      //     image pull). `stories` wins over `storiesMarkdown`; the markdown is
+      //     parsed into the same `{ name, prose }` shape the rest of the run
+      //     (and `demo-agent`) consumes, so nothing downstream is markdown-aware.
+      const resolvedStories =
+        input.stories !== undefined && input.stories.length > 0
+          ? input.stories
+          : input.storiesMarkdown !== undefined
+            ? parseStoriesMarkdown(input.storiesMarkdown)
+            : [];
+      if (resolvedStories.length === 0) {
+        // A demo with no stories is never what the operator meant — a typo in
+        // the markdown headings or a forgotten `stories` array. Die loudly.
+        return yield* Effect.die(
+          "product-demo: no stories to play — supply a non-empty `stories` array, " +
+            "or a `storiesMarkdown` doc with at least one `## ` heading.",
+        );
+      }
+      const duplicateNames = [
+        ...new Set(
+          resolvedStories
+            .map((s) => s.name)
+            .filter((n, i, a) => a.indexOf(n) !== i),
+        ),
+      ];
+      if (duplicateNames.length > 0) {
+        // Names become rrweb chapter markers — duplicates would collide on the
+        // replay timeline and in the per-story result map.
+        return yield* Effect.die(
+          `product-demo: duplicate story names ${JSON.stringify(duplicateNames)} — ` +
+            "each story name becomes a unique rrweb chapter marker.",
+        );
+      }
 
       // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
       //    container holds NO ambient credentials — every `sandbox.exec` is
@@ -252,7 +350,7 @@ export const productDemo = defineRun({
       //    key-screenshot path. Concurrency 1 — see `limits` above.
       const playResults = yield* step("play-stories", () =>
         Effect.forEach(
-          input.stories,
+          resolvedStories,
           (story) =>
             sandbox.exec({
               command: [
@@ -301,11 +399,10 @@ export const productDemo = defineRun({
         narrative: string;
         keyScreenshotPath: string;
       };
-      // `playResults` is the result of `Effect.forEach(input.stories, …)`
-      // so `playResults.length === input.stories.length`; iterate the
-      // stories array directly to keep `story` typed as `Story` (not
-      // `Story | undefined`).
-      const parsed = input.stories.map((story, i) => {
+      // `playResults` is the result of `Effect.forEach(resolvedStories, …)`
+      // so `playResults.length === resolvedStories.length`; iterate the
+      // resolved array directly to keep `story` typed (not `… | undefined`).
+      const parsed = resolvedStories.map((story, i) => {
         const result = playResults[i]!;
         const lastLine = result.stdout.trim().split("\n").pop() ?? "{}";
         return {

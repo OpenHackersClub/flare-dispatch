@@ -57,6 +57,17 @@ jobs:
               ]' }},
               "viewportPreset": "desktop"
             }
+          # Prefer authoring the script as markdown? Keep it in a tracked
+          # `demo-stories.md` (each `## ` heading = one story; see the README §
+          # "Authoring stories") and swap the `"stories"` line above for:
+          #     "storiesMarkdown": ${{ toJSON(... the file's contents ...) }},
+          # e.g. read it in a prior step —
+          #   - id: stories
+          #     run: |
+          #       { echo 'md<<EOF'; cat demo-stories.md; echo EOF; } >> "$GITHUB_OUTPUT"
+          # then pass `"storiesMarkdown": ${{ toJSON(steps.stories.outputs.md) }}`.
+          # The run parses it into the same {name, prose} list; `stories` wins
+          # if both are supplied.
 
 # Fire-and-forget: this GHA step succeeds as soon as the dispatch is
 # accepted; the actual demo runs on Cloudflare and reports back through the
