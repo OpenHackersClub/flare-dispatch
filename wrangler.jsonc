@@ -64,33 +64,49 @@
     }
   ],
 
-  // Container binding. The `@cloudflare/sandbox` SDK's Sandbox DO speaks an
+  // Container bindings. The `@cloudflare/sandbox` SDK's Sandbox DO speaks an
   // RPC protocol to a server baked into the container, so the image is built
   // from the matching `docker.io/cloudflare/sandbox` base via a Dockerfile
   // (infra/Dockerfile.sandbox) — a bare node image has no sandbox server.
   // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io,
   // or Amazon ECR; the Dockerfile's FROM resolves docker.io.
+  //
+  // TWO images from ONE Dockerfile via the `WITH_BROWSER` build arg (passed as
+  // `image_vars`). The dispatcher routes each run to one binding based on the
+  // run's `sandboxImage` ("lean" default | "browser") — see workflow.ts. Most
+  // runs use the lean image; only runs that launch Playwright's own chromium
+  // *inside* the sandbox (e.g. `playwright-demo`) need the browser image. Issue
+  // #68 tracks whether the split earns its keep (gated on cold-start data).
   "containers": [
     {
       "class_name": "RunSandbox",
       "image": "./infra/Dockerfile.sandbox",
       "instance_type": "standard-2",
       "max_instances": 16
+    },
+    {
+      "class_name": "RunSandboxBrowser",
+      "image": "./infra/Dockerfile.sandbox",
+      "image_vars": { "WITH_BROWSER": "true" },
+      "instance_type": "standard-2",
+      "max_instances": 16
     }
   ],
 
-  // The Container runtime is fronted by a Durable Object class — wrangler
-  // requires the class to be registered via a migration. RunSandbox is the
-  // DO class backing the RUNS_SANDBOX container binding (not the Coordinator
-  // fan-out DO, which is deferred to V1).
+  // Each Container is fronted by a Durable Object class — wrangler requires the
+  // class registered via a migration. RunSandbox backs the lean RUNS_SANDBOX
+  // binding; RunSandboxBrowser backs the chromium-baked RUNS_SANDBOX_BROWSER
+  // binding (the Coordinator fan-out DO is deferred to V1).
   "durable_objects": {
     "bindings": [
-      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" }
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
+      { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" }
     ]
   },
 
   "migrations": [
-    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] }
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
+    { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] }
   ],
 
   "r2_buckets": [

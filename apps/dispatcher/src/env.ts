@@ -18,11 +18,27 @@ export interface Env {
   readonly RUNS_WORKFLOW: Workflow;
 
   /**
-   * Container binding — one sandbox instance per execution. Typed as a
-   * `DurableObjectNamespace<Sandbox>` so `getSandbox(env.RUNS_SANDBOX, id)` in
-   * `@flare-dispatch/runtime-cf` resolves the typed sandbox RPC surface.
+   * Container binding — the LEAN sandbox image, one instance per execution.
+   * Typed as a `DurableObjectNamespace<Sandbox>` so `getSandbox(env.RUNS_SANDBOX,
+   * id)` in `@flare-dispatch/runtime-cf` resolves the typed sandbox RPC surface.
+   * The default for every run except those declaring `sandboxImage: "browser"`.
    */
   readonly RUNS_SANDBOX: DurableObjectNamespace<Sandbox>;
+
+  /**
+   * Container binding — the chromium-baked sandbox image (built from the same
+   * Dockerfile with `WITH_BROWSER=true`). Runs declaring `sandboxImage:
+   * "browser"` (e.g. `playwright-demo`, which launches Playwright's own chromium
+   * inside the container) route here. Optional: a deploy that omits the second
+   * container degrades by falling back to `RUNS_SANDBOX` rather than crashing on
+   * an unbound namespace. NOTE the fallback is only non-fatal if the run's
+   * command installs a browser itself (`playwright install …`) — a command that
+   * relies on the baked image (the Dockerfile tells those callers to DROP the
+   * install step) finds no chromium on the lean image and fails. So this is a
+   * soft guard against a missing binding, not a guarantee browser runs work
+   * without the second container.
+   */
+  readonly RUNS_SANDBOX_BROWSER?: DurableObjectNamespace<Sandbox>;
 
   /** R2 bucket — `logs/<execution-id>/<step>.ndjson` + `artifacts/...`. */
   readonly RUNS_STORAGE: R2Bucket;

@@ -200,4 +200,13 @@ describe("playwright-demo step timeout", () => {
       );
     }),
   );
+
+  it("declares the browser sandbox image (it runs chromium in-container)", () => {
+    // The one run that launches Playwright's own chromium inside the sandbox —
+    // so it routes to the chromium-baked image. Deliberately NOT via
+    // `requiresBrowser` (that's the CF Browser Rendering / CDP axis); this run
+    // reserves no CDP slot. See define-run.ts § SandboxImage.
+    expect(playwrightDemo.sandboxImage).toBe("browser");
+    expect(playwrightDemo.limits.requiresBrowser).toBeUndefined();
+  });
 });

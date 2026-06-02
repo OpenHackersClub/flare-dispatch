@@ -56,10 +56,19 @@
     }
   ],
 
+  // Two images from one Dockerfile (lean + chromium-baked) via WITH_BROWSER —
+  // mirrors wrangler.jsonc. Routing is per-run on `sandboxImage` (workflow.ts).
   "containers": [
     {
       "class_name": "RunSandbox",
       "image": "./infra/Dockerfile.sandbox",
+      "instance_type": "standard-2",
+      "max_instances": 16
+    },
+    {
+      "class_name": "RunSandboxBrowser",
+      "image": "./infra/Dockerfile.sandbox",
+      "image_vars": { "WITH_BROWSER": "true" },
       "instance_type": "standard-2",
       "max_instances": 16
     }
@@ -67,12 +76,14 @@
 
   "durable_objects": {
     "bindings": [
-      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" }
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
+      { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" }
     ]
   },
 
   "migrations": [
-    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] }
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
+    { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] }
   ],
 
   "r2_buckets": [

@@ -13,6 +13,10 @@
 # Cloudflare Containers pulls only from registry.cloudflare.com, docker.io, or
 # Amazon ECR; docker.io is in scope (specs/05-byoc.md § Wrangler config).
 #
+# This ONE Dockerfile builds two images via the `WITH_BROWSER` build arg (see
+# the gated layer at the bottom + wrangler.jsonc § containers): a lean default
+# and a chromium-baked variant. Issue #68.
+#
 # Spec: specs/pm/plan.md § 6 "Sandbox / Containers binding API".
 
 FROM docker.io/cloudflare/sandbox:0.10.1
@@ -59,28 +63,54 @@ ENV PATH=/opt/node24/bin:$PATH
 # version from each repo's `packageManager` field at first use.
 RUN corepack enable
 
-# Bake the Playwright headless browser into the image so Playwright runs (e.g.
-# `playwright-demo`) don't download it on every `sandbox.exec`. A cold chromium
-# download (~170MB) is the slowest, most failure-prone step of those runs: in
-# the Sandbox it routinely exceeded the caller's install budget and got killed
-# mid-fetch, leaving no browser and a test that fails instantly. Baking it once
-# at build time takes that cost to ~0s at runtime.
+# ── Optional Playwright browser layer (gated by the WITH_BROWSER build arg) ──
 #
-# `chromium-headless-shell` (not full `chromium`) — it's ~3x smaller and is
+# This single Dockerfile produces BOTH sandbox images via Cloudflare's
+# `image_vars` build args (wrangler.jsonc § containers):
+#
+#   * RunSandbox         → WITH_BROWSER unset/false → LEAN. The default for the
+#                          ~majority of runs (`offload-test`, `pr-review`, plain
+#                          `pnpm test`) and every `requiresBrowser: true` run
+#                          (those dial CF Browser Rendering over CDP — they
+#                          connect *out* to a CF-managed browser and need NO
+#                          in-image chromium).
+#   * RunSandboxBrowser  → WITH_BROWSER=true → bakes `chromium-headless-shell`.
+#                          For runs that launch Playwright's own chromium INSIDE
+#                          the sandbox (`playwright-demo`, via `sandboxImage:
+#                          "browser"`). Note this axis is DISTINCT from
+#                          `limits.requiresBrowser` — see the routing note in
+#                          apps/dispatcher/src/workflow.ts.
+#
+# Sharing one Dockerfile keeps the Node 24 + Corepack preamble single-sourced;
+# only the final browser layer differs. Issue #68 tracks whether the split is
+# worth keeping (gated on a cold-start measurement).
+#
+# Why `chromium-headless-shell` (not full `chromium`): it's ~3x smaller and is
 # exactly the browser a headless run uses (a Playwright project with no pinned
-# `channel` resolves to the bundled chromium → headless shell when running
-# headless). The base image already carries chromium's shared libs (a headless
-# run launches without `playwright install --with-deps`), so we skip the apt
-# step entirely — which is also what made callers' runtime `--with-deps` hang
-# the Sandbox indefinitely. Browsers land in a shared, image-baked path that
-# every `sandbox.exec` sees via PLAYWRIGHT_BROWSERS_PATH, so callers DROP the
+# `channel` resolves to the bundled chromium → headless shell when headless).
+# The base image already carries chromium's shared libs (a headless run launches
+# without `playwright install --with-deps`), so we skip the apt step entirely —
+# which is also what made callers' runtime `--with-deps` hang the Sandbox
+# indefinitely. Browsers land in a shared, image-baked path that every
+# `sandbox.exec` sees via PLAYWRIGHT_BROWSERS_PATH, so callers DROP the
 # `playwright install` step from their command.
+#
+# A cold chromium download (~170MB) is the slowest, most failure-prone step of a
+# Playwright run: in the Sandbox it routinely exceeded the caller's install
+# budget and got killed mid-fetch, leaving no browser and a test that failed
+# instantly. Baking it takes that cost to ~0s at runtime.
 #
 # VERSION LOCKSTEP: Playwright pins each browser build to the library version.
 # PLAYWRIGHT_VERSION MUST track the `@playwright/test` version consuming repos
 # run. If a consumer floats ahead, Playwright re-downloads the matching build at
 # runtime (graceful — just slower); bump this with consumers to keep it at ~0s.
+ARG WITH_BROWSER=false
 ARG PLAYWRIGHT_VERSION=1.59.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium-headless-shell \
-    && chmod -R a+rX /opt/pw-browsers
+RUN if [ "$WITH_BROWSER" = "true" ]; then \
+        set -eux; \
+        npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium-headless-shell; \
+        chmod -R a+rX /opt/pw-browsers; \
+    else \
+        echo "WITH_BROWSER=$WITH_BROWSER — skipping chromium bake (lean image)"; \
+    fi

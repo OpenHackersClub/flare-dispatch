@@ -54,6 +54,7 @@ import {
   makeCFRuntimeLive,
 } from "@flare-dispatch/runtime-cf";
 import { lookupRun } from "./registry";
+import { selectSandboxNs } from "./sandbox-routing";
 import { renderResultEmail } from "./notify";
 import type { Env } from "./env";
 
@@ -209,6 +210,15 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     // fails before any container boots.
     const input = Schema.decodeUnknownSync(run.inputs)(payload.inputs);
 
+    // Route to the sandbox image the run declares (`sandboxImage: "browser"`
+    // → the chromium-baked binding; default → lean). A DIFFERENT axis from
+    // `limits.requiresBrowser` — see sandbox-routing.ts + define-run.ts
+    // § SandboxImage. Degrades to lean when the browser container isn't bound.
+    const sandboxNs = selectSandboxNs(run.sandboxImage, {
+      lean: this.env.RUNS_SANDBOX,
+      browser: this.env.RUNS_SANDBOX_BROWSER,
+    });
+
     // Build the per-execution live runtime: D1 + R2 + Containers + Checks, with
     // `StepRunner` bound to *this* Workflow's `step` so each `step(...)` in the
     // run body is a real durable `WorkflowStep.do(...)` checkpoint.
@@ -225,7 +235,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     const runtime = makeCFRuntimeLive({
       db,
       bucket: this.env.RUNS_STORAGE,
-      sandboxNs: this.env.RUNS_SANDBOX,
+      sandboxNs,
       workflowStep: step,
       executionId: payload.executionId,
       execution: {

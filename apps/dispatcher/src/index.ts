@@ -22,11 +22,11 @@ import { proxyToSandbox } from "@cloudflare/sandbox";
 import type { Env } from "./env";
 import { handleRequest } from "./router";
 import { handleScheduled } from "./routes/scheduled";
-import { RunSandbox } from "./sandbox";
+import { RunSandbox, RunSandboxBrowser } from "./sandbox";
 
 // Re-export the binding classes so wrangler's `main` entry resolves them.
 export { RunWorkflow } from "./workflow";
-export { RunSandbox };
+export { RunSandbox, RunSandboxBrowser };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -36,6 +36,13 @@ export default {
     // for everything else, so it's a no-op for the dispatch/health/artifact
     // routes. The SDK's `SandboxEnv` hardcodes the binding name `Sandbox`; our
     // binding is `RUNS_SANDBOX`, so we adapt rather than rename the binding.
+    //
+    // Only the LEAN binding is proxied: the runs that need `exposePort`
+    // reachability (`cdp-acceptance`) are `sandboxImage: "lean"`. The browser
+    // image's consumer (`playwright-demo`) connects *out* to a deployed URL and
+    // never exposes a port, so RUNS_SANDBOX_BROWSER has no preview surface. If a
+    // future browser-image run needs `exposePort`, the proxy must learn to pick
+    // the binding from the preview host (tracked in issue #68).
     const proxied = await proxyToSandbox(request, { Sandbox: env.RUNS_SANDBOX });
     if (proxied !== null) return proxied;
     return handleRequest(request, env);
