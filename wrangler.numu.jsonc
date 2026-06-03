@@ -62,13 +62,14 @@
     {
       "class_name": "RunSandbox",
       "image": "./infra/Dockerfile.sandbox",
-      "instance_type": "standard-2",
+      "image_vars": { "FD_REF": "fix/product-demo-chat-completions" },
+      "instance_type": "standard-4",
       "max_instances": 16
     },
     {
       "class_name": "RunSandboxBrowser",
       "image": "./infra/Dockerfile.sandbox",
-      "image_vars": { "WITH_BROWSER": "true" },
+      "image_vars": { "WITH_BROWSER": "true", "FD_REF": "fix/product-demo-chat-completions" },
       "instance_type": "standard-2",
       "max_instances": 16
     }

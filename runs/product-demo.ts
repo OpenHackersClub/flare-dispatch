@@ -458,57 +458,49 @@ export const productDemo = defineRun({
         (story, i) =>
           step(`play-${i}`, () =>
               Effect.gen(function* () {
-                const outPath = `/tmp/demo/play-${i}.out`;
-                const errPath = `/tmp/demo/play-${i}.err`;
-                const donePath = `/tmp/demo/play-${i}.done`;
-                const playCmd = [
-                  "demo-agent",
-                  "play",
-                  "--cdp-ws",
-                  shellQuote(cdpWsUrl),
-                  "--name",
-                  shellQuote(story.name),
-                  "--prose",
-                  shellQuote(story.prose),
-                  "--screenshots",
-                  shellQuote(screenshotsDir),
-                  "--max-sec",
-                  String(perStorySec),
-                  "--model",
-                  shellQuote(playModel),
-                  // Navigate to the app if the page is still blank (the first
-                  // story, or if record-start's navigation didn't carry over).
-                  "--url",
-                  shellQuote(input.deployedUrl),
-                ].join(" ");
-                // Hard `timeout` wrapper GUARANTEES the sentinel is written by
-                // ~perStorySec+30 even if `demo-agent play` hangs on something
-                // other than a model call (a stuck CDP action, an unbounded
-                // wait) — without it a hung play spins the per-story poll to CF
-                // Workflows' ~10-min step cap. demo-agent's own `--max-sec`
-                // self-abort + the model-call timeout are the graceful layers;
-                // this is the backstop.
-                yield* sandbox.runDetached({
+                // BLOCKING exec (array command — no shell, no escaping). On a
+                // stable container (standard-4+) the exec connection survives
+                // the multi-minute play and returns the result JSON directly.
+                // Detached+sentinel-poll was unreliable here: the ambient
+                // sandbox serialises execs, so the poll's `cat` queues behind
+                // the still-running detached play and never reads its sentinel,
+                // spinning the step to CF Workflows' ~10-min cap. `timeoutSec`
+                // bounds the exec; `--max-sec` is the agent's own budget.
+                const result = yield* sandbox.exec({
+                  command: [
+                    "demo-agent",
+                    "play",
+                    "--cdp-ws",
+                    cdpWsUrl,
+                    "--name",
+                    story.name,
+                    "--prose",
+                    story.prose,
+                    "--screenshots",
+                    screenshotsDir,
+                    "--max-sec",
+                    String(perStorySec),
+                    "--model",
+                    playModel,
+                    // Navigate to the app if the page is still blank (the first
+                    // story, or if record-start's nav didn't carry over).
+                    "--url",
+                    input.deployedUrl,
+                  ],
                   env: agentEnv,
-                  command: `( timeout -s KILL ${perStorySec + 30} ${playCmd} > ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${donePath}`,
+                  timeoutSec: perStorySec + 30,
                 });
-                const exitCode = yield* pollSentinel({
-                  sentinel: donePath,
-                  maxAttempts: Math.ceil((perStorySec + 60) / 5),
-                });
-                const read = (path: string) =>
-                  sandbox
-                    .exec({ command: `cat ${path} 2>/dev/null || true` })
-                    .pipe(Effect.map((r) => r.stdout));
-                const stdout = yield* read(outPath);
-                const stderr = yield* read(errPath);
-                if (exitCode !== 0 || stdout.trim() === "") {
+                if (result.exitCode !== 0 || result.stdout.trim() === "") {
                   yield* io.log(
                     "warn",
-                    `play '${story.name}' exit=${exitCode} stderrTail=${stderr.slice(-800)}`,
+                    `play '${story.name}' exit=${result.exitCode} stderrTail=${result.stderr.slice(-800)}`,
                   );
                 }
-                return { stdout, stderr, exitCode };
+                return {
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                  exitCode: result.exitCode,
+                };
               }),
             { retries: 0 },
           ).pipe(
