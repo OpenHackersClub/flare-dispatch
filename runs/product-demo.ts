@@ -289,8 +289,16 @@ export const productDemo = defineRun({
       //    `?recording=true` so Browser Run records rrweb DOM events for
       //    the whole session; the agent doesn't have to start recording —
       //    it inherits a session that's already recording.
-      const session = yield* step("attach-cdp", () =>
-        browser.newCDPSession({ targetUrl: input.deployedUrl }),
+      // Persist ONLY the `wsEndpoint` string, not the whole `CDPSession`: the
+      // session carries a `close` Effect, and a CF Workflow checkpoint cannot
+      // structured-clone an Effect (`DataCloneError: … EffectPrimitiveSuccess`)
+      // — every `step` return value is durably checkpointed. The container is
+      // torn down at run end, so the endpoint the demo-agent dials is all we
+      // need across the step boundary. Same fix as runs/cdp-acceptance.ts.
+      const cdpWsUrl = yield* step("attach-cdp", () =>
+        browser
+          .newCDPSession({ targetUrl: input.deployedUrl })
+          .pipe(Effect.map((session) => session.wsEndpoint)),
       );
 
       // Filesystem layout inside the container — relative paths the agent
@@ -313,7 +321,7 @@ export const productDemo = defineRun({
         sandbox.exec({
           command: [
             "demo-agent", "record", "start",
-            "--cdp-ws", session.wsEndpoint,
+            "--cdp-ws", cdpWsUrl,
             "--viewport", viewport,
             "--session-id-out", sessionIdPath,
           ],
@@ -355,7 +363,7 @@ export const productDemo = defineRun({
             sandbox.exec({
               command: [
                 "demo-agent", "play",
-                "--cdp-ws", session.wsEndpoint,
+                "--cdp-ws", cdpWsUrl,
                 "--name", story.name,
                 "--prose", story.prose,
                 "--screenshots", screenshotsDir,
@@ -379,7 +387,7 @@ export const productDemo = defineRun({
         sandbox.exec({
           command: [
             "demo-agent", "record", "stop",
-            "--cdp-ws", session.wsEndpoint,
+            "--cdp-ws", cdpWsUrl,
             "--session-id-in", sessionIdPath,
             "--out", replayJsonPath,
           ],
