@@ -762,23 +762,36 @@ export const productDemo = defineRun({
       //     demo run. `Option.match` — never `_tag` access (CLAUDE.md
       //     Effect-TS rules).
       // Best-effort: prior-run context is a SUMMARY nicety, never load-bearing.
-      // `io.priorExecution` slow/erroring (observed: a 312s failure that sank a
-      // run whose plays + recording had all succeeded) must not fail the run —
-      // fall back to "no prior" so the verdict still lands. Same posture as
-      // `summarize` / the uploads below.
-      const prior = yield* step("load-prior", () =>
-        io
-          .priorExecution({
+      // `io.priorExecution` slow/erroring (observed: a 312s step FAILURE that
+      // sank a run whose plays + recording had all succeeded) must not fail the
+      // run — fall back to "no prior" so the verdict still lands.
+      //
+      // The recovery is wrapped AROUND `step(...)`, not inside its thunk: the
+      // 312s failure is the step wrapper's own retry/timeout firing, which an
+      // in-thunk `catchAll` never sees (it only catches the inner Effect's
+      // error channel, not the step's). `retries: 0` stops the step burning
+      // minutes on retries; the 30s `timeoutTo` bounds a hung prior-fetch; the
+      // outer `catchAll` turns any step failure into "no prior". Same posture
+      // as the play steps above and `summarize` / the uploads below.
+      const prior = yield* step(
+        "load-prior",
+        () =>
+          io.priorExecution({
             family: `product-demo:${input.repo}:${input.deployedUrl}`,
             outputSchema: Output,
-          })
-          .pipe(
-            Effect.catchAll((cause) =>
-              io
-                .log("warn", `product-demo load-prior failed (ignoring): ${cause}`)
-                .pipe(Effect.as(Option.none<{ output: typeof Output.Type }>())),
-            ),
-          ),
+          }),
+        { retries: 0 },
+      ).pipe(
+        Effect.timeoutTo({
+          duration: "30 seconds",
+          onSuccess: (o: Option.Option<{ output: typeof Output.Type }>) => o,
+          onTimeout: () => Option.none<{ output: typeof Output.Type }>(),
+        }),
+        Effect.catchAll((cause) =>
+          io
+            .log("warn", `product-demo load-prior failed (ignoring): ${cause}`)
+            .pipe(Effect.as(Option.none<{ output: typeof Output.Type }>())),
+        ),
       );
 
       // 11. Hand the previous summary to the agent as a file IF it exists.
