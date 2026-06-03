@@ -75,7 +75,14 @@ export const handleBrowserCdp = async (
   env: Env,
   requestId: string,
 ): Promise<Response> => {
-  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+  const url = new URL(request.url);
+  const isUpgrade =
+    request.headers.get("upgrade")?.toLowerCase() === "websocket";
+  // ACQUIRE-ONLY MODE — `GET …?acquire=1` with no upgrade: mint a session and
+  // return its id as JSON (see below). Everything else that isn't a WS upgrade
+  // keeps the existing 426 contract.
+  const isAcquire = !isUpgrade && url.searchParams.get("acquire") === "1";
+  if (!isUpgrade && !isAcquire) {
     return new Response("expected websocket upgrade", { status: 426 });
   }
   if (env.BROWSER === undefined) {
@@ -87,7 +94,6 @@ export const handleBrowserCdp = async (
     log("cdp.no_token_configured", { request_id: requestId });
     return new Response("browser cdp auth not configured", { status: 503 });
   }
-  const url = new URL(request.url);
   const token = callerToken(request, url);
   if (token === null || !constantTimeCompare(token, expected)) {
     log("cdp.unauthorized", { request_id: requestId });
@@ -95,16 +101,20 @@ export const handleBrowserCdp = async (
   }
 
   const keepAliveMs = Number(env.KEEP_ALIVE_MS ?? DEFAULT_KEEP_ALIVE_MS);
+  // Session recording (Browser Run rrweb capture, Beta) — opt-in per session
+  // via `?recording=true` on the caller's URL. Propagated to BOTH the acquire
+  // and the upstream devtools connect (the docs put it on the devtools WS URL;
+  // adding it to acquire too is harmless and covers either enforcement point).
+  const recording = url.searchParams.get("recording") === "true";
 
-  // 1) Resolve the session — re-attach to `?browser_session=<id>` or mint one.
-  const requestedSession = url.searchParams.get("browser_session");
-  let sessionId: string;
-  if (requestedSession) {
-    sessionId = requestedSession;
-  } else {
+  /** Mint a Browser Rendering session via the binding; returns its id. */
+  const acquireSession = async (): Promise<
+    { ok: true; sessionId: string } | { ok: false; res: Response }
+  > => {
     const acquireUrl = new URL("http://fake.host/v1/acquire");
     acquireUrl.searchParams.set("keep_alive", String(keepAliveMs));
-    const acquireRes = await env.BROWSER.fetch(acquireUrl, {
+    if (recording) acquireUrl.searchParams.set("recording", "true");
+    const acquireRes = await env.BROWSER!.fetch(acquireUrl, {
       headers: { "cf-brapi-client": CDP_CLIENT_ID },
     });
     if (acquireRes.status !== 200) {
@@ -114,12 +124,47 @@ export const handleBrowserCdp = async (
         upstream_status: acquireRes.status,
         upstream_body: body.slice(0, 512),
       });
-      return new Response(`acquire failed: ${acquireRes.status} ${body}`, {
-        status: 502,
-      });
+      return {
+        ok: false,
+        res: new Response(`acquire failed: ${acquireRes.status} ${body}`, {
+          status: 502,
+        }),
+      };
     }
-    sessionId = ((await acquireRes.json()) as { sessionId: string }).sessionId;
-    log("cdp.acquired", { request_id: requestId, session_id: sessionId });
+    const sessionId = ((await acquireRes.json()) as { sessionId: string })
+      .sessionId;
+    log("cdp.acquired", {
+      request_id: requestId,
+      session_id: sessionId,
+      recording,
+    });
+    return { ok: true, sessionId };
+  };
+
+  // ACQUIRE-ONLY MODE — `GET …/v1/browser/cdp?acquire=1` (no WebSocket
+  // upgrade): mint a session and return its id as JSON. This is how a run
+  // learns the REAL Browser Rendering session id up front (the id the
+  // recording REST API is keyed on), then has its CDP client re-attach with
+  // `?browser_session=<id>`. Without this, the id is minted lazily inside the
+  // WS handshake below and the connecting client can never see it.
+  if (isAcquire) {
+    const acquired = await acquireSession();
+    if (!acquired.ok) return acquired.res;
+    return new Response(JSON.stringify({ sessionId: acquired.sessionId }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  // 1) Resolve the session — re-attach to `?browser_session=<id>` or mint one.
+  const requestedSession = url.searchParams.get("browser_session");
+  let sessionId: string;
+  if (requestedSession) {
+    sessionId = requestedSession;
+  } else {
+    const acquired = await acquireSession();
+    if (!acquired.ok) return acquired.res;
+    sessionId = acquired.sessionId;
   }
 
   // 2) Open the upstream CDP WebSocket for that session. `persistent` is left
@@ -127,6 +172,10 @@ export const handleBrowserCdp = async (
   const upstreamUrl = new URL(
     `http://fake.host/v1/devtools/browser/${sessionId}`,
   );
+  // NOTE: recording=true must NOT ride on the devtools connect — the binding
+  // 400s it there ("upstream did not return webSocket; status=400", verified
+  // live). Recording is armed at ACQUIRE time only (see acquireSession above);
+  // re-attaches to a recording session need no param.
   const upstreamRes = await env.BROWSER.fetch(upstreamUrl, {
     headers: { Upgrade: "websocket", "cf-brapi-client": CDP_CLIENT_ID },
   });

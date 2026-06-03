@@ -50,6 +50,7 @@ const makeFakeSession = (): FakeCdpSession => {
   return {
     calls,
     goto: (url) => Effect.sync(() => log("goto", [url], undefined)),
+    currentUrl: () => Effect.sync(() => "about:blank"),
     click: (target) => Effect.sync(() => log("click", [target], undefined)),
     type: (target, text) =>
       Effect.sync(() => log("type", [target, text], undefined)),

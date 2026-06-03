@@ -13,7 +13,7 @@
 
 import * as Command from "@effect/cli/Command";
 import * as Options from "@effect/cli/Options";
-import { Console, Effect, Layer, Match } from "effect";
+import { Console, Effect, Layer, Match, Option } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { attachCdp, applyViewport } from "./cdp.js";
@@ -86,6 +86,20 @@ const previousOption = Options.text("previous").pipe(
   Options.withDescription("Optional: path to previous run's summary markdown."),
 );
 
+const urlOption = Options.text("url").pipe(
+  Options.withDescription(
+    "Optional: navigate the session to this URL before the stories run, so they start on the app under test rather than about:blank.",
+  ),
+  Options.optional,
+);
+
+const explicitSessionIdOption = Options.text("session-id").pipe(
+  Options.withDescription(
+    "Optional: the REAL Browser Run session id (from the dispatcher's recording pre-acquire). When given, `record start` writes it verbatim and `record stop` fetches the recording by it — the CDP-derived fallback id is NOT recognised by the Session Recording REST API.",
+  ),
+  Options.optional,
+);
+
 // ---------------------------------------------------------------------------
 // `record start`
 
@@ -95,12 +109,30 @@ const recordStart = Command.make(
     cdpWs: cdpWsOption,
     viewport: viewportOption,
     sessionIdOut: sessionIdOutOption,
+    url: urlOption,
+    sessionId: explicitSessionIdOption,
   },
-  ({ cdpWs, viewport, sessionIdOut }) =>
+  ({ cdpWs, viewport, sessionIdOut, url, sessionId: sessionIdOpt }) =>
     Effect.gen(function* () {
       const { session, page } = yield* attachCdp(cdpWs);
       yield* applyViewport(page, viewport as ViewportPreset);
-      const sessionId = yield* session.sessionId();
+      // Navigate the PERSISTENT Browser Rendering session to the app under test
+      // before any story plays — `newCDPSession({targetUrl})` does not navigate,
+      // so without this the browser sits on about:blank and the agent has no app
+      // to drive. The page survives this short-lived connect (the platform keeps
+      // the session until `record stop`), so the play loop inherits the loaded
+      // app. CF Access headers are already set in `attachCdp`.
+      if (Option.isSome(url)) {
+        yield* session.goto(url.value);
+      }
+      // Prefer the REAL Browser Run session id (the dispatcher's recording
+      // pre-acquire passes it via --session-id) — it is the key the Session
+      // Recording REST API is fetched by. The CDP-derived fallback is a legacy
+      // guess the recording API does NOT recognise.
+      const sessionId = yield* Option.match(sessionIdOpt, {
+        onNone: () => session.sessionId(),
+        onSome: (v) => Effect.succeed(v),
+      });
       yield* writeFile(sessionIdOut, sessionId);
       // `record start` does NOT disconnect — the WebSocket would close
       // server-side and finalize the recording prematurely. The platform
@@ -123,17 +155,36 @@ const recordStop = Command.make(
     sessionIdIn: sessionIdInOption,
     out: outOption,
   },
-  ({ cdpWs: _cdpWs, sessionIdIn, out }) =>
+  ({ cdpWs, sessionIdIn, out }) =>
     Effect.gen(function* () {
-      // The agent's role here is NOT to close the browser — `attachCdp` opens
-      // a *fresh* connection from this short-lived CLI invocation; closing
-      // it would not affect the underlying Browser Rendering session that
-      // the play loop already finished using. Browser Rendering finalizes
-      // the recording on its own session-idle timer once the play step
-      // returns. We just need to fetch.
       const sessionId = yield* readFile(sessionIdIn).pipe(
         Effect.map((s) => s.trim()),
       );
+      // CLOSE the Browser Run session first — recordings only finalize after
+      // the session closes ("After a session closes, its recording is
+      // available"), and the keep_alive idle timer (minutes) outlives the
+      // fetch's retry budget. Re-attach and send a Browser.close, but DO NOT
+      // wait for puppeteer's full teardown: `browser.close()` blocks until the
+      // browser process exit propagates back — which through the CDP proxy it
+      // never does, hanging record-stop ~10min (near the step cap). Send the
+      // `Browser.close` CDP frame directly, then disconnect. The frame is what
+      // triggers finalization; we don't need the teardown ack. Best-effort.
+      yield* attachCdp(cdpWs).pipe(
+        Effect.flatMap(({ browser, page }) =>
+          Effect.tryPromise({
+            try: async () => {
+              const cdp = await page.createCDPSession();
+              await cdp.send("Browser.close").catch(() => undefined);
+              await browser.disconnect().catch(() => undefined);
+            },
+            catch: (e) => e,
+          }),
+        ),
+        Effect.timeout("20 seconds"),
+        Effect.catchAll(() => Effect.void),
+      );
+      // Give the platform a moment to finalize before the first fetch.
+      yield* Effect.sleep("3 seconds");
       const cfg = yield* recordingConfigFromEnv(process.env);
       const events = yield* fetchRecording(sessionId, cfg);
       yield* writeFile(out, JSON.stringify(events));
@@ -160,8 +211,9 @@ const playCommand = Command.make(
     screenshots: screenshotsOption,
     maxSec: maxSecOption,
     model: modelOption,
+    url: urlOption,
   },
-  ({ cdpWs, name, prose, screenshots, maxSec, model }) =>
+  ({ cdpWs, name, prose, screenshots, maxSec, model, url }) =>
     Effect.gen(function* () {
       const attachedAtMs = Date.now();
       const attached = yield* attachCdp(cdpWs);
@@ -172,6 +224,7 @@ const playCommand = Command.make(
           screenshotsDir: screenshots,
           maxSec,
           attachedAtMs,
+          startUrl: Option.getOrUndefined(url),
         },
         { session: attached.session },
       ).pipe(Effect.provide(makeLanguageModelLayer(model)));
