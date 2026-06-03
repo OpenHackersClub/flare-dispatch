@@ -64,11 +64,57 @@ export type SpawnChildRunOpts = {
   readonly instanceId?: string;
 };
 
+/**
+ * A child execution's lifecycle status, read back from the D1 `executions`
+ * table by `poll`. `missing` is a child whose row has not appeared yet — its
+ * Workflow instance has not booted far enough to `startExecution`; the
+ * `waitForChildren` primitive treats it as still-pending, the same as `running`.
+ */
+export type ChildRunStatus =
+  | "running"
+  | "success"
+  | "failure"
+  | "cancelled"
+  | "missing";
+
+/** A child's polled status, plus its JSON-encoded output when terminal. */
+export type ChildStatusRecord = {
+  readonly executionId: string;
+  readonly status: ChildRunStatus;
+  /**
+   * The child's `executions.summary_json` — its terminal output, JSON-encoded,
+   * when it finished with output. Absent while pending, or for a failed child
+   * (a failed Exit records no output). A parent decodes it to roll up results.
+   */
+  readonly summaryJson?: string;
+};
+
+/** Terminal child statuses — `waitForChildren` stops polling once all reach one. */
+const TERMINAL: ReadonlySet<ChildRunStatus> = new Set([
+  "success",
+  "failure",
+  "cancelled",
+]);
+
+/** True once a child has settled (success / failure / cancelled). */
+export const isTerminalChildStatus = (status: ChildRunStatus): boolean =>
+  TERMINAL.has(status);
+
 /** The service contract a runtime Layer implements. */
 export interface ChildRunsService {
   readonly spawn: (
     opts: SpawnChildRunOpts,
   ) => Effect.Effect<ChildRunHandle, ChildSpawnFailed>;
+  /**
+   * Read the current status of each child execution id. Returns one record per
+   * requested id, in the input order; an id with no `executions` row yet is
+   * `missing`. Total — a transient D1 read fault degrades every id to a
+   * non-terminal status (the `waitForChildren` timeout is the real backstop)
+   * rather than failing the poll.
+   */
+  readonly poll: (opts: {
+    ids: readonly string[];
+  }) => Effect.Effect<readonly ChildStatusRecord[]>;
 }
 
 /** Context.Tag — the child-Workflow dependency a fan-out run carries. */

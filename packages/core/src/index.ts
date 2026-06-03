@@ -111,9 +111,12 @@ export {
 export {
   spawnChildRun,
   ChildRuns,
+  isTerminalChildStatus,
   type ChildRunsService,
   type ChildRunHandle,
   type SpawnChildRunOpts,
+  type ChildRunStatus,
+  type ChildStatusRecord,
 } from "./services/child-runs";
 export {
   Executions,

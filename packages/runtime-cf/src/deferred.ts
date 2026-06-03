@@ -67,6 +67,10 @@ export const ChildRunsDeferred: Layer.Layer<ChildRuns> = Layer.succeed(
       Effect.die(
         `spawnChildRun: no RUNS_WORKFLOW binding on this runtime (run="${run}")`,
       ),
+    poll: () =>
+      Effect.die(
+        "waitForChildren: no RUNS_WORKFLOW binding on this runtime",
+      ),
   }))(),
 );
 

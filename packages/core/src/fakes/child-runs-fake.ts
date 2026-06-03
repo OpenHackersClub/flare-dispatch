@@ -9,8 +9,10 @@
 
 import { Effect, Layer } from "effect";
 import {
+  type ChildRunStatus,
   ChildRuns,
   type ChildRunsService,
+  type ChildStatusRecord,
   type SpawnChildRunOpts,
 } from "../services/child-runs";
 
@@ -22,10 +24,15 @@ export type SpawnRecord = {
   readonly created: boolean;
 };
 
-/** Inspectable in-memory spawn log — surfaced for test assertions. */
+/** Inspectable in-memory spawn + poll log — surfaced for test assertions. */
 export type ChildRunsFakeState = {
   readonly spawned: SpawnRecord[];
+  /** number of `poll` calls so far — surfaced so a loop test can assert it. */
+  polls: number;
 };
+
+/** A poll-status seed value — a bare status or a status + output. */
+type StatusSeed = ChildRunStatus | { status: ChildRunStatus; summaryJson?: string };
 
 /**
  * Build a ChildRuns fake plus an inspectable handle.
@@ -38,9 +45,35 @@ export type ChildRunsFakeState = {
  */
 export const makeChildRunsFake = (opts?: {
   existing?: Iterable<string>;
+  /**
+   * Static per-id poll statuses. An id absent from the map polls as `missing`.
+   * For a loop test that flips `running → success`, supply `pollFn` instead.
+   */
+  statuses?: Record<string, StatusSeed>;
+  /**
+   * Dynamic poll override — receives the requested ids and the 0-based poll
+   * call number, returns the records. Wins over `statuses` when set; lets a
+   * test exercise `waitForChildren`'s loop (e.g. pending on call 0, terminal on
+   * call 1).
+   */
+  pollFn?: (
+    ids: readonly string[],
+    call: number,
+  ) => readonly ChildStatusRecord[];
 }): { layer: Layer.Layer<ChildRuns>; state: ChildRunsFakeState } => {
-  const state: ChildRunsFakeState = { spawned: [] };
+  const state: ChildRunsFakeState = { spawned: [], polls: 0 };
   const seen = new Set<string>(opts?.existing ?? []);
+
+  const seedToRecord = (id: string): ChildStatusRecord => {
+    const seed = opts?.statuses?.[id];
+    if (seed === undefined) return { executionId: id, status: "missing" };
+    if (typeof seed === "string") return { executionId: id, status: seed };
+    return {
+      executionId: id,
+      status: seed.status,
+      ...(seed.summaryJson !== undefined ? { summaryJson: seed.summaryJson } : {}),
+    };
+  };
 
   const service: ChildRunsService = {
     spawn: ({ run, input, instanceId }: SpawnChildRunOpts) =>
@@ -50,6 +83,15 @@ export const makeChildRunsFake = (opts?: {
         seen.add(id);
         state.spawned.push({ run, input, instanceId: id, created });
         return { executionId: id, instanceId: id, created };
+      }),
+
+    poll: ({ ids }) =>
+      Effect.sync(() => {
+        const call = state.polls;
+        state.polls += 1;
+        return opts?.pollFn !== undefined
+          ? opts.pollFn(ids, call)
+          : ids.map(seedToRecord);
       }),
   };
 

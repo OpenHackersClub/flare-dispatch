@@ -6,7 +6,7 @@
 // false contract, and `ChildSpawnFailed` on any other create rejection.
 
 import { Effect, Exit } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChildRuns } from "@flare-dispatch/core";
 import {
   type ChildRunsLiveConfig,
@@ -14,8 +14,16 @@ import {
   makeChildRunsLive,
   type WorkflowBindingLike,
 } from "./child-runs-cf";
+import { makeTestBindings, type TestBindings } from "./test-support";
 
 type CreateCall = { id: string; params: unknown };
+
+/** A D1 stub good enough for spawn-only tests (poll is covered with Miniflare). */
+const NO_DB = {
+  prepare: () => {
+    throw new Error("poll not exercised in this test");
+  },
+} as unknown as D1Database;
 
 /** A `Workflow` stub recording every `create` call; optionally throwing. */
 const makeWorkflowStub = (opts?: {
@@ -38,6 +46,7 @@ const CFG = (
   over?: Partial<ChildRunsLiveConfig>,
 ): ChildRunsLiveConfig => ({
   workflow,
+  db: NO_DB,
   parentExecutionId: "parent-exec-001",
   github: {
     repo: "owner/name",
@@ -164,6 +173,88 @@ describe("makeChildRunsLive", () => {
       input: { lots: "of", data: [1, 2, 3, 4, 5] },
     });
     expect(id.length).toBeLessThanOrEqual(64);
-    expect(id).not.toMatch(/[/:\s]/);
+    expect(id).not.toMatch(/[/\s]/);
+  });
+});
+
+describe("makeChildRunsLive.poll (live D1 via Miniflare)", () => {
+  let bindings: TestBindings;
+  // A no-op Workflow stub — poll never touches it.
+  const wf: WorkflowBindingLike = { create: async () => ({}) };
+
+  beforeEach(async () => {
+    bindings = await makeTestBindings();
+  });
+  afterEach(async () => {
+    await bindings.dispose();
+  });
+
+  /** Insert one executions row directly (bypassing the service). */
+  const insertRow = (row: {
+    id: string;
+    status: string;
+    summaryJson?: string;
+    parentExecutionId?: string;
+  }) =>
+    bindings.db
+      .prepare(
+        `INSERT INTO executions
+           (id, run, repo, ref, sha, status, started_at, input_json, summary_json, parent_execution_id)
+         VALUES (?, 'shard', 'o/n', 'refs/heads/main', 'sha', ?, 0, '{}', ?, ?)`,
+      )
+      .bind(
+        row.id,
+        row.status,
+        row.summaryJson ?? null,
+        row.parentExecutionId ?? null,
+      )
+      .run();
+
+  const poll = (ids: readonly string[]) =>
+    Effect.runPromise(
+      Effect.flatMap(ChildRuns, (c) => c.poll({ ids })).pipe(
+        Effect.provide(
+          makeChildRunsLive({
+            workflow: wf,
+            db: bindings.db,
+            parentExecutionId: "parent-1",
+            github: { repo: "o/n", ref: "refs/heads/main", sha: "sha" },
+          }),
+        ),
+      ),
+    );
+
+  it("maps each id's row to its status, preserving input order; absent → missing", async () => {
+    await insertRow({ id: "c-running", status: "running" });
+    await insertRow({
+      id: "c-success",
+      status: "success",
+      summaryJson: '{"exitCode":0}',
+    });
+    await insertRow({ id: "c-failure", status: "failure" });
+
+    const records = await poll([
+      "c-success",
+      "c-missing",
+      "c-running",
+      "c-failure",
+    ]);
+
+    expect(records).toEqual([
+      { executionId: "c-success", status: "success", summaryJson: '{"exitCode":0}' },
+      { executionId: "c-missing", status: "missing" },
+      { executionId: "c-running", status: "running" },
+      { executionId: "c-failure", status: "failure" },
+    ]);
+  });
+
+  it("treats an unrecognized status (queued) as non-terminal running", async () => {
+    await insertRow({ id: "c-queued", status: "queued" });
+    const [rec] = await poll(["c-queued"]);
+    expect(rec).toEqual({ executionId: "c-queued", status: "running" });
+  });
+
+  it("returns [] for an empty id list without touching D1", async () => {
+    expect(await poll([])).toEqual([]);
   });
 });

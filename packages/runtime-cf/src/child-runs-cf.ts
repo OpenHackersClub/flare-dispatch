@@ -29,9 +29,11 @@
 
 import { Effect, Layer } from "effect";
 import {
+  type ChildRunStatus,
   ChildRuns,
   type ChildRunsService,
   ChildSpawnFailed,
+  type ChildStatusRecord,
 } from "@flare-dispatch/core";
 
 /** The minimal CF `Workflow`-binding surface `spawn` needs. */
@@ -54,14 +56,33 @@ export type ChildGithubContext = {
   readonly installationId?: number;
 };
 
-/** Everything `makeChildRunsLive` needs to spawn children of one execution. */
+/** Everything `makeChildRunsLive` needs to spawn + poll children of one execution. */
 export type ChildRunsLiveConfig = {
   /** The `Workflow` binding — `env.RUNS_WORKFLOW`. */
   readonly workflow: WorkflowBindingLike;
+  /**
+   * D1 binding (`env.RUNS_METADATA`) — `poll` reads child `executions` rows
+   * (status + summary_json) so `waitForChildren` can join on them.
+   */
+  readonly db: D1Database;
   /** The spawning (parent) execution id — written as each child's lineage. */
   readonly parentExecutionId: string;
   /** The github context children inherit (repo/ref/sha/installation). */
   readonly github: ChildGithubContext;
+};
+
+/** Map a raw `executions.status` cell to the capability's `ChildRunStatus`. */
+const toChildStatus = (raw: string | null | undefined): ChildRunStatus => {
+  switch (raw) {
+    case "success":
+    case "failure":
+    case "cancelled":
+    case "running":
+      return raw;
+    // `queued` (or any unrecognized value) is not yet terminal → keep waiting.
+    default:
+      return "running";
+  }
 };
 
 /** CF Workflows caps instance ids at 64 chars. */
@@ -163,6 +184,44 @@ export const makeChildRunsLive = (
         },
         catch: (cause) => new ChildSpawnFailed({ run, instanceId: id, cause }),
       });
+    },
+
+    poll: ({ ids }) => {
+      if (ids.length === 0) {
+        return Effect.succeed([] as readonly ChildStatusRecord[]);
+      }
+      const placeholders = ids.map(() => "?").join(", ");
+      return Effect.tryPromise(async () => {
+        const { results } = await cfg.db
+          .prepare(
+            `SELECT id, status, summary_json
+               FROM executions
+              WHERE id IN (${placeholders})`,
+          )
+          .bind(...ids)
+          .all<{ id: string; status: string; summary_json: string | null }>();
+        const byId = new Map(results.map((r) => [r.id, r]));
+        // Preserve input order; an id with no row yet is `missing`.
+        return ids.map((id): ChildStatusRecord => {
+          const row = byId.get(id);
+          if (row === undefined) return { executionId: id, status: "missing" };
+          return {
+            executionId: id,
+            status: toChildStatus(row.status),
+            ...(row.summary_json !== null
+              ? { summaryJson: row.summary_json }
+              : {}),
+          };
+        });
+      }).pipe(
+        // A transient D1 read fault must not fail the join — degrade every id to
+        // `missing` (non-terminal) so the loop polls again; `waitForChildren`'s
+        // overall timeout is the real backstop. Matches `io.priorExecution`'s
+        // "best-effort read, never fatal" posture.
+        Effect.orElseSucceed(() =>
+          ids.map((id): ChildStatusRecord => ({ executionId: id, status: "missing" })),
+        ),
+      );
     },
   };
 

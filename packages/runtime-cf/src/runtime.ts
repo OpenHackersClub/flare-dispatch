@@ -278,6 +278,7 @@ export const makeCFRuntimeLive = (
       ? ChildRunsDeferred
       : makeChildRunsLive({
           workflow: opts.runsWorkflow,
+          db: opts.db,
           parentExecutionId: opts.executionId,
           github: {
             repo: opts.execution.repo,

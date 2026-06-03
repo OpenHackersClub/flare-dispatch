@@ -173,6 +173,21 @@ export class ChildSpawnFailed extends Schema.TaggedError<ChildSpawnFailed>()(
   },
 ) {}
 
+/**
+ * A `waitForChildren` join exceeded its overall wait ceiling with children
+ * still pending. Carries the execution ids that had not reached a terminal
+ * status and the total time waited, so a fan-out parent can report which shards
+ * hung. Distinct from a child that finished `failure` — that is a terminal
+ * status the join returns normally; this fires only when children never settle.
+ */
+export class ChildWaitTimeout extends Schema.TaggedError<ChildWaitTimeout>()(
+  "ChildWaitTimeout",
+  {
+    pending: Schema.Array(Schema.String),
+    waitedMs: Schema.Number,
+  },
+) {}
+
 /** The closed union of every error a run can fail with. */
 export type RunError =
   | CheckoutFailed
@@ -193,4 +208,5 @@ export type RunError =
   | CloudflareApiError
   | OidcSigningFailed
   | StsAssumeRoleFailed
-  | ChildSpawnFailed;
+  | ChildSpawnFailed
+  | ChildWaitTimeout;
