@@ -23,6 +23,7 @@ import type { Env } from "./env";
 import { handleAdminEvent } from "./routes/admin-events";
 import { handleArtifact } from "./routes/artifacts";
 import { handleBrowserCdp } from "./routes/browser-cdp";
+import { handleReplay } from "./routes/replay";
 import { handleDispatch } from "./routes/dispatch";
 import { handleHealth } from "./routes/health";
 import { handleInstallNew, handleInstalled } from "./routes/github";
@@ -50,6 +51,15 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleHealth();
+  }
+
+  // GET /replay/:sessionId — self-hosted rrweb replay player for a Browser Run
+  // Session Recording (what `product-demo.docsBase` points at on this Worker).
+  if (segments.length === 2 && segments[0] === "replay") {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleReplay(env, decodeURIComponent(segments[1]!));
   }
 
   // OIDC issuer endpoints — public, unauthenticated (IdPs fetch them).
