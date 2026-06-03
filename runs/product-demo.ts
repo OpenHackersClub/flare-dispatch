@@ -48,6 +48,7 @@ import {
   io,
   ExecFailed,
   ExecTimeout,
+  AcceptanceFailed,
   type Container,
 } from "@flare-dispatch/core";
 import { loadSecrets } from "@flare-dispatch/core/primitives";
@@ -219,6 +220,10 @@ const StoryResult = Schema.Struct({
   chapterEndMs: Schema.Number,
   narrative: Schema.String,
   keyScreenshotUri: Schema.String,
+  // Each story now records on its OWN CDP session (the run plays stories in
+  // parallel), so the replay links are per-story, not one shared timeline.
+  replayUri: Schema.String,
+  replayJsonUri: Schema.String,
 });
 
 const Output = Schema.Struct({
@@ -247,12 +252,12 @@ export const productDemo = defineRun({
   // your own `Dockerfile.sandbox` to enable this run.
   inputs: Input,
   outputs: Output,
-  // Stories run SEQUENTIALLY against one CDP session so the rrweb timeline
-  // stays continuous. `maxConcurrency: 1` makes the sequencing explicit and
-  // keeps the Browser Run session count to 1. `requiresBrowser: true`
-  // reserves a slot in the Browser Run pool — and the dispatcher's
-  // `newCDPSession` primitive appends `?recording=true` so Browser Run
-  // captures the rrweb event stream for the session's lifetime.
+  // Stories run IN PARALLEL, each on its own Browser Run CDP session (own
+  // rrweb recording) — see the run body's per-story `playStory`. `requiresBrowser`
+  // reserves a Browser Run slot, and the dispatcher's `newCDPSession` primitive
+  // appends `?recording=true` so each session captures its own rrweb stream.
+  // `maxConcurrency: 1` is the RUN-level limit (one product-demo execution at a
+  // time); per-story concurrency is capped inside the run.
   limits: { maxDurationSec: 3600, maxConcurrency: 1, requiresBrowser: true },
 
   // Schedule-mode binding — 14:00 UTC daily. The cron expression MUST also
@@ -388,65 +393,11 @@ export const productDemo = defineRun({
       //    `acquire` (not `workspace`) is the right primitive.
       const container = yield* step("acquire", () => sandbox.acquire({}));
 
-      // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
-      //    checkout, no app boot — the site is already live. The dispatcher's
-      //    `newCDPSession` primitive composes the connect URL with
-      //    `?recording=true` so Browser Run records rrweb DOM events for
-      //    the whole session; the agent doesn't have to start recording —
-      //    it inherits a session that's already recording.
-      // Persist ONLY the `wsEndpoint` string, not the whole `CDPSession`: the
-      // session carries a `close` Effect, and a CF Workflow checkpoint cannot
-      // structured-clone an Effect (`DataCloneError: … EffectPrimitiveSuccess`)
-      // — every `step` return value is durably checkpointed. The container is
-      // torn down at run end, so the endpoint the demo-agent dials is all we
-      // need across the step boundary. Same fix as runs/cdp-acceptance.ts.
-      const cdpWsUrl = yield* step("attach-cdp", () =>
-        browser
-          .newCDPSession({ targetUrl: input.deployedUrl })
-          .pipe(Effect.map((session) => session.wsEndpoint)),
-      );
-
-      // Filesystem layout inside the container — relative paths the agent
-      // writes through. The session-id file is the handoff between
-      // `record-start` (which queries it via puppeteer.sessionId()) and
-      // `record-stop` (which uses it to call Browser Run's recording REST
-      // endpoint after the session closes).
-      const sessionIdPath = "/tmp/demo/session-id";
-      const replayJsonPath = "/tmp/demo/replay.json";
-      const screenshotsDir = "/tmp/demo/screenshots";
-      const storiesJsonPath = "/tmp/demo/stories.json";
-      const summaryPath = "/tmp/demo/summary.md";
-
-      // 2. Validate the connect URL carries `?recording=true`, set the
-      //    viewport once (one resolution for the whole rrweb stream), and
-      //    capture the session ID for the REST pull in step 4. The agent
-      //    does NOT start a recording pipeline of its own — Browser Run is
-      //    already recording on the platform side.
-      yield* step("record-start", () =>
-        sandbox.exec({
-          container,
-          command: [
-            "demo-agent", "record", "start",
-            "--cdp-ws", cdpWsUrl,
-            "--viewport", viewport,
-            "--session-id-out", sessionIdPath,
-            // Navigate the session to the app under test up front (the browser
-            // is on about:blank otherwise — newCDPSession doesn't navigate).
-            "--url", input.deployedUrl,
-          ],
-          env: agentEnv,
-        }),
-      );
-
-      // 2.5. Resolve the per-step model ids through the control plane — same
-      //      seam as `pr-review` (recipes/ai-code-review): an operator can
-      //      repoint `product-demo.model.play` / `.summary` in CONFIG_KV
-      //      without redeploying, and a `play` model that's smaller than the
-      //      summariser keeps token spend down. Both keys are REQUIRED — no
-      //      provider-specific default lives in code (a default like
-      //      `claude-opus-4-7` would only work on a gateway routed to
-      //      Anthropic; `gpt-4o` only on OpenAI; there is no universal id).
-      //      An unset key is a misconfigured deploy and we die loudly.
+      // 1. Resolve config-store knobs ONCE for the whole run: the per-story
+      //    play model + the replay docs base. Read before any browser work so a
+      //    misconfigured deploy dies cheaply. (No summary model — the holistic
+      //    summary is now built deterministically in-run as markdown below, so
+      //    there is no second LLM round-trip and no fragile stories.json file.)
       const playModel = yield* step("resolve-play-model", () =>
         config.get("product-demo.model.play").pipe(
           Effect.flatMap((v) =>
@@ -458,46 +409,98 @@ export const productDemo = defineRun({
           ),
         ),
       );
+      const docsBase = yield* step("resolve-docs-base", () =>
+        config.get("product-demo.docsBase").pipe(
+          Effect.map(
+            (override) => override ?? "https://flare-dispatch.openhackersclub.com",
+          ),
+        ),
+      );
 
-      // 3. Walk the stories in order. Each `demo-agent play` reads the
-      //    prose, applies actions over the SAME CDP session (so the rrweb
-      //    timeline stays continuous), captures key screenshots into
-      //    `screenshotsDir`, and emits one JSON line per story with the
-      //    chapter offsets (rrweb timestamps), status, narrative, and the
-      //    key-screenshot path. Concurrency 1 — see `limits` above.
-      // Each `demo-agent play` is a MULTI-MINUTE run (the model drives the
-      // browser action-by-action). A blocking `sandbox.exec` held that long has
-      // its container connection killed by the CF Sandbox (~10-20s) and fails
-      // `ExecFailed` before the story finishes — so launch DETACHED and poll a
-      // sentinel, exactly like runs/cdp-acceptance.ts's test command. stdout
-      // (the result JSON) + stderr go to per-story files that survive the
-      // detach; stderr is collected for debugging via `upload-play-logs` below.
-      // Each story is its OWN durable step so it stays under CF Workflows'
-      // ~10-min per-`step.do` ceiling — one step wrapping all stories (the
-      // render-waiting "generate-creatives" can take ~5 min by itself) blew
-      // that 600s cap. The instance itself can run far longer (maxDurationSec).
-      const playResults = yield* Effect.forEach(
-        resolvedStories,
-        (story, i) =>
-          step(`play-${i}`, () =>
+      const screenshotsDir = "/tmp/demo/screenshots";
+
+      // Defensive parse of an agent's last JSON stdout line — one bad story
+      // marks itself failed, never throws and sinks the run.
+      const parseLastJson = <T>(stdout: string, fallback: T): T => {
+        const lastLine = stdout.trim().split("\n").pop() ?? "";
+        if (lastLine === "") return fallback;
+        try {
+          return JSON.parse(lastLine) as T;
+        } catch {
+          return fallback;
+        }
+      };
+      type PlayJson = {
+        status: "passed" | "failed";
+        durationMs: number;
+        chapterStartMs: number;
+        chapterEndMs: number;
+        narrative: string;
+        keyScreenshotPath: string;
+      };
+      type RecordStopJson = { sessionId: string; eventCount: number };
+      type StoryOutcome = {
+        name: string;
+        status: "passed" | "failed";
+        durationMs: number;
+        chapterStartMs: number;
+        chapterEndMs: number;
+        narrative: string;
+        keyScreenshotUri: string;
+        replayUri: string;
+        replayJsonUri: string;
+      };
+
+      // 2. Play every story IN PARALLEL, each on its OWN Browser Rendering CDP
+      //    session — so each story gets an independent rrweb recording + replay,
+      //    its own detached play process, and its own attach → record-start →
+      //    play → record-stop pipeline. This is the in-run-parallel design: one
+      //    workflow + one container, N concurrent self-contained stories. Each
+      //    story's full cycle stays well under CF Workflows' ~600s per-`step.do`
+      //    cap, and a slow/stuck story can't starve the others (no shared
+      //    session, no first-play serialisation). The detached plays overlap in
+      //    the background while short poll/cat execs read their sentinels, so
+      //    the expensive work is genuinely concurrent even on one container.
+      //    Concurrency is capped so we don't exhaust the Browser Rendering
+      //    session pool or the container CPU; extra stories queue.
+      const PER_STORY_CONCURRENCY = 3;
+
+      const playStory = (story: { name: string; prose: string }, i: number) =>
+        Effect.gen(function* () {
+          const sessionIdPath = `/tmp/demo/session-${i}`;
+          const replayJsonPath = `/tmp/demo/replay-${i}.json`;
+          const outPath = `/tmp/demo/play-${i}.out`;
+          const errPath = `/tmp/demo/play-${i}.err`;
+          const sentinelPath = `/tmp/demo/play-${i}.done`;
+
+          // attach — this story's OWN recording session.
+          const cdpWsUrl = yield* step(`attach-cdp-${i}`, () =>
+            browser
+              .newCDPSession({ targetUrl: input.deployedUrl })
+              .pipe(Effect.map((session) => session.wsEndpoint)),
+          );
+
+          // record-start — navigate to the app + capture this session's id.
+          yield* step(`record-start-${i}`, () =>
+            sandbox.exec({
+              container,
+              command: [
+                "demo-agent", "record", "start",
+                "--cdp-ws", cdpWsUrl,
+                "--viewport", viewport,
+                "--session-id-out", sessionIdPath,
+                "--url", input.deployedUrl,
+              ],
+              env: agentEnv,
+            }),
+          );
+
+          // play — DETACHED + sentinel-poll (the reliable pattern; explicit
+          // container), bounded so a hung play returns a failed result.
+          const playResult = yield* step(
+            `play-${i}`,
+            () =>
               Effect.gen(function* () {
-                // DETACHED play + sentinel-poll, exactly like
-                // runs/cdp-acceptance.ts's test command — the reliable pattern
-                // now that we hold an EXPLICIT `container`. A blocking exec held
-                // for the multi-minute play has its container connection killed
-                // by the CF Sandbox (~10-20s) → ExecFailed; `runDetached`
-                // backgrounds the play and short `cat` polls (each far under the
-                // kill window) read its exit from a sentinel. stdout (the result
-                // JSON) + stderr go to per-story files that survive the detach.
-                const outPath = `/tmp/demo/play-${i}.out`;
-                const errPath = `/tmp/demo/play-${i}.err`;
-                const sentinelPath = `/tmp/demo/play-${i}.done`;
-                // Build the play argv as a shell string (prose carries spaces /
-                // quotes → `shellQuote` each value). The subshell runs the play
-                // with stdout/stderr redirected to files; the parent records
-                // `DONE:$?` to the sentinel the poll watches. `timeout -s KILL`
-                // caps the play at the agent budget + headroom (node ignores
-                // SIGTERM, so KILL) — a hung play still writes its sentinel.
                 const playArgv = [
                   "demo-agent", "play",
                   "--cdp-ws", cdpWsUrl,
@@ -519,43 +522,28 @@ export const productDemo = defineRun({
                   command: detachedCmd,
                   env: agentEnv,
                 });
-                // Poll the sentinel for the exit code. maxAttempts × 5s bounds
-                // the wait under the 8-minute step wall-clock below.
                 const exitCode = yield* pollSentinel({
                   container,
                   sentinel: sentinelPath,
                   maxAttempts: Math.ceil((perStorySec + 120) / 5),
                 });
-                // Read the result JSON + stderr the detached play left behind.
                 const stdout = yield* sandbox
                   .exec({ container, command: `cat ${outPath} 2>/dev/null || true` })
                   .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
                 const stderr = yield* sandbox
                   .exec({ container, command: `cat ${errPath} 2>/dev/null || true` })
                   .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
-                if (exitCode !== 0 || stdout.trim() === "") {
-                  yield* io.log(
-                    "warn",
-                    `play '${story.name}' exit=${exitCode} stderrTail=${stderr.slice(-800)}`,
-                  );
-                }
                 return { stdout, stderr, exitCode };
               }),
             { retries: 0 },
           ).pipe(
-            // Hard wall-clock bound per story step, BELOW CF Workflows' ~10-min
-            // per-`step.do` cap: if the detached play never writes its sentinel
-            // (a hung exec the inner timeouts didn't catch), the step still
-            // returns a failed result instead of being killed by CF — so the
-            // run ALWAYS reaches `record-stop`/`summarize`, posts a verdict, and
-            // uploads the play logs for debugging.
+            // Wall-clock bound below the ~600s per-step.do cap.
             Effect.timeoutTo({
-              duration: "8 minutes",
-              onSuccess: (r: { stdout: string; stderr: string; exitCode: number }) =>
-                r,
+              duration: "9 minutes",
+              onSuccess: (r: { stdout: string; stderr: string; exitCode: number }) => r,
               onTimeout: () => ({
                 stdout: "",
-                stderr: "play step exceeded its 8-minute wall-clock budget",
+                stderr: "play step exceeded its wall-clock budget",
                 exitCode: -2,
               }),
             }),
@@ -566,296 +554,158 @@ export const productDemo = defineRun({
                 exitCode: -3,
               }),
             ),
-          ),
-        { concurrency: 1 },
-      );
+          );
 
-      // Collect every story's stderr into one signed-R2 artifact so a failed
-      // play is debuggable from the check-run (the per-exec stderr is otherwise
-      // lost when a run fails). Best-effort — never masks the verdict.
-      yield* step("upload-play-logs", () =>
-        Effect.gen(function* () {
-          yield* sandbox.exec({
-            container,
-            command: `{ for f in /tmp/demo/play-*.out; do echo "=== $f (stdout) ==="; cat "$f"; done; for f in /tmp/demo/play-*.err; do echo "=== $f (stderr) ==="; cat "$f"; done; } > /tmp/demo/play-stderr.log 2>/dev/null || true`,
-          });
-          return yield* artifact
-            .upload({
-              name: "play-stderr.log",
-              path: "/tmp/demo/play-stderr.log",
-              contentType: "text/plain",
-              signedUrlTTL: "30 days",
-            })
-            .pipe(Effect.catchAll(() => Effect.succeed("")));
-        }),
-      );
-
-      // 4. Close the CDP session and pull the recording. Browser Run only
-      //    finalizes rrweb events after the session closes; `demo-agent
-      //    record stop` closes the session, polls
-      //    GET /accounts/<id>/browser-rendering/recording/<sessionId>, writes
-      //    the event array to `--out`, and emits a JSON last-line with the
-      //    sessionId + the realized event count.
-      const recordStopResult = yield* step("record-stop", () =>
-        sandbox.exec({
-          container,
-          command: [
-            "demo-agent", "record", "stop",
-            "--cdp-ws", cdpWsUrl,
-            "--session-id-in", sessionIdPath,
-            "--out", replayJsonPath,
-          ],
-          env: agentEnv,
-        }),
-      );
-
-      // 5. Parse each `play` step's JSON stdout. The agent's contract: one
-      //    JSON object per invocation on the LAST line of stdout (anything
-      //    before is logs). The shape is fixed by the agent — mirrors the
-      //    `review-agent coordinate --json` pattern in recipes/ai-code-review.
-      type PlayJson = {
-        status: "passed" | "failed";
-        durationMs: number;
-        chapterStartMs: number;
-        chapterEndMs: number;
-        narrative: string;
-        keyScreenshotPath: string;
-      };
-      // `playResults` is the result of `Effect.forEach(resolvedStories, …)`
-      // so `playResults.length === resolvedStories.length`; iterate the
-      // resolved array directly to keep `story` typed (not `… | undefined`).
-      // Parse the agent's last JSON line DEFENSIVELY: a story whose detached
-      // process wrote nothing parseable (a crash, an empty capture) must mark
-      // that ONE story failed — never throw and sink the whole run after the
-      // expensive play loop already succeeded.
-      const parseLastJson = <T>(stdout: string, fallback: T): T => {
-        const lastLine = stdout.trim().split("\n").pop() ?? "";
-        if (lastLine === "") return fallback;
-        try {
-          return JSON.parse(lastLine) as T;
-        } catch {
-          return fallback;
-        }
-      };
-      const parsed = resolvedStories.map((story, i) => {
-        const result = playResults[i] as {
-          stdout: string;
-          stderr: string;
-          exitCode: number;
-        };
-        const json = parseLastJson<PlayJson>(result.stdout, {
-          status: "failed",
-          durationMs: 0,
-          chapterStartMs: 0,
-          chapterEndMs: 0,
-          narrative: `play produced no parseable result (exit ${result.exitCode}). stderr tail: ${result.stderr.slice(-400)}`,
-          keyScreenshotPath: "",
-        });
-        return { story, json };
-      });
-
-      type RecordStopJson = { sessionId: string; eventCount: number };
-      const recordStopJson = parseLastJson<RecordStopJson>(
-        recordStopResult.stdout,
-        { sessionId: "", eventCount: 0 },
-      );
-
-      // 6. Upload the rrweb event JSON once, signed for 30 days so the link
-      //    survives PR-review cycles. Reviewers paste the URL straight into
-      //    the PR description, or feed it to an rrweb-player iframe.
-      // Best-effort: a long recorded session can produce a replay.json large
-      // enough to blow the Worker's CPU-time limit on upload. The replay is a
-      // debugging bonus, not the verdict — never let it sink a run whose stories
-      // already played. Empty URI on failure; the summary just omits the link.
-      const replayJsonUri = yield* step("upload-replay-json", () =>
-        artifact
-          .upload({
-            name: "replay.json",
-            path: replayJsonPath,
-            contentType: "application/json",
-            signedUrlTTL: "30 days",
-          })
-          .pipe(
-            Effect.catchAll(() =>
-              io.log("warn", "upload-replay-json failed; continuing").pipe(
-                Effect.as(""),
-              ),
-            ),
-          ),
-      );
-
-      // 7. Upload each story's key screenshot in parallel (concurrency 4
-      //    — independent uploads, no shared state). Each returns its own
-      //    signed URL embedded into the per-story result.
-      const screenshotUris = yield* step("upload-screenshots", () =>
-        Effect.forEach(
-          parsed,
-          (p) =>
-            // A failed story may have captured no key screenshot — skip the
-            // upload (and tolerate an upload error) rather than fail the run.
-            p.json.keyScreenshotPath === ""
-              ? Effect.succeed("")
-              : artifact
-                  .upload({
-                    name: `${p.story.name}.png`,
-                    path: p.json.keyScreenshotPath,
-                    contentType: "image/png",
-                    signedUrlTTL: "30 days",
-                  })
-                  .pipe(Effect.catchAll(() => Effect.succeed(""))),
-          { concurrency: 4 },
-        ),
-      );
-
-      // 8. Resolve the summary model id (required, same shape as
-      //    `product-demo.model.play` above) and the docs-site base. Docs
-      //    base IS tuning, not gating, so it keeps a default; the model id
-      //    has no provider-neutral default and dies loudly when unset.
-      const summaryModel = yield* step("resolve-summary-model", () =>
-        config.get("product-demo.model.summary").pipe(
-          Effect.flatMap((v) =>
-            v !== undefined && v !== ""
-              ? Effect.succeed(v)
-              : Effect.die(
-                  "CONFIG_KV missing required key: product-demo.model.summary",
+          // record-stop — close THIS session + pull its rrweb recording.
+          const recordStopResult = yield* step(`record-stop-${i}`, () =>
+            sandbox
+              .exec({
+                container,
+                command: [
+                  "demo-agent", "record", "stop",
+                  "--cdp-ws", cdpWsUrl,
+                  "--session-id-in", sessionIdPath,
+                  "--out", replayJsonPath,
+                ],
+                env: agentEnv,
+              })
+              .pipe(
+                Effect.catchAll(() =>
+                  Effect.succeed({
+                    stdout: "",
+                    stderr: "",
+                    exitCode: 1,
+                    durationMs: 0,
+                    logPath: "",
+                  }),
                 ),
-          ),
-        ),
-      );
-      const docsBase = yield* step("resolve-docs-base", () =>
-        config.get("product-demo.docsBase").pipe(
-          Effect.map(
-            (override) => override ?? "https://flare-dispatch.openhackersclub.com",
-          ),
-        ),
-      );
-      const replayUri = `${docsBase}/replay/${recordStopJson.sessionId}`;
+              ),
+          );
 
-      // 9. Stitch typed per-story results, then write them to disk for the
-      //    agent's summarizer. Doing the file write through `sandbox.exec`
-      //    keeps everything inside the container — the agent and the file
-      //    sit on the same filesystem.
-      const stories = parsed.map((p, i) => ({
-        name: p.story.name,
-        status: p.json.status,
-        durationMs: p.json.durationMs,
-        chapterStartMs: p.json.chapterStartMs,
-        chapterEndMs: p.json.chapterEndMs,
-        narrative: p.json.narrative,
-        // `screenshotUris.length === parsed.length` — Effect.forEach over `parsed`.
-        keyScreenshotUri: screenshotUris[i]!,
-      }));
-      yield* step("write-stories-json", () =>
-        sandbox.exec({
-          container,
-          command: [
-            "demo-agent", "write-json",
-            "--out", storiesJsonPath,
-            "--data", JSON.stringify({ stories, replayUri, replayJsonUri }),
-          ],
-          env: agentEnv,
-        }),
-      );
+          const pj = parseLastJson<PlayJson>(playResult.stdout, {
+            status: "failed",
+            durationMs: 0,
+            chapterStartMs: 0,
+            chapterEndMs: 0,
+            narrative: `play produced no parseable result (exit ${playResult.exitCode}). stderr tail: ${playResult.stderr.slice(-400)}`,
+            keyScreenshotPath: "",
+          });
+          const rs = parseLastJson<RecordStopJson>(recordStopResult.stdout, {
+            sessionId: "",
+            eventCount: 0,
+          });
 
-      // 10. Load the previous execution for this (repo, deployedUrl) so
-      //     `summarize` can call out what's new / regressed since the last
-      //     demo run. `Option.match` — never `_tag` access (CLAUDE.md
-      //     Effect-TS rules).
-      // Best-effort: prior-run context is a SUMMARY nicety, never load-bearing.
-      // `io.priorExecution` slow/erroring (observed: a 312s step FAILURE that
-      // sank a run whose plays + recording had all succeeded) must not fail the
-      // run — fall back to "no prior" so the verdict still lands.
-      //
-      // The recovery is wrapped AROUND `step(...)`, not inside its thunk: the
-      // 312s failure is the step wrapper's own retry/timeout firing, which an
-      // in-thunk `catchAll` never sees (it only catches the inner Effect's
-      // error channel, not the step's). `retries: 0` stops the step burning
-      // minutes on retries; the 30s `timeoutTo` bounds a hung prior-fetch; the
-      // outer `catchAll` turns any step failure into "no prior". Same posture
-      // as the play steps above and `summarize` / the uploads below.
-      const prior = yield* step(
-        "load-prior",
-        () =>
-          io.priorExecution({
-            family: `product-demo:${input.repo}:${input.deployedUrl}`,
-            outputSchema: Output,
-          }),
-        { retries: 0 },
-      ).pipe(
-        Effect.timeoutTo({
-          duration: "30 seconds",
-          onSuccess: (o: Option.Option<{ output: typeof Output.Type }>) => o,
-          onTimeout: () => Option.none<{ output: typeof Output.Type }>(),
-        }),
-        Effect.catchAll((cause) =>
-          io
-            .log("warn", `product-demo load-prior failed (ignoring): ${cause}`)
-            .pipe(Effect.as(Option.none<{ output: typeof Output.Type }>())),
-        ),
-      );
+          // Per-story uploads (best-effort): the replay JSON + the key frame.
+          const replayJsonUri = yield* step(`upload-replay-${i}`, () =>
+            artifact
+              .upload({
+                name: `replay-${i}.json`,
+                path: replayJsonPath,
+                contentType: "application/json",
+                signedUrlTTL: "30 days",
+              })
+              .pipe(Effect.catchAll(() => Effect.succeed(""))),
+          );
+          const keyScreenshotUri =
+            pj.keyScreenshotPath === ""
+              ? ""
+              : yield* step(`upload-screenshot-${i}`, () =>
+                  artifact
+                    .upload({
+                      name: `${story.name}.png`,
+                      path: pj.keyScreenshotPath,
+                      contentType: "image/png",
+                      signedUrlTTL: "30 days",
+                    })
+                    .pipe(Effect.catchAll(() => Effect.succeed(""))),
+                );
 
-      // 11. Hand the previous summary to the agent as a file IF it exists.
-      //     Seeding via an intermediate file (instead of `--previous-json
-      //     '<...>'`) avoids ARG_MAX surprises when the prior summary is
-      //     long-form prose.
-      const previousArgs = yield* Option.match(prior, {
-        onNone: () => Effect.succeed<readonly string[]>([]),
-        onSome: (p) =>
-          step("seed-prior", () =>
-            sandbox.exec({
-              container,
-              command: [
-                "demo-agent", "write-prior",
-                "--out", "/tmp/demo/previous.md",
-                "--data", p.output.summaryMd,
-              ],
-              env: agentEnv,
-            }).pipe(Effect.as(["--previous", "/tmp/demo/previous.md"] as const)),
+          const replayUri =
+            rs.sessionId !== "" ? `${docsBase}/replay/${rs.sessionId}` : "";
+
+          yield* io.log(
+            "info",
+            `story '${story.name}': ${pj.status} (${rs.eventCount} rrweb events)`,
+          );
+
+          return {
+            name: story.name,
+            status: pj.status,
+            durationMs: pj.durationMs,
+            chapterStartMs: pj.chapterStartMs,
+            chapterEndMs: pj.chapterEndMs,
+            narrative: pj.narrative,
+            keyScreenshotUri,
+            replayUri,
+            replayJsonUri,
+          };
+        }).pipe(
+          // One story's INFRA failure (a failed attach, a dropped session)
+          // must not sink the parallel run — mark that one story failed.
+          Effect.catchAll((cause) =>
+            Effect.succeed<StoryOutcome>({
+              name: story.name,
+              status: "failed",
+              durationMs: 0,
+              chapterStartMs: 0,
+              chapterEndMs: 0,
+              narrative: `story pipeline failed: ${String(cause)}`,
+              keyScreenshotUri: "",
+              replayUri: "",
+              replayJsonUri: "",
+            }),
           ),
+        );
+
+      const stories = yield* Effect.forEach(resolvedStories, playStory, {
+        concurrency: PER_STORY_CONCURRENCY,
       });
 
-      // 12. Generate the holistic summary. The agent emits the markdown to
-      //     stdout AND writes it to `--out`; we read it from stdout because
-      //     `io` has no file-read primitive — see specs/03-dsl.md § io.
-      // Best-effort: a summariser failure (model hiccup, exec kill) must not
-      // sink a run whose stories already played — fall back to a minimal
-      // machine-written summary so the run still returns a verdict.
-      const summaryMd = yield* step("summarize", () =>
-        sandbox
-          .exec({
-            container,
-            command: [
-              "demo-agent", "summarize",
-              "--stories-json", storiesJsonPath,
-              "--model", summaryModel,
-              "--out", summaryPath,
-              ...previousArgs,
-            ],
-            env: agentEnv,
-          })
-          .pipe(
-            Effect.map((r) => r.stdout.trim()),
-            Effect.catchAll(() =>
-              Effect.succeed(
-                `# Demo summary\n\n${stories.length} stories, ${stories.filter((s) => s.status === "passed").length} passed. (Automated summary generation failed — see per-story narratives.)`,
-              ),
-            ),
-          ),
-      );
+      // 3. Build the holistic summary as MARKDOWN, in-run + deterministic — no
+      //    second LLM call, no stories.json file to go missing across execs.
+      const passedCount = stories.filter((s) => s.status === "passed").length;
+      const summaryMd = [
+        `# product-demo — ${passedCount}/${stories.length} chapters passed`,
+        "",
+        "| Chapter | Result | Replay | Notes |",
+        "| --- | --- | --- | --- |",
+        ...stories.map((s) => {
+          const replay =
+            s.replayUri !== ""
+              ? `[replay](${s.replayUri})`
+              : s.replayJsonUri !== ""
+                ? `[rrweb json](${s.replayJsonUri})`
+                : "—";
+          const note = s.narrative.replace(/\n+/g, " ").slice(0, 200);
+          return `| ${s.name} | ${s.status === "passed" ? "✅ pass" : "❌ fail"} | ${replay} | ${note} |`;
+        }),
+      ].join("\n");
 
       yield* io.log(
         "info",
-        `product-demo: ${stories.length} stories, ${stories.filter((s) => s.status === "passed").length} passed, ${recordStopJson.eventCount} rrweb events`,
+        `product-demo: ${stories.length} stories, ${passedCount} passed`,
       );
 
-      // The check-run summary the Dispatcher posts EMBEDS `summaryMd`
-      // verbatim and links `replayUri` — reviewers see the holistic write-up
-      // on the PR's Checks tab and one signed replay link they can drop
-      // straight into the PR description (see specs/04-gha-integration.md
-      // § Inline findings — summary).
+      // The top-level replay points at the first story that produced one (the
+      // structured per-story replays live in `stories[]`).
+      const primary =
+        stories.find((s) => s.replayUri !== "") ?? stories[0];
+
+      // 4. HONEST CHECK: a demo where NO chapter passed is broken, not green.
+      //    Fail the run so the dispatcher posts a `failure` conclusion — the
+      //    per-story breakdown is logged above + carried on the error. (A
+      //    partial pass still SUCCEEDS so the green check + summary table show
+      //    which chapters passed/failed — see the table above.) The full
+      //    breakdown is in the io.log line above; AcceptanceFailed is the
+      //    same "run's checks failed" error cdp-acceptance uses.
+      if (passedCount === 0) {
+        return yield* Effect.fail(new AcceptanceFailed({ exitCode: 1 }));
+      }
+
+      // The check-run summary the Dispatcher posts EMBEDS `summaryMd` verbatim.
       return {
-        replayUri,
-        replayJsonUri,
+        replayUri: primary?.replayUri ?? "",
+        replayJsonUri: primary?.replayJsonUri ?? "",
         summaryMd,
         stories,
       };
