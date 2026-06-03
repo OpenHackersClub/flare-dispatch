@@ -492,7 +492,7 @@ export const productDemo = defineRun({
       yield* step("upload-play-logs", () =>
         Effect.gen(function* () {
           yield* sandbox.exec({
-            command: `cat /tmp/demo/play-*.err > /tmp/demo/play-stderr.log 2>/dev/null || true`,
+            command: `{ for f in /tmp/demo/play-*.out; do echo "=== $f (stdout) ==="; cat "$f"; done; for f in /tmp/demo/play-*.err; do echo "=== $f (stderr) ==="; cat "$f"; done; } > /tmp/demo/play-stderr.log 2>/dev/null || true`,
           });
           return yield* artifact
             .upload({
@@ -538,19 +538,37 @@ export const productDemo = defineRun({
       // `playResults` is the result of `Effect.forEach(resolvedStories, …)`
       // so `playResults.length === resolvedStories.length`; iterate the
       // resolved array directly to keep `story` typed (not `… | undefined`).
+      // Parse the agent's last JSON line DEFENSIVELY: a story whose detached
+      // process wrote nothing parseable (a crash, an empty capture) must mark
+      // that ONE story failed — never throw and sink the whole run after the
+      // expensive play loop already succeeded.
+      const parseLastJson = <T>(stdout: string, fallback: T): T => {
+        const lastLine = stdout.trim().split("\n").pop() ?? "";
+        if (lastLine === "") return fallback;
+        try {
+          return JSON.parse(lastLine) as T;
+        } catch {
+          return fallback;
+        }
+      };
       const parsed = resolvedStories.map((story, i) => {
         const result = playResults[i]!;
-        const lastLine = result.stdout.trim().split("\n").pop() ?? "{}";
-        return {
-          story,
-          json: JSON.parse(lastLine) as PlayJson,
-        };
+        const json = parseLastJson<PlayJson>(result.stdout, {
+          status: "failed",
+          durationMs: 0,
+          chapterStartMs: 0,
+          chapterEndMs: 0,
+          narrative: `play produced no parseable result (exit ${result.exitCode}). stderr tail: ${result.stderr.slice(-400)}`,
+          keyScreenshotPath: "",
+        });
+        return { story, json };
       });
 
       type RecordStopJson = { sessionId: string; eventCount: number };
-      const recordStopJson = JSON.parse(
-        recordStopResult.stdout.trim().split("\n").pop() ?? "{}",
-      ) as RecordStopJson;
+      const recordStopJson = parseLastJson<RecordStopJson>(
+        recordStopResult.stdout,
+        { sessionId: "", eventCount: 0 },
+      );
 
       // 6. Upload the rrweb event JSON once, signed for 30 days so the link
       //    survives PR-review cycles. Reviewers paste the URL straight into
@@ -571,12 +589,18 @@ export const productDemo = defineRun({
         Effect.forEach(
           parsed,
           (p) =>
-            artifact.upload({
-              name: `${p.story.name}.png`,
-              path: p.json.keyScreenshotPath,
-              contentType: "image/png",
-              signedUrlTTL: "30 days",
-            }),
+            // A failed story may have captured no key screenshot — skip the
+            // upload (and tolerate an upload error) rather than fail the run.
+            p.json.keyScreenshotPath === ""
+              ? Effect.succeed("")
+              : artifact
+                  .upload({
+                    name: `${p.story.name}.png`,
+                    path: p.json.keyScreenshotPath,
+                    contentType: "image/png",
+                    signedUrlTTL: "30 days",
+                  })
+                  .pipe(Effect.catchAll(() => Effect.succeed(""))),
           { concurrency: 4 },
         ),
       );
