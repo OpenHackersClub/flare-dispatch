@@ -146,10 +146,15 @@ RUN chmod +x /usr/local/bin/demo-agent \
 ARG WITH_BROWSER=false
 ARG PLAYWRIGHT_VERSION=1.59.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN if [ "$WITH_BROWSER" = "true" ]; then \
-        set -eux; \
-        npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium-headless-shell; \
-        chmod -R a+rX /opt/pw-browsers; \
-    else \
-        echo "WITH_BROWSER=$WITH_BROWSER — skipping chromium bake (lean image)"; \
-    fi
+# The chromium bake is intentionally DISABLED. It was added (#66) so a
+# `sandboxImage: "browser"` run got chromium at ~0s, but since #75 moved
+# `playwright-demo` onto the lean image NO run declares `sandboxImage: "browser"`
+# — the bake is dead weight. Worse, building it hung every `wrangler deploy`:
+# after the ~112MB `chromium-headless-shell` download the layer build/registry
+# push stalled indefinitely (killed at GitHub's 6h job cap; reproduces locally),
+# which blocked the serialized deploy queue for hours and kept merged fixes from
+# ever reaching the Dispatcher. Skipping it makes both images lean — the
+# `WITH_BROWSER` arg + `RUNS_SANDBOX_BROWSER` binding stay (no DO migration), so
+# the routing axis is preserved; a future in-sandbox-chromium run just downloads
+# the browser at runtime (the pre-#66 behaviour) instead of getting it baked.
+RUN echo "WITH_BROWSER=$WITH_BROWSER — chromium bake disabled (unused since #75; hung the deploy). Lean image."
