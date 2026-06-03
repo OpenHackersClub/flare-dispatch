@@ -27,10 +27,18 @@
 // `Effect.void` because the actual side effect (CDP command apply) lives in
 // the play loop where it can be retried, screenshotted, and timed.
 
-import { LanguageModel, Tool, Toolkit } from "@effect/ai";
-import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
+import { AiError, LanguageModel, type Response, Tool, Toolkit } from "@effect/ai";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "@effect/platform";
-import { Config, Effect, Layer, Match, Option, Redacted, Schema } from "effect";
+import {
+  Config,
+  Effect,
+  Layer,
+  Match,
+  Option,
+  Redacted,
+  Schema,
+  Stream,
+} from "effect";
 import { MissingEnv, ModelCallFailed } from "./errors.js";
 import {
   type ModelAction,
@@ -165,6 +173,196 @@ const ActionToolkitHandlersLayer = ActionToolkit.toLayer({
 const gatewayCompatUrl = (accountId: string, gatewayId: string): string =>
   `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/compat`;
 
+// ── Chat Completions mapping ────────────────────────────────────────────────
+// `@effect/ai`'s `ProviderOptions` (prompt + tools + tool-choice) ⇄ the OpenAI
+// `/chat/completions` wire shape, and the response ⇄ `@effect/ai` response parts.
+// Kept deliberately small + total: demo-agent only ever sends single-string
+// prompts with the 7-tool action toolkit, but the mapping handles the general
+// system/user/assistant/tool message shapes so it stays correct if that grows.
+
+const FINISH_REASON: Record<string, string> = {
+  stop: "stop",
+  length: "length",
+  tool_calls: "tool-calls",
+  function_call: "tool-calls",
+  content_filter: "content-filter",
+};
+const resolveFinish = (
+  reason: string | null | undefined,
+  hasToolCalls: boolean,
+): string =>
+  reason == null
+    ? hasToolCalls
+      ? "tool-calls"
+      : "stop"
+    : (FINISH_REASON[reason] ?? (hasToolCalls ? "tool-calls" : "unknown"));
+
+// Flatten an `@effect/ai` message's content (string, or an array of parts) to
+// plain text — demo-agent's prompts are text-only.
+const contentText = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p) => (p as { type?: string })?.type === "text")
+      .map((p) => (p as { text: string }).text)
+      .join("");
+  }
+  return "";
+};
+
+const promptToMessages = (prompt: {
+  readonly content: ReadonlyArray<{ role: string; content: unknown }>;
+}): Array<Record<string, unknown>> => {
+  const messages: Array<Record<string, unknown>> = [];
+  for (const message of prompt.content) {
+    switch (message.role) {
+      case "system":
+        messages.push({ role: "system", content: contentText(message.content) });
+        break;
+      case "user":
+        messages.push({ role: "user", content: contentText(message.content) });
+        break;
+      case "assistant": {
+        const text = contentText(message.content);
+        const parts = Array.isArray(message.content)
+          ? (message.content as Array<Record<string, unknown>>)
+          : [];
+        const toolCalls = parts
+          .filter((p) => p["type"] === "tool-call")
+          .map((p) => ({
+            id: p["id"],
+            type: "function",
+            function: {
+              name: p["name"],
+              arguments: JSON.stringify(p["params"]),
+            },
+          }));
+        const m: Record<string, unknown> = { role: "assistant" };
+        if (text.length > 0) m["content"] = text;
+        if (toolCalls.length > 0) m["tool_calls"] = toolCalls;
+        messages.push(m);
+        break;
+      }
+      case "tool":
+        for (const p of (message.content as Array<Record<string, unknown>>) ?? []) {
+          messages.push({
+            role: "tool",
+            tool_call_id: p["id"],
+            content: JSON.stringify(p["result"]),
+          });
+        }
+        break;
+    }
+  }
+  return messages;
+};
+
+const toolChoiceToChat = (toolChoice: unknown): unknown => {
+  if (toolChoice === "auto" || toolChoice === "required" || toolChoice === "none") {
+    return toolChoice;
+  }
+  if (typeof toolChoice === "object" && toolChoice !== null) {
+    const tc = toolChoice as Record<string, unknown>;
+    if ("tool" in tc) return { type: "function", function: { name: tc["tool"] } };
+    if ("oneOf" in tc) return tc["mode"] === "required" ? "required" : "auto";
+  }
+  return undefined;
+};
+
+const buildChatRequest = (
+  modelName: string,
+  options: LanguageModel.ProviderOptions,
+): Record<string, unknown> => {
+  const request: Record<string, unknown> = {
+    model: modelName,
+    messages: promptToMessages(
+      options.prompt as { content: ReadonlyArray<{ role: string; content: unknown }> },
+    ),
+  };
+  const tools = options.tools
+    .filter((t) => Tool.isUserDefined(t))
+    .map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        // `getDescription`/`getJsonSchema` want a no-requirement Tool; the
+        // toolkit's tools carry `any` in the requirement slot, so widen to
+        // `never` (assignable) for the call.
+        description: Tool.getDescription(t as never),
+        parameters: Tool.getJsonSchema(t as never),
+      },
+    }));
+  if (tools.length > 0) {
+    request["tools"] = tools;
+    const choice = toolChoiceToChat(options.toolChoice);
+    if (choice !== undefined) request["tool_choice"] = choice;
+  }
+  return request;
+};
+
+const chatResponseToParts = (response: {
+  readonly id?: string;
+  readonly model?: string;
+  readonly created?: number;
+  readonly choices?: ReadonlyArray<{
+    readonly finish_reason?: string | null;
+    readonly message?: {
+      readonly content?: string | null;
+      readonly tool_calls?: ReadonlyArray<{
+        readonly id?: string;
+        readonly type?: string;
+        readonly function?: { readonly name?: string; readonly arguments?: string };
+      }>;
+    };
+  }>;
+  readonly usage?: {
+    readonly prompt_tokens?: number;
+    readonly completion_tokens?: number;
+    readonly total_tokens?: number;
+  };
+}): Array<Response.PartEncoded> => {
+  const choice = response.choices?.[0];
+  const message = choice?.message ?? {};
+  const parts: Array<Record<string, unknown>> = [
+    {
+      type: "response-metadata",
+      id: response.id,
+      modelId: response.model,
+      timestamp: new Date((response.created ?? 0) * 1000).toISOString(),
+    },
+  ];
+  if (typeof message.content === "string" && message.content.length > 0) {
+    parts.push({ type: "text", text: message.content });
+  }
+  let hasToolCalls = false;
+  for (const call of message.tool_calls ?? []) {
+    if (call?.type !== "function" || call.function === undefined) continue;
+    hasToolCalls = true;
+    let params: unknown = {};
+    try {
+      params = JSON.parse(call.function.arguments ?? "{}");
+    } catch {
+      params = {};
+    }
+    parts.push({
+      type: "tool-call",
+      id: call.id,
+      name: call.function.name,
+      params,
+    });
+  }
+  parts.push({
+    type: "finish",
+    reason: resolveFinish(choice?.finish_reason, hasToolCalls),
+    usage: {
+      inputTokens: response.usage?.prompt_tokens ?? 0,
+      outputTokens: response.usage?.completion_tokens ?? 0,
+      totalTokens: response.usage?.total_tokens ?? 0,
+    },
+  });
+  return parts as unknown as Array<Response.PartEncoded>;
+};
+
 /**
  * Layer providing `LanguageModel` over the OpenAI wire protocol, always pointed
  * at a Cloudflare AI Gateway. The endpoint is DERIVED from the account + gateway
@@ -189,11 +387,9 @@ const gatewayCompatUrl = (accountId: string, gatewayId: string): string =>
  */
 export const makeLanguageModelLayer = (
   modelName: string,
-): Layer.Layer<LanguageModel.LanguageModel, never, never> => {
-  // The endpoint + gateway-auth header are keyed off Config values, so the client
-  // is built inside an Effect (`unwrapEffect`) rather than `layerConfig` — the
-  // latter can't thread a Config-derived value into `apiUrl` / `transformClient`.
-  const clientLayer = Layer.unwrapEffect(
+): Layer.Layer<LanguageModel.LanguageModel, never, never> =>
+  Layer.effect(
+    LanguageModel.LanguageModel,
     Effect.gen(function* () {
       const accountId = yield* Config.string("CLOUDFLARE_ACCOUNT_ID");
       const gatewayId = yield* Config.string("CF_AI_GATEWAY_ID");
@@ -201,34 +397,65 @@ export const makeLanguageModelLayer = (
       const aigToken = yield* Config.redacted("CF_AI_GATEWAY_TOKEN").pipe(
         Config.option,
       );
+      const httpClient = yield* HttpClient.HttpClient;
+      const url = `${gatewayCompatUrl(accountId, gatewayId)}/chat/completions`;
 
-      return OpenAiClient.layer({
-        apiKey: Option.getOrUndefined(apiKey),
-        apiUrl: gatewayCompatUrl(accountId, gatewayId),
-        // Authenticated Gateway: inject `cf-aig-authorization` on every request
-        // when the token is present; otherwise pass the client through untouched.
-        transformClient: Option.match(aigToken, {
-          onNone: () => undefined,
-          onSome: (token) => (client: HttpClient.HttpClient) =>
-            HttpClient.mapRequest(
-              client,
-              HttpClientRequest.setHeader(
-                "cf-aig-authorization",
-                `Bearer ${Redacted.value(token)}`,
-              ),
+      // Auth headers, each optional: `cf-aig-authorization` for an Authenticated
+      // Gateway, `authorization` for the upstream provider key (unset under BYOK).
+      const headers: Record<string, string> = {};
+      if (Option.isSome(aigToken)) {
+        headers["cf-aig-authorization"] = `Bearer ${Redacted.value(aigToken.value)}`;
+      }
+      if (Option.isSome(apiKey)) {
+        headers["authorization"] = `Bearer ${Redacted.value(apiKey.value)}`;
+      }
+
+      // Custom `LanguageModel` over the OpenAI **Chat Completions** API, driven
+      // with a RAW request. `@effect/ai-openai`'s built-in `OpenAiLanguageModel`
+      // is unusable against a Cloudflare AI Gateway for two reasons:
+      //   1. it speaks the OpenAI *Responses* API (`POST …/responses`), which the
+      //      gateway `/compat` endpoint rejects ("responses is not supported"); and
+      //   2. even on `/chat/completions`, its typed client strict-decodes the
+      //      response against OpenAI's exact schema, which the gateway's
+      //      Anthropic-via-compat reply does not satisfy (e.g. it omits
+      //      `message.refusal`).
+      // So we POST the request ourselves and parse the JSON loosely, mapping it
+      // into `@effect/ai` response parts. demo-agent only calls `generateText`.
+      return yield* LanguageModel.make({
+        generateText: (options) =>
+          Effect.gen(function* () {
+            const request = yield* HttpClientRequest.post(url).pipe(
+              HttpClientRequest.setHeaders(headers),
+              HttpClientRequest.bodyJson(buildChatRequest(modelName, options)),
+            );
+            const response = yield* httpClient.execute(request);
+            const json = yield* response.json;
+            if (response.status >= 400) {
+              return yield* Effect.fail(
+                new Error(`HTTP ${response.status}: ${JSON.stringify(json)}`),
+              );
+            }
+            return chatResponseToParts(
+              json as Parameters<typeof chatResponseToParts>[0],
+            );
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new AiError.UnknownError({
+                  module: "DemoAgentChatModel",
+                  method: "generateText",
+                  description: `Cloudflare AI Gateway chat/completions request failed: ${String(cause)}`,
+                  cause,
+                }),
             ),
-        }),
+          ),
+        streamText: () =>
+          Stream.die(
+            "DemoAgentChatModel: streamText is not implemented (demo-agent uses generateText only)",
+          ),
       });
     }),
-  ).pipe(Layer.provide(FetchHttpClient.layer));
-
-  const languageModelLayer = OpenAiLanguageModel.layer({ model: modelName });
-
-  // A misconfigured deploy (missing CLOUDFLARE_ACCOUNT_ID / CF_AI_GATEWAY_ID)
-  // surfaces as a runtime defect via `orDie` — fail fast, loudly — rather than a
-  // typed error nobody handles.
-  return Layer.provide(languageModelLayer, clientLayer).pipe(Layer.orDie);
-};
+  ).pipe(Layer.provide(FetchHttpClient.layer), Layer.orDie);
 
 // ---------------------------------------------------------------------------
 // pickNextAction
