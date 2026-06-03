@@ -461,9 +461,16 @@ export const productDemo = defineRun({
                   "--model",
                   shellQuote(playModel),
                 ].join(" ");
+                // Hard `timeout` wrapper GUARANTEES the sentinel is written by
+                // ~perStorySec+30 even if `demo-agent play` hangs on something
+                // other than a model call (a stuck CDP action, an unbounded
+                // wait) — without it a hung play spins the per-story poll to CF
+                // Workflows' ~10-min step cap. demo-agent's own `--max-sec`
+                // self-abort + the model-call timeout are the graceful layers;
+                // this is the backstop.
                 yield* sandbox.runDetached({
                   env: agentEnv,
-                  command: `( ${playCmd} > ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${donePath}`,
+                  command: `( timeout ${perStorySec + 30} ${playCmd} > ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${donePath}`,
                 });
                 const exitCode = yield* pollSentinel({
                   sentinel: donePath,

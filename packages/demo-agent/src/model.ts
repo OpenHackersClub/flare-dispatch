@@ -439,6 +439,17 @@ export const makeLanguageModelLayer = (
               json as Parameters<typeof chatResponseToParts>[0],
             );
           }).pipe(
+            // A hung gateway/model request must NOT hang the whole `play` — the
+            // agent loop would never reach its `--max-sec` budget check, so the
+            // detached process never writes its sentinel and the run's per-story
+            // step spins to the CF Workflows ~10-min cap. Bound each call; a
+            // timeout surfaces as a normal model error the play loop recovers
+            // from (retry / move on / wrap up).
+            Effect.timeoutFail({
+              duration: "120 seconds",
+              onTimeout: () =>
+                new Error("chat/completions request timed out after 120s"),
+            }),
             Effect.mapError(
               (cause) =>
                 new AiError.UnknownError({
