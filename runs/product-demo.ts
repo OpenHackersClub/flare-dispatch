@@ -48,6 +48,7 @@ import {
   io,
   ExecFailed,
   ExecTimeout,
+  type Container,
 } from "@flare-dispatch/core";
 import { loadSecrets } from "@flare-dispatch/core/primitives";
 
@@ -61,15 +62,21 @@ const shellQuote = (value: string): string =>
  * same transient-`ExecFailed` tolerance as runs/cdp-acceptance.ts: a poll
  * `cat` whose container connection is killed says nothing about the detached
  * process (which keeps running), so swallow it and keep polling; only a run of
- * killed polls (a genuinely dead container) re-surfaces the failure. Uses the
- * ambient sandbox (product-demo holds no `Container` handle).
+ * killed polls (a genuinely dead container) re-surfaces the failure. Threads
+ * the EXPLICIT acquired `container` handle (see run body) — the same fix that
+ * makes runs/cdp-acceptance.ts reliable: the ambient sandbox SERIALISES execs,
+ * so a poll `cat` queues behind the still-running detached play and never reads
+ * the sentinel; an explicit container handle runs the poll as its own short
+ * connection while the detached play keeps running in the background.
  */
 const pollSentinel = ({
+  container,
   sentinel,
   maxAttempts,
   pollEverySec = 5,
   maxConsecutiveExecFailures = 12,
 }: {
+  readonly container: Container;
   readonly sentinel: string;
   readonly maxAttempts: number;
   readonly pollEverySec?: number;
@@ -79,7 +86,7 @@ const pollSentinel = ({
     let consecutive = 0;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const polled = yield* sandbox
-        .exec({ command: `cat ${sentinel} 2>/dev/null || true` })
+        .exec({ container, command: `cat ${sentinel} 2>/dev/null || true` })
         .pipe(
           Effect.map((r) => Option.some(r.stdout)),
           Effect.catchTag("ExecFailed", () =>
@@ -366,6 +373,21 @@ export const productDemo = defineRun({
         ...cfAccessEnv,
       };
 
+      // 0. Acquire ONE explicit container and thread its handle through every
+      //    `sandbox.exec` / `runDetached` / poll below. This is the structural
+      //    fix that makes the run reliable (mirrors runs/cdp-acceptance.ts,
+      //    which threads the `workspace()` container): the AMBIENT sandbox
+      //    serialises execs against the execution-scoped box, so a detached
+      //    multi-minute play blocks every subsequent `cat` poll behind it (the
+      //    sentinel is never read → the step spins to CF Workflows' ~10-min
+      //    cap), while a blocking play holds one connection long enough to be
+      //    killed (ExecFailed). An explicit, persistent container handle lets
+      //    the play run detached in the background while short poll execs read
+      //    its sentinel on their own connections. No repo checkout — unlike
+      //    cdp-acceptance we run the baked `demo-agent` against a live URL, so
+      //    `acquire` (not `workspace`) is the right primitive.
+      const container = yield* step("acquire", () => sandbox.acquire({}));
+
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
       //    checkout, no app boot — the site is already live. The dispatcher's
       //    `newCDPSession` primitive composes the connect URL with
@@ -402,6 +424,7 @@ export const productDemo = defineRun({
       //    already recording on the platform side.
       yield* step("record-start", () =>
         sandbox.exec({
+          container,
           command: [
             "demo-agent", "record", "start",
             "--cdp-ws", cdpWsUrl,
@@ -458,52 +481,65 @@ export const productDemo = defineRun({
         (story, i) =>
           step(`play-${i}`, () =>
               Effect.gen(function* () {
-                // BLOCKING exec (array command — no shell, no escaping). On a
-                // stable container (standard-4+) the exec connection survives
-                // the multi-minute play and returns the result JSON directly.
-                // Detached+sentinel-poll was unreliable here: the ambient
-                // sandbox serialises execs, so the poll's `cat` queues behind
-                // the still-running detached play and never reads its sentinel,
-                // spinning the step to CF Workflows' ~10-min cap. `timeoutSec`
-                // bounds the exec; `--max-sec` is the agent's own budget.
-                const result = yield* sandbox.exec({
-                  command: [
-                    "demo-agent",
-                    "play",
-                    "--cdp-ws",
-                    cdpWsUrl,
-                    "--name",
-                    story.name,
-                    "--prose",
-                    story.prose,
-                    "--screenshots",
-                    screenshotsDir,
-                    "--max-sec",
-                    String(perStorySec),
-                    "--model",
-                    playModel,
-                    // Navigate to the app if the page is still blank (the first
-                    // story, or if record-start's nav didn't carry over).
-                    "--url",
-                    input.deployedUrl,
-                  ],
+                // DETACHED play + sentinel-poll, exactly like
+                // runs/cdp-acceptance.ts's test command — the reliable pattern
+                // now that we hold an EXPLICIT `container`. A blocking exec held
+                // for the multi-minute play has its container connection killed
+                // by the CF Sandbox (~10-20s) → ExecFailed; `runDetached`
+                // backgrounds the play and short `cat` polls (each far under the
+                // kill window) read its exit from a sentinel. stdout (the result
+                // JSON) + stderr go to per-story files that survive the detach.
+                const outPath = `/tmp/demo/play-${i}.out`;
+                const errPath = `/tmp/demo/play-${i}.err`;
+                const sentinelPath = `/tmp/demo/play-${i}.done`;
+                // Build the play argv as a shell string (prose carries spaces /
+                // quotes → `shellQuote` each value). The subshell runs the play
+                // with stdout/stderr redirected to files; the parent records
+                // `DONE:$?` to the sentinel the poll watches. `timeout -s KILL`
+                // caps the play at the agent budget + headroom (node ignores
+                // SIGTERM, so KILL) — a hung play still writes its sentinel.
+                const playArgv = [
+                  "demo-agent", "play",
+                  "--cdp-ws", cdpWsUrl,
+                  "--name", story.name,
+                  "--prose", story.prose,
+                  "--screenshots", screenshotsDir,
+                  "--max-sec", String(perStorySec),
+                  "--model", playModel,
+                  "--url", input.deployedUrl,
+                ]
+                  .map(shellQuote)
+                  .join(" ");
+                const detachedCmd =
+                  `mkdir -p ${screenshotsDir}; ` +
+                  `( timeout -s KILL ${perStorySec + 90} ${playArgv} > ${outPath} 2> ${errPath} ); ` +
+                  `echo "DONE:$?" > ${sentinelPath}`;
+                yield* sandbox.runDetached({
+                  container,
+                  command: detachedCmd,
                   env: agentEnv,
-                  // Headroom over the agent's `--max-sec` so the loop can
-                  // self-abort after a final (≤45s-bounded) action and RETURN a
-                  // result, instead of the exec timing out (ExecTimeout) first.
-                  timeoutSec: perStorySec + 90,
                 });
-                if (result.exitCode !== 0 || result.stdout.trim() === "") {
+                // Poll the sentinel for the exit code. maxAttempts × 5s bounds
+                // the wait under the 8-minute step wall-clock below.
+                const exitCode = yield* pollSentinel({
+                  container,
+                  sentinel: sentinelPath,
+                  maxAttempts: Math.ceil((perStorySec + 120) / 5),
+                });
+                // Read the result JSON + stderr the detached play left behind.
+                const stdout = yield* sandbox
+                  .exec({ container, command: `cat ${outPath} 2>/dev/null || true` })
+                  .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
+                const stderr = yield* sandbox
+                  .exec({ container, command: `cat ${errPath} 2>/dev/null || true` })
+                  .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
+                if (exitCode !== 0 || stdout.trim() === "") {
                   yield* io.log(
                     "warn",
-                    `play '${story.name}' exit=${result.exitCode} stderrTail=${result.stderr.slice(-800)}`,
+                    `play '${story.name}' exit=${exitCode} stderrTail=${stderr.slice(-800)}`,
                   );
                 }
-                return {
-                  stdout: result.stdout,
-                  stderr: result.stderr,
-                  exitCode: result.exitCode,
-                };
+                return { stdout, stderr, exitCode };
               }),
             { retries: 0 },
           ).pipe(
@@ -540,6 +576,7 @@ export const productDemo = defineRun({
       yield* step("upload-play-logs", () =>
         Effect.gen(function* () {
           yield* sandbox.exec({
+            container,
             command: `{ for f in /tmp/demo/play-*.out; do echo "=== $f (stdout) ==="; cat "$f"; done; for f in /tmp/demo/play-*.err; do echo "=== $f (stderr) ==="; cat "$f"; done; } > /tmp/demo/play-stderr.log 2>/dev/null || true`,
           });
           return yield* artifact
@@ -561,6 +598,7 @@ export const productDemo = defineRun({
       //    sessionId + the realized event count.
       const recordStopResult = yield* step("record-stop", () =>
         sandbox.exec({
+          container,
           command: [
             "demo-agent", "record", "stop",
             "--cdp-ws", cdpWsUrl,
@@ -709,6 +747,7 @@ export const productDemo = defineRun({
       }));
       yield* step("write-stories-json", () =>
         sandbox.exec({
+          container,
           command: [
             "demo-agent", "write-json",
             "--out", storiesJsonPath,
@@ -738,6 +777,7 @@ export const productDemo = defineRun({
         onSome: (p) =>
           step("seed-prior", () =>
             sandbox.exec({
+              container,
               command: [
                 "demo-agent", "write-prior",
                 "--out", "/tmp/demo/previous.md",
@@ -757,6 +797,7 @@ export const productDemo = defineRun({
       const summaryMd = yield* step("summarize", () =>
         sandbox
           .exec({
+            container,
             command: [
               "demo-agent", "summarize",
               "--stories-json", storiesJsonPath,
