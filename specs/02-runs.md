@@ -43,11 +43,13 @@ A user-defined run in their own repo has the same shape. The shipped runs below 
 | 7 | [`playwright-demo`](#9-playwright-demo) | Record a Playwright walkthrough of a deployed surface | **Live** (V3) |
 | 8 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
 | 9 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
+| 10 | [`spec-drift-pr`](#10-spec-drift-pr) | Daily spec/implementation drift → draft PR with the reconciling spec edits | **Live** (V3) — Schedule mode |
+| 11 | [`ci-triage-pr`](#11-ci-triage-pr) | Daily triage of GitHub Actions + Cloudflare deploy failures → draft PR | **Live** (V3) — Schedule mode |
 | — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | **Live** — capability + primitive |
 | — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | **Live** — capability wired |
 | — | [`awsAssumeRole`](#primitive-awsassumerole) | Primitive — OIDC-federated AWS STS credentials | **Live** — capability + primitive |
 
-> **Live runs at HEAD** — `offload-test`, `cdp-acceptance`, `product-demo`, `deploy-smoke`, `playwright-demo`, `matrix-fanout`, `playwright-e2e` (see [`runs/index.ts`](../runs/index.ts)). All three trigger modes are wired: Action mode (HMAC POST), Webhook mode (GitHub App webhook → `/v1/webhooks/github`), and Schedule mode (Cron Trigger → `scheduled()` handler). Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
+> **Live runs at HEAD** — `offload-test`, `cdp-acceptance`, `product-demo`, `deploy-smoke`, `playwright-demo`, `matrix-fanout`, `playwright-e2e`, `pr-review`, `spec-drift-pr`, `ci-triage-pr` (see [`runs/index.ts`](../runs/index.ts)). All three trigger modes are wired: Action mode (HMAC POST), Webhook mode (GitHub App webhook → `/v1/webhooks/github`), and Schedule mode (Cron Trigger → `scheduled()` handler). Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
 
 ---
 
@@ -359,6 +361,20 @@ Schema.Struct({
 **Limits:** `maxDurationSec: 3600`.
 
 This run exists to keep the cost of forking-a-run low: anything that doesn't fit a shipped run can execute here first, then graduate to its own typed run later.
+
+---
+
+## 10. `spec-drift-pr`
+
+> **Status: Live (Schedule mode).** Source: [`runs/spec-drift-pr.ts`](../runs/spec-drift-pr.ts); recipe + docs in [`recipes/spec-drift-pr/`](../recipes/spec-drift-pr/). Daily (`0 5 * * *`), it scans each `spec-drift.repos` entry for drift between `specs/` and the implementation and opens a **draft PR** with the reconciling spec edits.
+
+The detection reuses the `ai-code-review` engine: it resolves the configurable `opencode`/`reasonix` backend under the `spec-drift.*` `CONFIG_KV` namespace and calls `@flare-dispatch/review-agent`'s `completeStructured` (the same tools/json + auto-fallback + Schema-validated path `pr-review` uses) with a drift-detection prompt the operator can override (`spec-drift.prompt`). The model returns full new spec-file contents; the run commits them via `github.openDraftPullRequest` (Git Data API, from the Worker — no container `git push`), idempotent on `flare-dispatch/spec-drift-<date>`. The one container image is used only for `git` (checkout + reading `specs/` + the file tree). See the recipe README for the full config contract and scope/limits.
+
+## 11. `ci-triage-pr`
+
+> **Status: Live (Schedule mode).** Source: [`runs/ci-triage-pr.ts`](../runs/ci-triage-pr.ts); recipe + docs in [`recipes/ci-triage-pr/`](../recipes/ci-triage-pr/). Daily (`0 6 * * *`), it reads recent CI failures across **GitHub Actions** (`github.actionRuns`) and **Cloudflare Pages** (`cloudflare.deployments`), triages them with a model, and opens one **draft PR** carrying the write-up (`.flare-dispatch/ci-triage-<date>.md`).
+
+`github.actionRuns` and the new read-only `cloudflare` capability are the two read surfaces; the triage model call reuses the `ai-code-review` backend machinery under the `ci-triage.*` namespace (`completeStructured`, operator-overridable `ci-triage.prompt`); the PR is opened with `github.openDraftPullRequest`. A green day (no failures in `ci-triage.window-hours`) opens no PR and never calls the model. The run produces a triage diagnosis, not an automated fix. See the recipe README for the config contract and the `CLOUDFLARE_API_TOKEN` prerequisite.
 
 ---
 

@@ -36,6 +36,7 @@ import { makeR2ArtifactLive } from "./artifact-r2";
 import { makeChecksGithubLive } from "./checks-github";
 import {
   BrowserDeferred,
+  CloudflareDeferred,
   ConfigDeferred,
   GithubDeferred,
   ModelGatewayDeferred,
@@ -96,6 +97,7 @@ const makeRuntimeUnderTest = (
     io,
     ConfigDeferred,
     GithubDeferred,
+    CloudflareDeferred,
     ModelGatewayDeferred,
     OidcDeferred,
     // No App credentials in this Miniflare suite → the no-op `Checks` Layer.

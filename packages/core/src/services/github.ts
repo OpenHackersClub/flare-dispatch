@@ -45,6 +45,81 @@ export type PullRequestRef = {
 };
 
 /**
+ * A GitHub Actions workflow run — the unit of work for `ci-triage`. The read
+ * surface a Schedule-mode run enumerates to find recently-failed CI across the
+ * repos the App is installed on.
+ */
+export type WorkflowRunRef = {
+  /** "owner/name". */
+  readonly repo: string;
+  /** The workflow run id (`GET /repos/{o}/{r}/actions/runs/{id}`). */
+  readonly id: number;
+  /** The workflow file's display name (e.g. "CI/CD"). */
+  readonly name: string;
+  /** The head branch the run executed on. */
+  readonly headBranch: string;
+  /** The head SHA the run executed against. */
+  readonly headSha: string;
+  /** GitHub run status — `completed` for a finished run. */
+  readonly status: string;
+  /** The conclusion — `failure` / `timed_out` / `cancelled` / `success` / … */
+  readonly conclusion: string;
+  /** The run's web URL (the failing-run link a triage write-up points at). */
+  readonly url: string;
+  /** epoch ms — when the run was created. */
+  readonly createdAt: number;
+};
+
+/**
+ * A request to open (or update) a **draft pull request** carrying a set of
+ * file edits — the one *content write* on the `github` capability, added for
+ * the `spec-drift` / `ci-triage` recipes. The live Layer commits the files via
+ * the GitHub Git Data API (blob → tree → commit → ref) from the Worker — no
+ * container `git push` — then opens a draft PR. Idempotent on `headBranch`:
+ * re-running updates the branch and reuses the already-open PR.
+ *
+ * Like `pullReview`, this is a deliberate, narrow exception to the capability's
+ * read-only stance — a recipe whose entire purpose is "detect X, propose a fix
+ * as a PR" needs exactly this and nothing more (it never force-merges, never
+ * touches protected refs).
+ */
+export type OpenDraftPullRequest = {
+  /** "owner/name". */
+  readonly repo: string;
+  /**
+   * The base branch to open the PR against and branch the commit from.
+   * Defaults to the repo's default branch when omitted.
+   */
+  readonly baseBranch?: string;
+  /** The head branch to create/update (e.g. `flare-dispatch/spec-drift-2026-06-03`). */
+  readonly headBranch: string;
+  /** PR title. */
+  readonly title: string;
+  /** PR body (markdown). */
+  readonly body: string;
+  /** The commit message for the file edits. */
+  readonly commitMessage: string;
+  /** The files to write — full new contents, keyed by repo-relative path. */
+  readonly files: readonly { readonly path: string; readonly content: string }[];
+  /**
+   * The GitHub installation id authenticating the writes. Optional — the live
+   * Layer resolves it from the repo when absent (the App is the source of truth
+   * for which installation covers a repo).
+   */
+  readonly installationId?: number;
+};
+
+/** The outcome of {@link GithubService.openDraftPullRequest}. */
+export type DraftPullRequestResult = {
+  /** The PR number (existing or newly opened). */
+  readonly number: number;
+  /** The PR's web URL. */
+  readonly url: string;
+  /** `true` when this call opened a new PR; `false` when it updated an open one. */
+  readonly created: boolean;
+};
+
+/**
  * A top-level PR review to post — `POST /repos/{o}/{r}/pulls/{n}/reviews`.
  * `event: "COMMENT"` leaves a visible review comment without approving or
  * requesting changes (the run's *verdict* is reported separately via the
@@ -93,6 +168,23 @@ export interface GithubService {
   }) => Effect.Effect<readonly PullRequestRef[], GitHubApiError>;
 
   /**
+   * Recent GitHub Actions workflow runs across the App's installations — the
+   * enumeration surface `ci-triage` scans for failures. `status` defaults to
+   * `completed`; pass `conclusion: "failure"` to narrow to failed runs.
+   * Paginates internally and backs off on secondary rate limits.
+   */
+  readonly actionRuns: (opts?: {
+    /** Restrict to these repos (else every installed repo). */
+    repos?: readonly string[];
+    /** Only runs created within this window. */
+    createdWithinHours?: number;
+    /** GitHub run status filter — defaults to `completed`. */
+    status?: string;
+    /** Only runs with this conclusion (e.g. `failure`). */
+    conclusion?: string;
+  }) => Effect.Effect<readonly WorkflowRunRef[], GitHubApiError>;
+
+  /**
    * Post a top-level PR review comment (`event: "COMMENT"`). The run uses this
    * to leave an always-visible comment on every review — success or failure.
    * Best-effort reporting: a live deploy without App credentials degrades to a
@@ -101,6 +193,16 @@ export interface GithubService {
   readonly pullReview: (
     req: PullReviewRequest,
   ) => Effect.Effect<void, GitHubApiError>;
+
+  /**
+   * Open (or update) a draft PR carrying a set of file edits — the content
+   * write the `spec-drift` / `ci-triage` recipes use to propose a fix. Commits
+   * via the Git Data API from the Worker; idempotent on `headBranch`. A deploy
+   * without App credentials degrades to a logged no-op (`created: false`).
+   */
+  readonly openDraftPullRequest: (
+    req: OpenDraftPullRequest,
+  ) => Effect.Effect<DraftPullRequestResult, GitHubApiError>;
 }
 
 /** Context.Tag — the dependency a run carries until a Layer provides it. */
@@ -125,6 +227,16 @@ export const github = {
       repos?: readonly string[];
     } = {},
   ) => Effect.flatMap(Github, (g) => g.openPullRequests(opts)),
+  actionRuns: (
+    opts: {
+      repos?: readonly string[];
+      createdWithinHours?: number;
+      status?: string;
+      conclusion?: string;
+    } = {},
+  ) => Effect.flatMap(Github, (g) => g.actionRuns(opts)),
   pullReview: (req: PullReviewRequest) =>
     Effect.flatMap(Github, (g) => g.pullReview(req)),
+  openDraftPullRequest: (req: OpenDraftPullRequest) =>
+    Effect.flatMap(Github, (g) => g.openDraftPullRequest(req)),
 } as const;

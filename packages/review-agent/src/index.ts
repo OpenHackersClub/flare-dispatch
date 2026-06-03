@@ -41,8 +41,13 @@ export {
   REVIEW_MODES,
   type ReviewMode,
   DEFAULT_BACKEND,
+  DEFAULT_NAMESPACE,
   BACKEND_CONFIG_KEY,
   BACKEND_KEYS,
+  type BackendKeyDescriptor,
+  namespacedKeys,
+  backendConfigKey,
+  promptKey,
   type ResolvedBackend,
   parseBackend,
   parseMode,
@@ -58,6 +63,8 @@ export {
 
 export {
   DEFAULT_REVIEW_SYSTEM_PROMPT,
+  type CompleteStructuredInput,
+  completeStructured,
   type ReviewDomainInput,
   reviewDomain,
   type CoordinateInput,

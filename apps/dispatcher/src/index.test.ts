@@ -113,6 +113,7 @@ describe("GET /health", () => {
       status: "ok",
       runs: [
         "cdp-acceptance",
+        "ci-triage-pr",
         "deploy-smoke",
         "matrix-fanout",
         "offload-test",
@@ -120,6 +121,7 @@ describe("GET /health", () => {
         "playwright-e2e",
         "pr-review",
         "product-demo",
+        "spec-drift-pr",
       ],
     });
   });

@@ -49,6 +49,11 @@ import {
   makeGithubFake,
 } from "./fakes/github-fake";
 import {
+  CloudflareFake,
+  type CloudflareFakeState,
+  makeCloudflareFake,
+} from "./fakes/cloudflare-fake";
+import {
   makeModelGatewayFake,
   ModelGatewayFake,
   type ModelGatewayFakeState,
@@ -115,6 +120,11 @@ export {
   type GithubFakeState,
 } from "./fakes/github-fake";
 export {
+  CloudflareFake,
+  makeCloudflareFake,
+  type CloudflareFakeState,
+} from "./fakes/cloudflare-fake";
+export {
   ModelGatewayFake,
   makeModelGatewayFake,
   type ModelGatewayFakeState,
@@ -161,6 +171,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   ChecksFake,
   EmailFake,
   GithubFake,
+  CloudflareFake,
   ModelGatewayFake,
   OidcFake,
   ExecutionsFake,
@@ -178,6 +189,7 @@ export type CFRuntimeTestHandles = {
   readonly email: EmailFakeState;
   readonly executions: ExecutionsFakeState;
   readonly github: GithubFakeState;
+  readonly cloudflare: CloudflareFakeState;
   readonly modelGateway: ModelGatewayFakeState;
   readonly oidc: OidcFakeState;
   /** The inline runner's event queue — feed `step.waitForEvent` from tests. */
@@ -191,8 +203,10 @@ export type CFRuntimeTestOptions = {
   readonly browser?: Parameters<typeof makeBrowserFake>[0];
   /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
   readonly config?: Record<string, string>;
-  /** Github fake seed — repos + PRs returned by `github.*`. */
+  /** Github fake seed — repos + PRs + workflow runs returned by `github.*`. */
   readonly github?: Parameters<typeof makeGithubFake>[0];
+  /** Cloudflare fake seed — deployments returned by `cloudflare.*`. */
+  readonly cloudflare?: Parameters<typeof makeCloudflareFake>[0];
   /** ModelGateway fake script — answers `modelGateway.complete` returns. */
   readonly modelGateway?: Parameters<typeof makeModelGatewayFake>[0];
   /** Oidc fake options — issuer override + deterministic `iat` clock. */
@@ -226,6 +240,7 @@ export const makeCFRuntimeTest = (
   const checks = makeChecksFake();
   const emailFake = makeEmailFake();
   const github = makeGithubFake(opts.github);
+  const cloudflare = makeCloudflareFake(opts.cloudflare);
   const modelGateway = makeModelGatewayFake(opts.modelGateway);
   const oidcLayer = makeOidcFake(opts.oidc);
   const executions = makeExecutionsFake();
@@ -245,6 +260,7 @@ export const makeCFRuntimeTest = (
     checks.layer,
     emailFake.layer,
     github.layer,
+    cloudflare.layer,
     modelGateway.layer,
     oidcLayer.layer,
     executions.layer,
@@ -261,6 +277,7 @@ export const makeCFRuntimeTest = (
       checks: checks.state,
       email: emailFake.state,
       github: github.state,
+      cloudflare: cloudflare.state,
       modelGateway: modelGateway.state,
       oidc: oidcLayer.state,
       executions: executions.state,

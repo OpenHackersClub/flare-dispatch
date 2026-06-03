@@ -229,4 +229,14 @@ export interface Env {
    * `wrangler` via the `vars` block in wrangler.jsonc.
    */
   readonly CLOUDFLARE_ACCOUNT_ID?: string;
+
+  /**
+   * Cloudflare API token (scoped, e.g. `Pages:Read`) — a Worker secret, set via
+   * `wrangler secret put CLOUDFLARE_API_TOKEN`. Backs the read-only `cloudflare`
+   * capability the `ci-triage` run uses to read failed Pages deployments
+   * (paired with `CLOUDFLARE_ACCOUNT_ID`). Absent → the `cloudflare` capability
+   * degrades to empty (the triage sweep finds nothing CF-side). Non-CF runs are
+   * unaffected. Read-only: mutating CF state stays a `wrangler` / CI concern.
+   */
+  readonly CLOUDFLARE_API_TOKEN?: string;
 }

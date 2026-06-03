@@ -7,7 +7,7 @@
 //   * `coordinate` / `riskTier` are PURE — tested directly, no fake.
 
 import { describe, expect, it } from "vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import {
   ModelGateway,
   ModelGatewayError,
@@ -16,6 +16,7 @@ import {
 import { makeModelGatewayFake } from "@flare-dispatch/core/testing";
 import {
   classifyRisk,
+  completeStructured,
   coordinate,
   coordinateReview,
   reviewDomain,
@@ -311,6 +312,60 @@ describe("reviewDomain", () => {
       }).pipe(Effect.provide(layer)),
     );
     expect(exit._tag).toBe("Failure");
+  });
+});
+
+describe("completeStructured (the reusable structured-output engine)", () => {
+  // A recipe-shaped schema unrelated to review findings — proves the engine is
+  // generic, not hard-wired to `{ findings }`.
+  const Triage = Schema.Struct({
+    summary: Schema.String,
+    severity: Schema.Literal("low", "high"),
+  });
+
+  const input = {
+    backend: "opencode",
+    model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    system: "triage",
+    renderUser: (mode: "tools" | "json") => `mode=${mode}`,
+    schema: Triage,
+    toolName: "triage",
+    surface: "ci-triage",
+  } as const;
+
+  it("tools mode — decodes the tool call against a caller schema", async () => {
+    const value = { summary: "flaky test", severity: "high" as const };
+    const { layer } = withGateway([toolsResult("triage", value)]);
+    const out = await Effect.runPromise(
+      completeStructured({ ...input, mode: "tools" }).pipe(Effect.provide(layer)),
+    );
+    expect(out).toEqual(value);
+  });
+
+  it("json mode — parses a strict JSON object from the model text", async () => {
+    const value = { summary: "deploy failed", severity: "low" as const };
+    const { layer } = withGateway([textResult(JSON.stringify(value))]);
+    const out = await Effect.runPromise(
+      completeStructured({ ...input, mode: "json" }).pipe(Effect.provide(layer)),
+    );
+    expect(out).toEqual(value);
+  });
+
+  it("tools mode — renders a DIFFERENT user message on the json auto-fallback", async () => {
+    const value = { summary: "x", severity: "low" as const };
+    const fake = makeModelGatewayFake({
+      responses: [emptyToolsResult(), textResult(JSON.stringify(value))],
+    });
+    const out = await Effect.runPromise(
+      completeStructured({ ...input, mode: "tools" }).pipe(
+        Effect.provide(fake.layer),
+      ),
+    );
+    expect(out).toEqual(value);
+    expect(fake.state.requests).toHaveLength(2);
+    // The tools attempt and the json fallback used the per-mode renderer.
+    expect(fake.state.requests[0]!.user).toBe("mode=tools");
+    expect(fake.state.requests[1]!.user).toBe("mode=json");
   });
 });
 

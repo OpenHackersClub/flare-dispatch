@@ -36,4 +36,18 @@ export {
   type PullReviewEvent,
   type CreatePullReviewOptions,
 } from "./reviews";
+export {
+  listActionRuns,
+  actionRunsUrl,
+  normalizeRun,
+  type ActionRun,
+  type ListActionRunsOptions,
+} from "./actions";
+export {
+  openDraftPullRequest,
+  treeEntry,
+  type FileEdit,
+  type OpenDraftPullRequestOptions,
+  type OpenDraftPullRequestResult,
+} from "./pull-requests";
 export { GithubApiError } from "./errors";

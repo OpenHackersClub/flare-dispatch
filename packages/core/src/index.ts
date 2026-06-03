@@ -82,8 +82,17 @@ export {
   type GithubService,
   type RepoRef,
   type PullRequestRef,
+  type WorkflowRunRef,
   type PullReviewRequest,
+  type OpenDraftPullRequest,
+  type DraftPullRequestResult,
 } from "./services/github";
+export {
+  cloudflare,
+  Cloudflare,
+  type CloudflareService,
+  type DeploymentRef,
+} from "./services/cloudflare";
 export {
   oidc,
   Oidc,
