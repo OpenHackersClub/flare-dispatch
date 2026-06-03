@@ -610,13 +610,25 @@ export const productDemo = defineRun({
       // 6. Upload the rrweb event JSON once, signed for 30 days so the link
       //    survives PR-review cycles. Reviewers paste the URL straight into
       //    the PR description, or feed it to an rrweb-player iframe.
+      // Best-effort: a long recorded session can produce a replay.json large
+      // enough to blow the Worker's CPU-time limit on upload. The replay is a
+      // debugging bonus, not the verdict — never let it sink a run whose stories
+      // already played. Empty URI on failure; the summary just omits the link.
       const replayJsonUri = yield* step("upload-replay-json", () =>
-        artifact.upload({
-          name: "replay.json",
-          path: replayJsonPath,
-          contentType: "application/json",
-          signedUrlTTL: "30 days",
-        }),
+        artifact
+          .upload({
+            name: "replay.json",
+            path: replayJsonPath,
+            contentType: "application/json",
+            signedUrlTTL: "30 days",
+          })
+          .pipe(
+            Effect.catchAll(() =>
+              io.log("warn", "upload-replay-json failed; continuing").pipe(
+                Effect.as(""),
+              ),
+            ),
+          ),
       );
 
       // 7. Upload each story's key screenshot in parallel (concurrency 4
@@ -724,17 +736,29 @@ export const productDemo = defineRun({
       // 12. Generate the holistic summary. The agent emits the markdown to
       //     stdout AND writes it to `--out`; we read it from stdout because
       //     `io` has no file-read primitive — see specs/03-dsl.md § io.
-      const summaryResult = yield* step("summarize", () =>
-        sandbox.exec({
-          command: [
-            "demo-agent", "summarize",
-            "--stories-json", storiesJsonPath,
-            "--model", summaryModel,
-            "--out", summaryPath,
-            ...previousArgs,
-          ],
-          env: agentEnv,
-        }),
+      // Best-effort: a summariser failure (model hiccup, exec kill) must not
+      // sink a run whose stories already played — fall back to a minimal
+      // machine-written summary so the run still returns a verdict.
+      const summaryMd = yield* step("summarize", () =>
+        sandbox
+          .exec({
+            command: [
+              "demo-agent", "summarize",
+              "--stories-json", storiesJsonPath,
+              "--model", summaryModel,
+              "--out", summaryPath,
+              ...previousArgs,
+            ],
+            env: agentEnv,
+          })
+          .pipe(
+            Effect.map((r) => r.stdout.trim()),
+            Effect.catchAll(() =>
+              Effect.succeed(
+                `# Demo summary\n\n${stories.length} stories, ${stories.filter((s) => s.status === "passed").length} passed. (Automated summary generation failed — see per-story narratives.)`,
+              ),
+            ),
+          ),
       );
 
       yield* io.log(
@@ -750,7 +774,7 @@ export const productDemo = defineRun({
       return {
         replayUri,
         replayJsonUri,
-        summaryMd: summaryResult.stdout.trim(),
+        summaryMd,
         stories,
       };
     }),
