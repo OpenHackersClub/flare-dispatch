@@ -43,11 +43,20 @@ export {
 } from "./checks-github";
 export { makeGithubLive, type GithubLiveConfig } from "./github-live";
 export {
+  makeCloudflareLive,
+  type CloudflareLiveConfig,
+  cfReason,
+  pagesDeploymentsUrl,
+  pagesProjectsUrl,
+  normalizeDeployment,
+} from "./cloudflare-live";
+export {
   makeModelGatewayLive,
   type AiBinding,
 } from "./model-gateway-cf";
 export {
   BrowserDeferred,
+  CloudflareDeferred,
   ConfigDeferred,
   GithubDeferred,
   ModelGatewayDeferred,

@@ -15,6 +15,7 @@ import type { Artifact } from "./services/artifact";
 import type { Browser } from "./services/browser";
 import type { Cache } from "./services/cache";
 import type { Checks } from "./services/checks";
+import type { Cloudflare } from "./services/cloudflare";
 import type { Config } from "./services/config";
 import type { Email } from "./services/email";
 import type { Executions } from "./services/executions";
@@ -36,6 +37,7 @@ export type RunContext =
   | Checks
   | Email
   | Github
+  | Cloudflare
   | ModelGateway
   | Oidc
   | Executions

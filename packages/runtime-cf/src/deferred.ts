@@ -17,6 +17,8 @@ import {
   Browser,
   BrowserUnavailable,
   type BrowserService,
+  Cloudflare,
+  type CloudflareService,
   Config,
   type ConfigService,
   Github,
@@ -81,6 +83,13 @@ export const GithubDeferred: Layer.Layer<Github> = Layer.succeed(
       Effect.die(
         "github.openPullRequests: not implemented in this deploy — V3 capability",
       ),
+    // `actionRuns` (a read) degrades to empty on an uncredentialed deploy — a
+    // Schedule-mode sweep simply finds nothing rather than dying. The live
+    // credentialed path is `makeGithubLive` (github-live.ts).
+    actionRuns: () =>
+      Effect.logInfo(
+        "github.actionRuns skipped (no GitHub App credentials) — empty",
+      ).pipe(Effect.as([])),
     // `pullReview` is *reporting*, not correctness — a deploy without GitHub
     // App credentials degrades to a logged no-op (the same posture as the no-op
     // `Checks` Layer), never failing an otherwise-green run. The live
@@ -89,6 +98,28 @@ export const GithubDeferred: Layer.Layer<Github> = Layer.succeed(
       Effect.logInfo(
         `github.pullReview skipped (no GitHub App credentials) — PR comment on ${repo}#${pr} not posted`,
       ),
+    // `openDraftPullRequest` (a content write) degrades to a logged no-op, the
+    // same posture as `pullReview`. The recipe sees `created: false`.
+    openDraftPullRequest: ({ repo, headBranch }) =>
+      Effect.logInfo(
+        `github.openDraftPullRequest skipped (no GitHub App credentials) — ${repo}#${headBranch} not opened`,
+      ).pipe(Effect.as({ number: 0, url: "", created: false })),
+  }))(),
+);
+
+/**
+ * Cloudflare — the fallback when a deploy has no `CLOUDFLARE_API_TOKEN`. A
+ * read-only capability, so the safe degradation is *empty*, not a die: a
+ * Schedule-mode triage sweep finds nothing CF-side rather than failing the run.
+ * The live credentialed path is `makeCloudflareLive` (cloudflare-live.ts).
+ */
+export const CloudflareDeferred: Layer.Layer<Cloudflare> = Layer.succeed(
+  Cloudflare,
+  ((): CloudflareService => ({
+    deployments: () =>
+      Effect.logInfo(
+        "cloudflare.deployments skipped (no CLOUDFLARE_API_TOKEN) — empty",
+      ).pipe(Effect.as([])),
   }))(),
 );
 

@@ -163,6 +163,10 @@
   //   BROWSER_CDP_API_TOKEN      — V2 Browser Rendering connect
   //   OIDC_SIGNING_JWK,
   //   OIDC_ISSUER_URL            — V3.5 OIDC issuer (AWS STS federation)
+  //   CLOUDFLARE_API_TOKEN       — scoped token (Pages:Read) backing the
+  //                                read-only `cloudflare` capability the
+  //                                `ci-triage` run reads failed deploys with
+  //                                (paired with the CLOUDFLARE_ACCOUNT_ID var)
   // None of these are declared here — Worker Secrets are out-of-band by design.
 
   // Cron Triggers — the wall-clock heartbeat Schedule-mode runs subscribe to.
@@ -177,9 +181,17 @@
   //                   through the operator's story list, uploads replay.json
   //                   (rrweb events) + key screenshots + summary.md as
   //                   signed R2 artifacts.
+  //   "0 5 * * *"   — 05:00 UTC daily, `spec-drift-pr` (runs/spec-drift-pr.ts):
+  //                   scans `spec-drift.repos` for spec/implementation drift and
+  //                   opens a draft PR with the reconciling spec edits.
+  //   "0 6 * * *"   — 06:00 UTC daily, `ci-triage-pr` (runs/ci-triage-pr.ts):
+  //                   triages recent GitHub Actions + Cloudflare deploy failures
+  //                   and opens a draft PR with the triage write-up.
   "triggers": {
     "crons": [
-      "0 14 * * *"
+      "0 14 * * *",
+      "0 5 * * *",
+      "0 6 * * *"
     ]
   }
 }

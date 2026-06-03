@@ -12,6 +12,7 @@ import {
   BrowserUnavailable,
   CacheError,
   CheckoutFailed,
+  CloudflareApiError,
   ContainerLaunchFailed,
   EventPayloadInvalid,
   ExecFailed,
@@ -47,6 +48,7 @@ const summarize = (e: RunError): string =>
     Match.tag("EventPayloadInvalid", ({ reason }) => `event payload ${reason}`),
     Match.tag("SecretsMissing", ({ keys }) => `secrets missing ${keys.join(",")}`),
     Match.tag("GitHubApiError", ({ status, reason }) => `github ${status} ${reason}`),
+    Match.tag("CloudflareApiError", ({ status, reason }) => `cloudflare ${status} ${reason}`),
     Match.tag("OidcSigningFailed", ({ reason }) => `oidc ${reason}`),
     Match.tag("StsAssumeRoleFailed", ({ provider, reason }) => `sts ${provider} ${reason}`),
     Match.exhaustive,
@@ -128,6 +130,11 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
       name: "GitHubApiError",
       err: new GitHubApiError({ status: 429, reason: "rate-limited" }),
       expect: "github 429 rate-limited",
+    },
+    {
+      name: "CloudflareApiError",
+      err: new CloudflareApiError({ status: 401, reason: "unauthorized" }),
+      expect: "cloudflare 401 unauthorized",
     },
     {
       name: "OidcSigningFailed",

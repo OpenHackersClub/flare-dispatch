@@ -32,8 +32,12 @@ The **Recommended mode** column is the default each recipe is tuned for. See [sp
 | [nightly-e2e](nightly-e2e/) | Nightly Playwright suite across your deployed environments | Schedule | `nightly-e2e.run.ts`, `README.md` |
 | [release-notes](release-notes/) | Weekly release notes drafted, then published behind a human approval | Schedule | `release-notes.run.ts`, `README.md` |
 | [scheduled-deps](scheduled-deps/) | Nightly dependency audit across every installed repo | Schedule | `scheduled-deps.run.ts`, `README.md` |
+| [spec-drift-pr](spec-drift-pr/) | Daily spec/implementation drift detection → draft PR with the reconciling spec edits | Schedule | `spec-drift-pr.run.ts`, `README.md` |
+| [ci-triage-pr](ci-triage-pr/) | Daily triage of GitHub Actions + Cloudflare deploy failures → draft PR with the write-up | Schedule | `ci-triage-pr.run.ts`, `README.md` |
 
-The Action-mode `*.run.ts` files mirror the shipped runs catalogued in [specs/02-runs.md](../specs/02-runs.md), reproduced in each recipe so it is self-contained. The Webhook- and Schedule-mode recipes — `deploy-smoke`, `pr-review`, `pr-review-sweep`, `nightly-e2e`, `release-notes`, `scheduled-deps` — are custom runs defined by the recipe itself; the three Schedule-mode runs are thin orchestration that dispatch shipped runs (`playwright-e2e`, `security-scan`) or, for `release-notes`, shell out to a bundled CLI.
+The Action-mode `*.run.ts` files mirror the shipped runs catalogued in [specs/02-runs.md](../specs/02-runs.md), reproduced in each recipe so it is self-contained. `pr-review`, `spec-drift-pr`, and `ci-triage-pr` are likewise shipped runs (in `runs/`), reproduced here. The remaining Webhook- and Schedule-mode recipes — `deploy-smoke`, `pr-review-sweep`, `nightly-e2e`, `release-notes`, `scheduled-deps` — are custom runs defined by the recipe itself; those Schedule-mode runs are thin orchestration that dispatch shipped runs (`playwright-e2e`, `security-scan`) or, for `release-notes`, shell out to a bundled CLI.
+
+`spec-drift-pr` and `ci-triage-pr` are the two "detect → draft PR" recipes: a Schedule-mode run reuses the `ai-code-review` engine's configurable `opencode`/`reasonix` backend (via `@flare-dispatch/review-agent`'s `completeStructured`) to detect drift / triage CI failures, then opens a **draft PR** through `github.openDraftPullRequest` (the Git Data API, from the Worker). Downstream operators customize each recipe's model and prompt entirely from `CONFIG_KV` under its own `spec-drift.*` / `ci-triage.*` namespace.
 
 ## Prerequisites
 

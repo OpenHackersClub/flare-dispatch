@@ -35,11 +35,16 @@ import {
 } from "./email-cf";
 import {
   BrowserDeferred,
+  CloudflareDeferred,
   ConfigDeferred,
   ModelGatewayDeferred,
   OidcDeferred,
 } from "./deferred";
-import { makeGithubLive } from "./github-live";
+import {
+  type CloudflareLiveConfig,
+  makeCloudflareLive,
+} from "./cloudflare-live";
+import { type GithubLiveConfig, makeGithubLive } from "./github-live";
 import { type AiBinding, makeModelGatewayLive } from "./model-gateway-cf";
 import { makeOidcLive, type OidcLiveConfig } from "./oidc-live";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
@@ -79,6 +84,25 @@ export type CFRuntimeLiveOptions = {
    * repo, so a second field would diverge silently. Pass once.
    */
   readonly checks?: ChecksGithubConfig;
+  /**
+   * GitHub App credentials for the `github` capability's read + content-write
+   * surface (`actionRuns`, `openDraftPullRequest`) — used by Schedule-mode runs
+   * (`spec-drift`, `ci-triage`) that carry no per-dispatch `installation_id`,
+   * so they cannot ride `checks`. The capability resolves the per-repo
+   * installation itself from the App JWT. `undefined` (no App secrets) → the
+   * write surface is a logged no-op and the read surface returns empty. Distinct
+   * from `checks`, which additionally pins a specific installation for the
+   * check-run write; one App can power both.
+   */
+  readonly githubApp?: GithubLiveConfig;
+  /**
+   * Cloudflare REST credentials for the `cloudflare` capability — a scoped
+   * `CLOUDFLARE_API_TOKEN` (Pages:Read) + `CLOUDFLARE_ACCOUNT_ID`. Used by the
+   * `ci-triage` run to read failed Pages deployments. `undefined` (no token) →
+   * `CloudflareDeferred`: `cloudflare.deployments` returns empty (a triage sweep
+   * finds nothing CF-side rather than failing). Non-CF runs never touch the Tag.
+   */
+  readonly cloudflare?: CloudflareLiveConfig;
   /**
    * KV binding for the `config` capability (`env.CONFIG_KV`). `undefined` —
    * a deploy with no `CONFIG_KV` namespace — selects the dying `Config` stub:
@@ -206,20 +230,29 @@ export const makeCFRuntimeLive = (
             ? opts.aiGatewayId
             : undefined,
         );
-  // `Github` write surface (`pullReview`) is live when App credentials are
-  // present — it reuses the same `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY`
-  // the `Checks` capability carries. Absent, `pullReview` is a logged no-op
-  // (reporting must never fail a run). The read surface stays a dying stub
-  // (V3 work). `opts.checks` carries the App PEM + id; the per-request
-  // installation id rides on the `PullReviewRequest`.
-  const github = makeGithubLive(
-    opts.checks === undefined
+  // `Github` is live when App credentials are present. Prefer the dedicated
+  // `githubApp` creds (Schedule-mode runs that carry no installation_id), then
+  // fall back to the `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` the `Checks`
+  // capability carries (Webhook/Action mode). Absent → `pullReview` /
+  // `openDraftPullRequest` are logged no-ops and the read surface returns empty
+  // (reporting must never fail a run). The per-repo installation is resolved by
+  // the capability itself when a request carries no `installationId`.
+  const githubAppCfg =
+    opts.githubApp ??
+    (opts.checks === undefined
       ? undefined
       : {
           appId: opts.checks.appId,
           privateKeyPem: opts.checks.privateKeyPem,
-        },
-  );
+        });
+  const github = makeGithubLive(githubAppCfg);
+  // `Cloudflare` is live when a scoped API token + account id are configured;
+  // absent, the deferred Layer returns empty (a read-only capability degrades
+  // to "found nothing", never a die).
+  const cloudflare =
+    opts.cloudflare === undefined
+      ? CloudflareDeferred
+      : makeCloudflareLive(opts.cloudflare);
 
   return Layer.mergeAll(
     sandbox,
@@ -231,6 +264,7 @@ export const makeCFRuntimeLive = (
     checks,
     email,
     github,
+    cloudflare,
     modelGateway,
     oidcLayer,
     executions,

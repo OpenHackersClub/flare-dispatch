@@ -9,8 +9,12 @@ import { Effect } from "effect";
 import {
   BACKEND_KEYS,
   DEFAULT_BACKEND,
+  backendConfigKey,
+  namespacedKey,
+  namespacedKeys,
   parseBackend,
   parseMode,
+  promptKey,
   resolveBackend,
 } from "./backend.js";
 
@@ -93,5 +97,35 @@ describe("resolveBackend", () => {
   it("fails with BackendUnconfigured naming the missing model key", async () => {
     const exit = await Effect.runPromiseExit(resolveBackend(getter({})));
     expect(exit._tag).toBe("Failure");
+  });
+});
+
+describe("namespaced config (downstream recipe reuse)", () => {
+  it("derives per-namespace keys without colliding with pr-review", () => {
+    expect(namespacedKey("spec-drift")("repos")).toBe("spec-drift.repos");
+    expect(backendConfigKey("spec-drift")).toBe("spec-drift.backend");
+    expect(promptKey("spec-drift")).toBe("spec-drift.prompt");
+    expect(namespacedKeys("ci-triage").opencode.modelKey).toBe(
+      "ci-triage.opencode.model",
+    );
+    // The default namespace's keys are unchanged (pr-review compatibility).
+    expect(BACKEND_KEYS.opencode.modelKey).toBe("pr-review.opencode.model");
+  });
+
+  it("resolveBackend reads the given namespace's keys", async () => {
+    const store = {
+      "spec-drift.backend": "reasonix",
+      "spec-drift.reasonix.model": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+      // A pr-review key must NOT leak into the spec-drift resolution.
+      "pr-review.opencode.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    };
+    const resolved = await Effect.runPromise(
+      resolveBackend(getter(store), { namespace: "spec-drift" }),
+    );
+    expect(resolved.backend).toBe("reasonix");
+    expect(resolved.model).toBe(
+      "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    );
+    expect(resolved.mode).toBe("json");
   });
 });

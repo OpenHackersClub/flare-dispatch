@@ -13,10 +13,16 @@
 // ---------------------------------------------------------------------------
 // CONFIG CONTRACT — what an operator sets (out of band) per backend.
 //
-// The active backend is `config.get("pr-review.backend")` →
+// The contract is NAMESPACED so multiple recipes can each pin their own backend
+// + prompt without colliding. The flagship `pr-review` run uses the default
+// namespace `"pr-review"`; a Schedule-mode recipe (e.g. `spec-drift`,
+// `ci-triage`) passes its own namespace to `resolveBackend` and reads
+// `<namespace>.backend`, `<namespace>.<backend>.model|mode`, `<namespace>.prompt`.
+//
+// The active backend is `config.get("<namespace>.backend")` →
 //   "opencode" | "reasonix"   (default "opencode").
 //
-// Each backend is a profile of (model id, output mode):
+// Each backend is a profile of (model id, output mode), for namespace `pr-review`:
 //
 //   backend "opencode"  (a tool-calling-capable Workers AI model)
 //     CONFIG_KV  pr-review.opencode.model   bare Workers AI model id
@@ -61,35 +67,65 @@ export const DEFAULT_BACKEND: Backend = "opencode";
 export const REVIEW_MODES = ["tools", "json"] as const;
 export type ReviewMode = (typeof REVIEW_MODES)[number];
 
-/** The CONFIG_KV key naming the active backend. */
-export const BACKEND_CONFIG_KEY = "pr-review.backend";
+/** The default config namespace — the flagship `pr-review` run. */
+export const DEFAULT_NAMESPACE = "pr-review";
 
-/** Per-backend config key names — the operator contract, in one place. */
-export const BACKEND_KEYS: Readonly<
-  Record<
-    Backend,
-    {
-      readonly modelKey: string;
-      /** CONFIG_KV key selecting the output mode (`tools` | `json`). */
-      readonly modeKey: string;
-      /** Mode used when `modeKey` is unset/unrecognized. */
-      readonly defaultMode: ReviewMode;
-    }
-  >
-> = {
+/** Per-backend key descriptor — the operator contract for one backend. */
+export type BackendKeyDescriptor = {
+  readonly modelKey: string;
+  /** CONFIG_KV key selecting the output mode (`tools` | `json`). */
+  readonly modeKey: string;
+  /** Mode used when `modeKey` is unset/unrecognized. */
+  readonly defaultMode: ReviewMode;
+};
+
+/**
+ * Build the per-backend config key names for a given namespace — the operator
+ * contract, parameterized so each recipe owns its own keys. `namespacedKeys(ns)`
+ * yields `<ns>.<backend>.model` / `<ns>.<backend>.mode`.
+ */
+export const namespacedKeys = (
+  namespace: string,
+): Readonly<Record<Backend, BackendKeyDescriptor>> => ({
   opencode: {
-    modelKey: "pr-review.opencode.model",
-    modeKey: "pr-review.opencode.mode",
+    modelKey: `${namespace}.opencode.model`,
+    modeKey: `${namespace}.opencode.mode`,
     defaultMode: "tools",
   },
   reasonix: {
-    modelKey: "pr-review.reasonix.model",
-    modeKey: "pr-review.reasonix.mode",
+    modelKey: `${namespace}.reasonix.model`,
+    modeKey: `${namespace}.reasonix.mode`,
     // DeepSeek-class reasoning models don't honour tool-calls — default them
     // to json mode (validated against the live Workers AI binding).
     defaultMode: "json",
   },
-};
+});
+
+/**
+ * The CONFIG_KV key builder for a namespace — `namespacedKey("spec-drift")` →
+ * `(suffix) => "spec-drift.<suffix>"`. The single home for the `<ns>.<key>`
+ * convention, so a run reads `key("repos")` / `key("base")` instead of
+ * re-interpolating the namespace at every call site.
+ */
+export const namespacedKey =
+  (namespace: string) =>
+  (suffix: string): string =>
+    `${namespace}.${suffix}`;
+
+/** The CONFIG_KV key naming the active backend for a namespace. */
+export const backendConfigKey = (namespace: string): string =>
+  namespacedKey(namespace)("backend");
+
+/** The CONFIG_KV key carrying a namespace's optional system-prompt override. */
+export const promptKey = (namespace: string): string =>
+  namespacedKey(namespace)("prompt");
+
+/** The CONFIG_KV key naming the active backend (default `pr-review` namespace). */
+export const BACKEND_CONFIG_KEY = backendConfigKey(DEFAULT_NAMESPACE);
+
+/** Per-backend config key names for the default `pr-review` namespace. */
+export const BACKEND_KEYS: Readonly<Record<Backend, BackendKeyDescriptor>> =
+  namespacedKeys(DEFAULT_NAMESPACE);
 
 /** A resolved backend profile — concrete values, ready to call the engine with. */
 export type ResolvedBackend = {
@@ -121,10 +157,12 @@ export const parseMode = (
  */
 export const resolveBackend = <R>(
   getConfig: (key: string) => Effect.Effect<string | undefined, never, R>,
+  opts: { readonly namespace?: string } = {},
 ): Effect.Effect<ResolvedBackend, BackendUnconfigured, R> =>
   Effect.gen(function* () {
-    const backend = parseBackend(yield* getConfig(BACKEND_CONFIG_KEY));
-    const keys = BACKEND_KEYS[backend];
+    const namespace = opts.namespace ?? DEFAULT_NAMESPACE;
+    const backend = parseBackend(yield* getConfig(backendConfigKey(namespace)));
+    const keys = namespacedKeys(namespace)[backend];
 
     const model = yield* getConfig(keys.modelKey);
     if (model === undefined || model.trim() === "") {

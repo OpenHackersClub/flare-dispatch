@@ -118,6 +118,20 @@ export class GitHubApiError extends Schema.TaggedError<GitHubApiError>()(
   },
 ) {}
 
+export class CloudflareApiError extends Schema.TaggedError<CloudflareApiError>()(
+  "CloudflareApiError",
+  {
+    status: Schema.Number,
+    reason: Schema.Literal(
+      "rate-limited",
+      "unauthorized",
+      "transient",
+      "other",
+    ),
+    retryAfterMs: Schema.optional(Schema.Number),
+  },
+) {}
+
 export class OidcSigningFailed extends Schema.TaggedError<OidcSigningFailed>()(
   "OidcSigningFailed",
   {
@@ -159,5 +173,6 @@ export type RunError =
   | EventPayloadInvalid
   | SecretsMissing
   | GitHubApiError
+  | CloudflareApiError
   | OidcSigningFailed
   | StsAssumeRoleFailed;

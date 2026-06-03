@@ -11,7 +11,8 @@
   },
   "scripts": {
     "typecheck": "pnpm -r --filter \"./packages/*\" --filter \"./apps/dispatcher\" --filter \"./runs\" exec tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "sync-recipes": "node scripts/sync-recipes.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250510.0",

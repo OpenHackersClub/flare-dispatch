@@ -92,7 +92,7 @@ valid). Do not respond with prose — the tool call IS your output.`;
 type StructuredCtx = {
   readonly backend: string;
   readonly model: string;
-  readonly surface: "review" | "coordinate";
+  readonly surface: string;
 };
 
 /** Schema-decode an already-parsed value, mapping a mismatch to `StructuredOutputInvalid`. */
@@ -220,18 +220,9 @@ const coerceDomainOutput = (value: unknown): unknown => {
   }
 };
 
-const decodeDomainJson = (
-  u: unknown,
-): Either.Either<typeof DomainOutput.Type, ParseResult.ParseError> =>
-  Schema.decodeUnknownEither(DomainOutput)(coerceDomainOutput(u));
-
-/** The `report` tool sent to the model in tools mode. */
-const ReportTool: ModelTool = {
-  name: "report",
-  description:
-    "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.",
-  parameters: toolParametersSchema(DomainOutput),
-};
+/** The `report` tool's description (the tool itself is built by `completeStructured`). */
+const REPORT_TOOL_DESCRIPTION =
+  "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.";
 
 export type ReviewDomainInput = {
   /** The domain this reviewer owns — e.g. "security", "performance". */
@@ -255,23 +246,27 @@ export type ReviewDomainInput = {
  * `ModelGatewayError` onto the engine's `ModelCallFailed` (preserving the
  * `reason` family the run's error boundary already renders).
  */
-const complete = (
-  input: ReviewDomainInput,
-  mode: "tools" | "json",
-) =>
+const completeRaw = (opts: {
+  readonly backend: string;
+  readonly model: string;
+  readonly system: string;
+  readonly user: string;
+  readonly tools?: ReadonlyArray<ModelTool>;
+  readonly maxTokens?: number;
+}) =>
   modelGateway
     .complete({
-      model: input.model,
-      system: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
-      user: renderDomainUserMessage(input, mode),
-      maxTokens: REVIEW_MAX_TOKENS,
-      ...(mode === "tools" ? { tools: [ReportTool] } : {}),
+      model: opts.model,
+      system: opts.system,
+      user: opts.user,
+      maxTokens: opts.maxTokens ?? REVIEW_MAX_TOKENS,
+      ...(opts.tools !== undefined ? { tools: opts.tools } : {}),
     })
     .pipe(
       Effect.catchTag("ModelGatewayError", (e) =>
         Effect.fail(
           new ModelCallFailed({
-            backend: input.backend,
+            backend: opts.backend,
             model: e.model,
             reason: e.reason,
             message: e.message,
@@ -280,13 +275,158 @@ const complete = (
       ),
     );
 
+// ---------------------------------------------------------------------------
+// `completeStructured` — the REUSABLE structured-output engine.
+//
+// The provider-agnostic core the `pr-review` engine and any downstream recipe
+// (spec-drift, ci-triage) share: ask the configured backend for one structured
+// answer, decoded against a caller-supplied `Schema`. It carries the whole
+// "tools vs json + auto-fallback + parse" dance so a recipe only supplies its
+// schema, system prompt, and a per-mode user message renderer. No model API key
+// — every call rides the `modelGateway` capability (the Workers AI binding is
+// the auth).
+
+export type CompleteStructuredInput<A> = {
+  /** The backend name (for error reporting). */
+  readonly backend: string;
+  /** The model id (a bare `@cf/...` for the Workers AI binding). */
+  readonly model: string;
+  /** Output mode — "tools" (default) sends a tool; "json" parses text. */
+  readonly mode?: ReviewMode;
+  /** The system-role instruction. */
+  readonly system: string;
+  /**
+   * The domain-specific user-role body. The engine appends the per-mode framing
+   * itself — a "call the tool" line in tools mode, or a strict-JSON instruction
+   * (+ the optional {@link jsonContract}) in json mode — so a caller need not
+   * restate that boilerplate (or the schema) at every call site.
+   */
+  readonly userBody?: string;
+  /**
+   * Optional one-line JSON shape (e.g. `{"items":[{"x":string}]}`) appended in
+   * json mode so the model knows the exact contract. Lives next to the schema
+   * at the call site; kept compact on purpose (raw draft-07 JSON Schema is far
+   * more verbose and token-heavy than this TypeScript-shaped hint).
+   */
+  readonly jsonContract?: string;
+  /**
+   * Escape hatch for full control of the per-mode user message — overrides
+   * {@link userBody} / {@link jsonContract}. Most callers should not need it.
+   */
+  readonly renderUser?: (mode: ReviewMode) => string;
+  /** Schema the structured output is decoded against. */
+  readonly schema: Schema.Schema<A, any>;
+  /**
+   * Optional pre-decode coercion (e.g. un-double-encode a nested array a
+   * provider emitted as a JSON string). Applied before `schema` validation.
+   */
+  readonly coerce?: (value: unknown) => unknown;
+  /** Tool name sent in "tools" mode (default "report"). */
+  readonly toolName?: string;
+  /** Tool description sent in "tools" mode. */
+  readonly toolDescription?: string;
+  /** Diagnostic surface label attached to `StructuredOutputInvalid`. */
+  readonly surface?: string;
+  /** Token budget for the call. */
+  readonly maxTokens?: number;
+};
+
 /**
- * Run one domain reviewer. Returns its findings, Schema-validated.
+ * Ask the configured backend for one structured answer, Schema-validated.
  *
- * In "tools" mode the model is asked to call the `report` tool; if it returns
- * zero tool calls (a provider that ignores tool choice), the engine
- * auto-falls-back to a single "json" retry. In "json" mode it parses a strict
- * JSON object from the model's free text.
+ * In "tools" mode the model is asked to call the named tool; if it returns zero
+ * tool calls (a provider that ignores tool choice), this auto-falls-back to a
+ * single "json" retry. In "json" mode it parses a strict JSON object from the
+ * model's free text (stripping `<think>` blocks + code fences first).
+ */
+export const completeStructured = <A>(
+  input: CompleteStructuredInput<A>,
+): Effect.Effect<A, ModelCallFailed | StructuredOutputInvalid, ModelGateway> => {
+  const mode = input.mode ?? "tools";
+  const toolName = input.toolName ?? "report";
+  const ctx: StructuredCtx = {
+    backend: input.backend,
+    model: input.model,
+    surface: input.surface ?? "review",
+  };
+  const decode = (
+    u: unknown,
+  ): Either.Either<A, ParseResult.ParseError> =>
+    Schema.decodeUnknownEither(input.schema)(
+      input.coerce !== undefined ? input.coerce(u) : u,
+    );
+  const tool: ModelTool = {
+    name: toolName,
+    description:
+      input.toolDescription ?? "Report your structured output for this task.",
+    parameters: toolParametersSchema(input.schema),
+  };
+
+  // The per-mode user message: a caller-supplied `renderUser` override, else
+  // the domain `userBody` with the engine's per-mode framing appended.
+  const framedUser = (m: ReviewMode): string =>
+    input.renderUser !== undefined
+      ? input.renderUser(m)
+      : frameUserMessage(input.userBody ?? "", m, {
+          toolName,
+          ...(input.jsonContract !== undefined
+            ? { jsonContract: input.jsonContract }
+            : {}),
+        });
+
+  const jsonAttempt = Effect.gen(function* () {
+    const result = yield* completeRaw({
+      backend: input.backend,
+      model: input.model,
+      system: input.system,
+      user: framedUser("json"),
+      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+    });
+    return yield* parseStructured(result.text, decode, ctx);
+  });
+
+  const toolsAttempt = Effect.gen(function* () {
+    const result = yield* completeRaw({
+      backend: input.backend,
+      model: input.model,
+      system: input.system,
+      user: framedUser("tools"),
+      tools: [tool],
+      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+    });
+    const call = firstToolCall(result.toolCalls, toolName);
+    if (call === undefined) {
+      // Empty / non-matching tool calls → the bad-response signal the
+      // auto-fallback catches.
+      return yield* Effect.fail(
+        new ModelCallFailed({
+          backend: input.backend,
+          model: input.model,
+          reason: "bad-response",
+          message: `model returned no \`${toolName}\` tool call; check provider tool support`,
+        }),
+      );
+    }
+    // Workers AI returns tool args as an OBJECT; OpenAI-style as a JSON STRING.
+    // `parseToolArguments` handles both before Schema-decode.
+    return yield* parseToolArguments(call.arguments, decode, ctx);
+  });
+
+  return mode === "json"
+    ? jsonAttempt
+    : toolsAttempt.pipe(
+        // Auto-fallback: a "tools" model that returned no tool call retries once
+        // in json mode (the DeepSeek-via-AI-Gateway pathology). Any other
+        // `ModelCallFailed` reason (and `StructuredOutputInvalid`) propagates.
+        Effect.catchTag("ModelCallFailed", (e) =>
+          e.reason === "bad-response" ? jsonAttempt : Effect.fail(e),
+        ),
+      );
+};
+
+/**
+ * Run one domain reviewer. Returns its findings, Schema-validated — a thin
+ * `completeStructured` over the `report` tool's `{ findings }` schema.
  */
 export const reviewDomain = (
   input: ReviewDomainInput,
@@ -295,97 +435,55 @@ export const reviewDomain = (
   ModelCallFailed | StructuredOutputInvalid,
   ModelGateway
 > =>
-  (input.mode ?? "tools") === "json"
-    ? jsonReviewDomain(input)
-    : toolsReviewDomain(input).pipe(
-        // Auto-fallback: a "tools" model that returned no tool call retries once
-        // in json mode (the DeepSeek-via-AI-Gateway pathology). Any other
-        // `ModelCallFailed` reason (and `StructuredOutputInvalid`) propagates.
-        Effect.catchTag("ModelCallFailed", (e) =>
-          e.reason === "bad-response" ? jsonReviewDomain(input) : Effect.fail(e),
-        ),
-      );
+  completeStructured({
+    backend: input.backend,
+    model: input.model,
+    ...(input.mode !== undefined ? { mode: input.mode } : {}),
+    system: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
+    userBody: renderDomainBody(input),
+    jsonContract: DOMAIN_JSON_CONTRACT,
+    schema: DomainOutput,
+    coerce: coerceDomainOutput,
+    toolName: "report",
+    toolDescription: REPORT_TOOL_DESCRIPTION,
+    surface: "review",
+    maxTokens: REVIEW_MAX_TOKENS,
+  }).pipe(Effect.map((o) => o.findings));
 
-/** "tools" mode — ask for the `report` tool call and Schema-decode its args. */
-const toolsReviewDomain = (
-  input: ReviewDomainInput,
-): Effect.Effect<
-  ReadonlyArray<Finding>,
-  ModelCallFailed | StructuredOutputInvalid,
-  ModelGateway
-> =>
-  Effect.gen(function* () {
-    const result = yield* complete(input, "tools");
-
-    const call = firstToolCall(result.toolCalls, "report");
-    if (call === undefined) {
-      // Empty / non-`report` tool calls → the bad-response signal the
-      // auto-fallback catches.
-      return yield* Effect.fail(
-        new ModelCallFailed({
-          backend: input.backend,
-          model: input.model,
-          reason: "bad-response",
-          message:
-            "model returned no `report` tool call; check provider tool support",
-        }),
-      );
-    }
-
-    // Workers AI returns tool args as an OBJECT; OpenAI-style as a JSON STRING.
-    // `parseToolArguments` handles both before Schema-decode.
-    const parsed = yield* parseToolArguments(call.arguments, decodeDomainJson, {
-      backend: input.backend,
-      model: input.model,
-      surface: "review",
-    });
-    return parsed.findings;
-  });
-
-/** "json" mode — no tools; parse a strict JSON object from the model's text. */
-const jsonReviewDomain = (
-  input: ReviewDomainInput,
-): Effect.Effect<
-  ReadonlyArray<Finding>,
-  ModelCallFailed | StructuredOutputInvalid,
-  ModelGateway
-> =>
-  Effect.gen(function* () {
-    const result = yield* complete(input, "json");
-
-    const parsed = yield* parseStructured(result.text, decodeDomainJson, {
-      backend: input.backend,
-      model: input.model,
-      surface: "review",
-    });
-    return parsed.findings;
-  });
-
-/** The user-role message for a domain reviewer (system prompt is sent separately). */
-const renderDomainUserMessage = (
-  input: ReviewDomainInput,
-  mode: ReviewMode,
-): string => {
-  const base = [
+/** The domain-specific body of a reviewer's user message (no per-mode framing). */
+const renderDomainBody = (input: ReviewDomainInput): string =>
+  [
     `Review domain: ${input.agent}`,
     `Risk tier: ${input.tier}`,
     "",
     "Unified diff:",
     input.diff.length === 0 ? "(empty diff)" : input.diff,
-    "",
-  ];
-  return mode === "json"
-    ? [...base, DOMAIN_JSON_INSTRUCTION].join("\n")
-    : [
-        ...base,
-        "Call the `report` tool exactly once with your findings for this domain.",
-      ].join("\n");
-};
+  ].join("\n");
 
-/** Strict-JSON instruction appended in "json" mode (no tools available). */
-const DOMAIN_JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no prose, no markdown:
-{"findings":[{"path":string,"startLine":number,"endLine":number,"level":"notice"|"warning"|"failure","title":string,"message":string}]}
-Use an empty "findings" array when the diff is clean for your domain. Do not wrap the JSON in code fences. Do not include any text before or after the JSON object.`;
+/** The compact JSON shape a `report` tool / json-mode reviewer must emit. */
+const DOMAIN_JSON_CONTRACT = `{"findings":[{"path":string,"startLine":number,"endLine":number,"level":"notice"|"warning"|"failure","title":string,"message":string}]}`;
+
+/**
+ * Append the per-mode framing to a caller's `userBody`: a "call the tool" line
+ * in tools mode, or a strict-JSON instruction (+ optional one-line contract) in
+ * json mode. The single home for the framing the engine adds, so no caller —
+ * `reviewDomain` or a recipe — restates it.
+ */
+const frameUserMessage = (
+  body: string,
+  mode: ReviewMode,
+  opts: { toolName: string; jsonContract?: string },
+): string =>
+  mode === "tools"
+    ? `${body}\n\nCall the \`${opts.toolName}\` tool exactly once with your output (an empty result is valid when there is nothing to report).`
+    : [
+        body,
+        "",
+        "Respond with ONLY a single JSON object — no prose, no markdown code fences, nothing before or after the object.",
+        ...(opts.jsonContract !== undefined
+          ? ["It must match this shape:", opts.jsonContract]
+          : []),
+      ].join("\n");
 
 // ---------------------------------------------------------------------------
 // `coordinate` — DETERMINISTIC assembly. No model call.
