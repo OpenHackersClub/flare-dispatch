@@ -1,6 +1,6 @@
 # 03 — DSL
 
-Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and six run-author capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes. A seventh — `github` (read-only GitHub API for Schedule sweeps) — is **Planned (V3)**; the dispatcher's check-run callback rides on a runtime-only `checks` service that run bodies never see directly.
+Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and the run-author capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github`, `cloudflare`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes. `github` ships a narrow partially-live surface (see [§ `github`](#github)); `cloudflare` is a read-only window into the account's Pages deployments (see [§ `cloudflare`](#cloudflare)); the dispatcher's check-run callback rides on a runtime-only `checks` service that run bodies never see directly.
 
 ## The layering: capabilities, primitives, recipes
 
@@ -12,7 +12,7 @@ flowchart TB
     EFF[Schema · Layer · tagged errors · Schedule]
   end
   subgraph L1[Capabilities — @flare-dispatch/core]
-    CAP["sandbox · browser · cache · artifact<br/>io · config<br/><i>(github read API — Planned V3)</i>"]
+    CAP["sandbox · browser · cache · artifact<br/>io · config · github · cloudflare"]
   end
   subgraph L2[Primitives — @flare-dispatch/core/primitives]
     PRIM["workspace · installCached · loadSecrets<br/>sharded · bootApp · probeHttp"]
@@ -514,9 +514,9 @@ namespace config {
 
 ### `github`
 
-> **Status: Planned (V3).** Not exported from `@flare-dispatch/core` at HEAD — the read-side capability lands with the Schedule-mode sweep recipes that enumerate repos/PRs (the App-JWT plumbing for the install-token cache lands in V1 alongside the Webhook receiver). The Dispatcher's check-run write callback is a runtime-only `checks` service ([`packages/runtime-cf/src/checks-github.ts`](../packages/runtime-cf/src/checks-github.ts)) that run bodies never call directly.
+> **Status: partially live.** Exported from `@flare-dispatch/core` at HEAD ([`packages/core/src/services/github.ts`](../packages/core/src/services/github.ts) is the source of truth for the exact shapes). Live in the deployed runtime: `actionRuns` (read), `pullReview` and `openDraftPullRequest` (the two deliberate writes — see below). Still deferred live (dying stubs): the installation-wide enumeration reads `repositories` / `openPullRequests` — runs that need a repo list take it from `CONFIG_KV` instead (see the `spec-drift-pr` / `ci-triage-pr` recipes). The Dispatcher's check-run write callback remains a runtime-only `checks` service ([`packages/runtime-cf/src/checks-github.ts`](../packages/runtime-cf/src/checks-github.ts)) that run bodies never call directly.
 
-Read-only access to the GitHub API, scoped to the installations of the `FlareDispatch` App. The Dispatcher already holds the App private key for the check-run *write* callback ([04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes)); `github` is the symmetric *read* surface, backed by the same short-lived installation tokens. A run never sees a token — the capability Layer mints, caches, and scopes them.
+Access to the GitHub API, scoped to the installations of the `FlareDispatch` App. The Dispatcher already holds the App private key for the check-run *write* callback ([04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes)); `github` is the symmetric run-facing surface, backed by the same short-lived installation tokens. A run never sees a token — the capability Layer mints, caches, and scopes them (resolving the per-repo installation itself when a request carries no `installationId`, so Schedule-mode runs — which have no webhook-threaded installation — still work).
 
 ```ts
 type RepoRef = {
@@ -558,10 +558,53 @@ namespace github {
     includeDrafts?: boolean;                 // default false
     repos?: readonly string[];               // default: all installed repos
   }) => Effect.Effect<readonly PullRequestRef[], GitHubApiError, RunContext>;
+
+  // Recent GitHub Actions workflow runs — the read `ci-triage-pr` scans for
+  // failures (`status: "completed", conclusion: "failure"`). LIVE.
+  declare const actionRuns: (opts?: {
+    repos?: readonly string[];               // pass explicitly (enumeration is deferred)
+    createdWithinHours?: number;
+    status?: string;                         // default "completed"
+    conclusion?: string;                     // e.g. "failure"
+  }) => Effect.Effect<readonly WorkflowRunRef[], GitHubApiError, RunContext>;
+
+  // WRITE exception 1 — a top-level PR review comment (event: COMMENT), so a
+  // run can leave an always-visible comment on success AND failure. LIVE.
+  declare const pullReview: (req: PullReviewRequest) =>
+    Effect.Effect<void, GitHubApiError, RunContext>;
+
+  // WRITE exception 2 — open (or update) a DRAFT pull request carrying file
+  // edits, committed via the Git Data API FROM THE WORKER (blob → tree →
+  // commit → ref → draft PR; no container `git push`). Idempotent on
+  // `headBranch`: a re-run fast-forwards the branch and reuses the open PR.
+  // The write the spec-drift-pr / ci-triage-pr recipes file their proposals
+  // through. LIVE. (`WorkflowRunRef` / request-and-result shapes: see
+  // packages/core/src/services/github.ts.)
+  declare const openDraftPullRequest: (req: OpenDraftPullRequest) =>
+    Effect.Effect<DraftPullRequestResult, GitHubApiError, RunContext>;
 }
 ```
 
-`github` is deliberately **read-only and narrow**. Writing to GitHub is the Dispatcher's job and stays there — a run produces `findings` and an output, and the Dispatcher renders the check-run. The capability exists so a run can *discover what to act on*, not so it can act on GitHub directly. `GitHubApiError` ([§ Errors](#errors)) is a transient-friendly tagged error: a `403` secondary-rate-limit is retryable on a `Schedule`, a `401` (revoked installation) is not.
+`github` is deliberately **narrow, and read-mostly**. The default posture stays: a run produces `findings` and an output, and the Dispatcher renders the check-run — the capability exists primarily so a run can *discover what to act on*. The two writes above are deliberate, bounded exceptions: `pullReview` because the read-only check-run summary can't guarantee an always-visible comment, and `openDraftPullRequest` because a "detect → propose a fix" recipe's entire product is a draft PR a human reviews (it never merges, never touches protected refs, and degrades to a logged no-op without App credentials). Anything beyond those stays out. `GitHubApiError` ([§ Errors](#errors)) is a transient-friendly tagged error: a `403` secondary-rate-limit is retryable on a `Schedule`, a `401` (revoked installation) is not.
+
+### `cloudflare`
+
+> **Status: Live.** [`packages/core/src/services/cloudflare.ts`](../packages/core/src/services/cloudflare.ts) (shapes), [`packages/runtime-cf/src/cloudflare-live.ts`](../packages/runtime-cf/src/cloudflare-live.ts) (live Layer).
+
+The Cloudflare-side twin of the `github` read surface: a **read-only** window into the account so a Schedule-mode run can discover what to act on. Today it surfaces **Pages deployments** — the signal `ci-triage-pr` scans for failed deploys alongside failed Actions runs:
+
+```ts
+namespace cloudflare {
+  declare const deployments: (opts?: {
+    projects?: readonly string[];            // Pages project names (else all)
+    environment?: string;                    // "production" | "preview"
+    status?: string;                         // e.g. "failure"
+    createdWithinHours?: number;
+  }) => Effect.Effect<readonly DeploymentRef[], CloudflareApiError, RunContext>;
+}
+```
+
+Backed by a scoped `CLOUDFLARE_API_TOKEN` Worker Secret (Pages:Read suffices) + the `CLOUDFLARE_ACCOUNT_ID` var; runs never see the token. Absent the secret, the capability **degrades to empty** (a triage sweep finds nothing CF-side) rather than failing the run — a read can afford that; contrast the dying `Config` stub. Deliberately read-only: mutating Cloudflare state stays a `wrangler`/CI concern, never a run's.
 
 ### `oidc`
 
@@ -766,6 +809,10 @@ declare const awsAssumeRole: (opts: {
 A run hands the credentials to whatever AWS SDK it uses; the DSL ships no Bedrock / S3 / KMS adapters. Each call mints a *fresh* OIDC token and a *fresh* STS exchange — credentials are never cached across `awsAssumeRole` calls within a run, because the scope (the session name) and the working window are part of the per-call contract. A run that needs many AWS calls in tight succession passes the same credentials to its SDK and lets the SDK handle the per-request signing.
 
 Federating against a different cloud provider (GCP STS, Azure AD workload identity) follows the same shape; if a second target materialises in a shipped recipe the DSL adds `gcpAccessToken` / `azureAccessToken` primitives on the same `oidc` foundation.
+
+### `isoDate` / `parseList`
+
+Pure, capability-free trivia the Schedule-mode runs share ([`packages/core/src/primitives/scheduling.ts`](../packages/core/src/primitives/scheduling.ts)): `isoDate(ms)` → the UTC `YYYY-MM-DD` used for cron-window dedup keys and dated branch/file names; `parseList(raw)` splits a comma/whitespace-separated `CONFIG_KV` value (repo lists, project lists). They live here — not in a sibling `runs/` helper — so a recipe that is a verbatim copy of its deployed run still resolves the import.
 
 ### Adding a primitive
 

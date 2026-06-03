@@ -19,18 +19,21 @@ CLI; every model call happens in the Worker against a configurable backend.
 | Export | What it does |
 |---|---|
 | `riskTier({ diff })` | Pure heuristic → `"trivial" \| "lite" \| "full"` from diff size + sensitive paths. No model call. |
-| `reviewDomain({ agent, diff, systemPrompt, tier, model, backend, mode })` | One domain reviewer → `ReadonlyArray<Finding>`. `mode: "tools"` sends a `report` tool; `mode: "json"` parses a strict-JSON text response. Requires the `ModelGateway` capability. |
+| `completeStructured({ backend, model, mode, system, userBody, jsonContract, schema, … })` | **The reusable structured-output core** — ask the configured backend for one answer decoded against a caller-supplied `Schema`. Owns the whole tools/json dance: per-mode user framing (tool-call line vs strict-JSON instruction + the compact `jsonContract`), the empty-tool-calls → `json` auto-fallback, `<think>`/fence stripping, and Schema validation. What the `spec-drift-pr` / `ci-triage-pr` runs call directly; `renderUser?` is the full-control escape hatch. |
+| `reviewDomain({ agent, diff, systemPrompt, tier, model, backend, mode })` | One domain reviewer → `ReadonlyArray<Finding>` — a thin `completeStructured` over the `report` tool's `{ findings }` schema. |
 | `coordinate({ findings })` / `coordinateReview(...)` | **PURE, no model call.** Dedup (by `path,startLine,title`) + counts-by-`level` + verdict-by-rule → `CoordinatedReview` (no `tier`). The current run is authoritative — no carry-over. Can never fail. |
 | `stripDiffNoise(diff)` / `capDiff(diff)` | Drops lockfile / minified / generated / vendored file sections from a unified diff, then caps the size. |
 | `extractJsonText(text)` | Strips `<think>…</think>` blocks + code fences and isolates the outermost JSON value — the `json`-mode parsing front-end. |
-| `resolveBackend(getConfig)` | Resolves the active backend profile (model id + mode) from config. **No API key.** |
+| `resolveBackend(getConfig, { namespace? })` | Resolves the active backend profile (model id + mode) from config under a **namespace** (default `pr-review`). **No API key.** |
+| `namespacedKey(ns)` / `backendConfigKey(ns)` / `promptKey(ns)` | The `<ns>.<key>` CONFIG_KV convention in one place — how a recipe derives `spec-drift.repos`, `ci-triage.prompt`, etc. |
 
 `Finding` / `ReviewOutput` are the wire contract shared with the run.
 
-### Request shape (per `reviewDomain` model call)
+### Request shape (per model call)
 
-Only `reviewDomain` calls the model; `coordinate` is pure and makes no request.
-Each call is one `modelGateway.complete(...)`:
+`completeStructured` is the only model-calling surface (`reviewDomain` rides it;
+`coordinate` is pure and makes no request). Each call is one
+`modelGateway.complete(...)`:
 
 ```
 modelGateway.complete({
@@ -61,13 +64,17 @@ Reasoning models (e.g. DeepSeek-R1 distills) return **no** tool calls and emit `
 - **`tools`** (opencode default) — sends the `report` tool, Schema-validates its args. If it returns zero tool calls, the engine **auto-retries once in `json` mode**.
 - **`json`** (reasonix default) — no tools; the model returns a strict JSON object that the engine strips/parses/Schema-decodes. A parse/decode failure raises `StructuredOutputInvalid`.
 
-The mode applies to **`reviewDomain` only**. Coordination is deterministic code — `coordinate` makes no model call, so it has no mode and can never raise `StructuredOutputInvalid`.
+The mode applies to **`completeStructured`** (and so to `reviewDomain` and the recipes built on it). Coordination is deterministic code — `coordinate` makes no model call, so it has no mode and can never raise `StructuredOutputInvalid`.
 
-## Configurable backend — operator contract
+## Configurable backend — operator contract (namespaced)
 
-The active backend is `config.get("pr-review.backend")` → `opencode` (default)
-or `reasonix`. Each is a profile resolved from CONFIG_KV — **no API key, the
-Workers AI binding is the auth**:
+The config contract is **namespaced** so each consumer owns its keys: `pr-review`
+is the default namespace; the `spec-drift-pr` / `ci-triage-pr` runs resolve the
+same machinery under `spec-drift.*` / `ci-triage.*` via
+`resolveBackend(get, { namespace })`. For a namespace `<ns>`, the active backend
+is `config.get("<ns>.backend")` → `opencode` (default) or `reasonix`. Each is a
+profile resolved from CONFIG_KV — **no API key, the Workers AI binding is the
+auth** (shown here for `pr-review`):
 
 | Backend | CONFIG_KV keys |
 |---|---|
