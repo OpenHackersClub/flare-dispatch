@@ -145,6 +145,28 @@ export const attachCdp = (
         }),
     });
 
+    // When CF Access service-token creds are in the env, set them as extra HTTP
+    // headers so the browser can reach a Cloudflare-Access-gated target. The
+    // numu staging Pages site 302s every request to the Access login otherwise,
+    // so the agent would only ever see the login wall. Best-effort.
+    const cfAccessId = process.env["CF_ACCESS_CLIENT_ID"];
+    const cfAccessSecret = process.env["CF_ACCESS_CLIENT_SECRET"];
+    if (cfAccessId !== undefined && cfAccessSecret !== undefined) {
+      yield* Effect.tryPromise({
+        try: () =>
+          page.setExtraHTTPHeaders({
+            "CF-Access-Client-Id": cfAccessId,
+            "CF-Access-Client-Secret": cfAccessSecret,
+          }),
+        catch: (e) =>
+          new CdpAttachFailed({
+            wsEndpoint,
+            reason: "unknown",
+            message: e instanceof Error ? e.message : String(e),
+          }),
+      });
+    }
+
     const session: CdpSession = {
       goto: (url) =>
         wrapCmd("Page.navigate", () =>

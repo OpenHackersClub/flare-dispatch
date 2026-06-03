@@ -13,7 +13,7 @@
 
 import * as Command from "@effect/cli/Command";
 import * as Options from "@effect/cli/Options";
-import { Console, Effect, Layer, Match } from "effect";
+import { Console, Effect, Layer, Match, Option } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { attachCdp, applyViewport } from "./cdp.js";
@@ -86,6 +86,13 @@ const previousOption = Options.text("previous").pipe(
   Options.withDescription("Optional: path to previous run's summary markdown."),
 );
 
+const urlOption = Options.text("url").pipe(
+  Options.withDescription(
+    "Optional: navigate the session to this URL before the stories run, so they start on the app under test rather than about:blank.",
+  ),
+  Options.optional,
+);
+
 // ---------------------------------------------------------------------------
 // `record start`
 
@@ -95,11 +102,21 @@ const recordStart = Command.make(
     cdpWs: cdpWsOption,
     viewport: viewportOption,
     sessionIdOut: sessionIdOutOption,
+    url: urlOption,
   },
-  ({ cdpWs, viewport, sessionIdOut }) =>
+  ({ cdpWs, viewport, sessionIdOut, url }) =>
     Effect.gen(function* () {
       const { session, page } = yield* attachCdp(cdpWs);
       yield* applyViewport(page, viewport as ViewportPreset);
+      // Navigate the PERSISTENT Browser Rendering session to the app under test
+      // before any story plays — `newCDPSession({targetUrl})` does not navigate,
+      // so without this the browser sits on about:blank and the agent has no app
+      // to drive. The page survives this short-lived connect (the platform keeps
+      // the session until `record stop`), so the play loop inherits the loaded
+      // app. CF Access headers are already set in `attachCdp`.
+      if (Option.isSome(url)) {
+        yield* session.goto(url.value);
+      }
       const sessionId = yield* session.sessionId();
       yield* writeFile(sessionIdOut, sessionId);
       // `record start` does NOT disconnect — the WebSocket would close

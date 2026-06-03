@@ -351,7 +351,20 @@ export const productDemo = defineRun({
         ["MODEL_API_KEY", "CF_AI_GATEWAY_TOKEN"],
         { prefix: "product-demo.secret/" },
       );
-      const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };
+      // Optional CF Access service token — when the `deployedUrl` sits behind
+      // Cloudflare Access (the numu staging Pages site 302s to the Access login
+      // otherwise), demo-agent sets these as extra HTTP headers so the browser
+      // gets past the wall. Reuses the same `staging/CF_ACCESS_*` keys that
+      // cdp-acceptance/playwright-demo already use. Absent ⇒ a public target.
+      const cfAccessEnv = yield* loadSecrets(
+        ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
+        { prefix: "staging/" },
+      );
+      const agentEnv = {
+        ...requiredAgentEnv,
+        ...optionalAgentEnv,
+        ...cfAccessEnv,
+      };
 
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No
       //    checkout, no app boot — the site is already live. The dispatcher's
@@ -394,6 +407,9 @@ export const productDemo = defineRun({
             "--cdp-ws", cdpWsUrl,
             "--viewport", viewport,
             "--session-id-out", sessionIdPath,
+            // Navigate the session to the app under test up front (the browser
+            // is on about:blank otherwise — newCDPSession doesn't navigate).
+            "--url", input.deployedUrl,
           ],
           env: agentEnv,
         }),
