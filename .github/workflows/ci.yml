@@ -75,6 +75,12 @@ jobs:
       - name: Fail if action bundle is out of date
         run: git diff --exit-code -- actions/flare-dispatch-action/dist/
 
+      # The `spec-drift-pr` / `ci-triage-pr` recipe mirrors are generated from
+      # their deployed runs by `scripts/sync-recipes.mjs`. Fail if a run was
+      # edited without regenerating its recipe (run `pnpm sync-recipes`).
+      - name: Verify recipe mirrors match their runs
+        run: node scripts/sync-recipes.mjs --check
+
   dispatch-test:
     name: dispatch offload-test
     runs-on: ubuntu-latest

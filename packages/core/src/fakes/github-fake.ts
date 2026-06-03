@@ -10,11 +10,14 @@
 
 import { Effect, Layer } from "effect";
 import {
+  type DraftPullRequestResult,
   Github,
   type GithubService,
+  type OpenDraftPullRequest,
   type PullRequestRef,
   type PullReviewRequest,
   type RepoRef,
+  type WorkflowRunRef,
 } from "../services/github";
 
 export type GithubFakeState = {
@@ -22,6 +25,8 @@ export type GithubFakeState = {
   repositories: RepoRef[];
   /** Seeded PRs — returned by `openPullRequests` (after filtering). */
   pullRequests: PullRequestRef[];
+  /** Seeded workflow runs — returned by `actionRuns` (after filtering). */
+  workflowRuns: WorkflowRunRef[];
   /** Every `repositories` call, in order. */
   readonly repositoriesCalls: Array<{
     includeArchived: boolean;
@@ -33,8 +38,17 @@ export type GithubFakeState = {
     includeDrafts: boolean;
     repos?: readonly string[];
   }>;
+  /** Every `actionRuns` call, in order. */
+  readonly actionRunsCalls: Array<{
+    repos?: readonly string[];
+    createdWithinHours?: number;
+    status?: string;
+    conclusion?: string;
+  }>;
   /** Every `pullReview` call, in order — lets a test assert a comment posted. */
   readonly pullReviewCalls: PullReviewRequest[];
+  /** Every `openDraftPullRequest` call, in order. */
+  readonly openDraftPullRequestCalls: OpenDraftPullRequest[];
 };
 
 /** Default reference clock — fakes use this when callers don't override. */
@@ -44,6 +58,7 @@ export const makeGithubFake = (
   opts: {
     repositories?: readonly RepoRef[];
     pullRequests?: readonly PullRequestRef[];
+    workflowRuns?: readonly WorkflowRunRef[];
     /** Clock used to evaluate `pushedWithinDays` / `updatedWithinHours`. */
     now?: number;
   } = {},
@@ -51,11 +66,17 @@ export const makeGithubFake = (
   const state: GithubFakeState = {
     repositories: [...(opts.repositories ?? [])],
     pullRequests: [...(opts.pullRequests ?? [])],
+    workflowRuns: [...(opts.workflowRuns ?? [])],
     repositoriesCalls: [],
     openPullRequestsCalls: [],
+    actionRunsCalls: [],
     pullReviewCalls: [],
+    openDraftPullRequestCalls: [],
   };
   const now = opts.now ?? DEFAULT_NOW;
+  // Branches the fake has already "opened" a PR for — so a re-run with the same
+  // headBranch reports `created: false`, mirroring the live idempotency.
+  const openedBranches = new Set<string>();
 
   const service: GithubService = {
     repositories: ({ includeArchived = false, pushedWithinDays } = {}) =>
@@ -94,9 +115,46 @@ export const makeGithubFake = (
         });
       }),
 
+    actionRuns: ({ repos, createdWithinHours, status, conclusion } = {}) =>
+      Effect.sync(() => {
+        state.actionRunsCalls.push({
+          repos,
+          createdWithinHours,
+          status,
+          conclusion,
+        });
+        const allow = repos === undefined ? undefined : new Set(repos);
+        return state.workflowRuns.filter((r) => {
+          if (allow !== undefined && !allow.has(r.repo)) return false;
+          if (status !== undefined && r.status !== status) return false;
+          if (conclusion !== undefined && r.conclusion !== conclusion)
+            return false;
+          if (createdWithinHours !== undefined) {
+            const cutoff = now - createdWithinHours * 3_600_000;
+            if (r.createdAt < cutoff) return false;
+          }
+          return true;
+        });
+      }),
+
     pullReview: (req) =>
       Effect.sync(() => {
         state.pullReviewCalls.push(req);
+      }),
+
+    openDraftPullRequest: (req): Effect.Effect<DraftPullRequestResult, never> =>
+      Effect.sync(() => {
+        state.openDraftPullRequestCalls.push(req);
+        const key = `${req.repo}#${req.headBranch}`;
+        const created = !openedBranches.has(key);
+        openedBranches.add(key);
+        // Deterministic fake PR number derived from call order.
+        const number = state.openDraftPullRequestCalls.length;
+        return {
+          number,
+          url: `https://github.com/${req.repo}/pull/${number}`,
+          created,
+        };
       }),
   };
 

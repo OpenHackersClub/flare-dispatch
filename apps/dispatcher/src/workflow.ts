@@ -133,6 +133,34 @@ const resolveChecksConfig = (
 };
 
 /**
+ * Resolve the GitHub App credentials for the `github` capability's read +
+ * content-write surface (`actionRuns`, `openDraftPullRequest`), independent of
+ * any per-dispatch `installation_id`. Schedule-mode runs (`spec-drift`,
+ * `ci-triage`) carry no installation, so they can't ride `resolveChecksConfig`;
+ * the capability resolves the per-repo installation itself. `undefined` when
+ * the App secrets are absent → the write surface is a logged no-op.
+ */
+const resolveGithubAppConfig = (
+  env: Env,
+): { appId: string; privateKeyPem: string } | undefined =>
+  env.GITHUB_APP_ID === undefined || env.GITHUB_APP_PRIVATE_KEY === undefined
+    ? undefined
+    : { appId: env.GITHUB_APP_ID, privateKeyPem: env.GITHUB_APP_PRIVATE_KEY };
+
+/**
+ * Resolve the `Cloudflare` Layer config from `env` — a scoped API token + the
+ * account id. `undefined` when either is absent → `CloudflareDeferred` (the
+ * read-only capability returns empty). Only `ci-triage` touches the Tag.
+ */
+const resolveCloudflareConfig = (
+  env: Env,
+): { apiToken: string; accountId: string } | undefined =>
+  env.CLOUDFLARE_API_TOKEN === undefined ||
+  env.CLOUDFLARE_ACCOUNT_ID === undefined
+    ? undefined
+    : { apiToken: env.CLOUDFLARE_API_TOKEN, accountId: env.CLOUDFLARE_ACCOUNT_ID };
+
+/**
  * Resolve the `Browser` Layer config from `env`, or `undefined` when Browser
  * Rendering is not configured — `undefined` selects the dying `Browser` stub.
  * Only browser runs (`cdp-acceptance`) touch the Tag; others are unaffected.
@@ -229,6 +257,12 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         input,
       },
       checks: resolveChecksConfig(this.env, payload.github),
+      ...(resolveGithubAppConfig(this.env) !== undefined
+        ? { githubApp: resolveGithubAppConfig(this.env) }
+        : {}),
+      ...(resolveCloudflareConfig(this.env) !== undefined
+        ? { cloudflare: resolveCloudflareConfig(this.env) }
+        : {}),
       configKv: this.env.CONFIG_KV,
       browser: resolveBrowserConfig(this.env),
       email: resolveEmailConfig(this.env),

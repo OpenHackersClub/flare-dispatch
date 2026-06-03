@@ -48,6 +48,11 @@ jobs:
   deploy:
     name: wrangler deploy
     runs-on: ubuntu-latest
+    # Bound the deploy so a stalled `wrangler deploy` (e.g. a hung container
+    # image build/registry push) fails fast instead of running to GitHub's 6h
+    # job cap — which, with `cancel-in-progress: false`, blocked the serialized
+    # deploy queue for hours and kept merged fixes off the Dispatcher.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

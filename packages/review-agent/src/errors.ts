@@ -54,8 +54,12 @@ export class StructuredOutputInvalid extends Schema.TaggedError<StructuredOutput
   {
     backend: Schema.String,
     model: Schema.String,
-    /** Which structured surface failed — a domain reviewer or the coordinator. */
-    surface: Schema.Literal("review", "coordinate"),
+    /**
+     * Which structured surface failed — a free-form label for diagnosis. The
+     * `pr-review` engine uses `"review"` / `"coordinate"`; a downstream recipe
+     * passes its own (e.g. `"spec-drift"`, `"ci-triage"`).
+     */
+    surface: Schema.String,
     /** Why the parse/decode failed. */
     reason: Schema.Literal("empty", "not-json", "schema-mismatch"),
     /** A short, truncated excerpt of the raw model text, for diagnosis. */

@@ -12,6 +12,7 @@
 import type { Run, ScheduleSpec, TriggerSpec } from "@flare-dispatch/core";
 import {
   cdpAcceptance,
+  ciTriagePr,
   deploySmoke,
   matrixFanout,
   offloadTest,
@@ -19,6 +20,7 @@ import {
   playwrightE2E,
   prReview,
   productDemo,
+  specDriftPr,
 } from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
@@ -31,6 +33,8 @@ export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [productDemo.name]: productDemo as Run<unknown, unknown>,
   [playwrightDemo.name]: playwrightDemo as Run<unknown, unknown>,
   [prReview.name]: prReview as Run<unknown, unknown>,
+  [specDriftPr.name]: specDriftPr as Run<unknown, unknown>,
+  [ciTriagePr.name]: ciTriagePr as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */
