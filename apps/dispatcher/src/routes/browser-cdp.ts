@@ -172,7 +172,10 @@ export const handleBrowserCdp = async (
   const upstreamUrl = new URL(
     `http://fake.host/v1/devtools/browser/${sessionId}`,
   );
-  if (recording) upstreamUrl.searchParams.set("recording", "true");
+  // NOTE: recording=true must NOT ride on the devtools connect — the binding
+  // 400s it there ("upstream did not return webSocket; status=400", verified
+  // live). Recording is armed at ACQUIRE time only (see acquireSession above);
+  // re-attaches to a recording session need no param.
   const upstreamRes = await env.BROWSER.fetch(upstreamUrl, {
     headers: { Upgrade: "websocket", "cf-brapi-client": CDP_CLIENT_ID },
   });

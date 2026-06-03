@@ -145,12 +145,29 @@ export const fetchRecording = (
 const extractEvents = (body: unknown): readonly unknown[] | null => {
   if (body === null || typeof body !== "object") return null;
   const obj = body as Record<string, unknown>;
-  const direct = obj["events"];
-  if (Array.isArray(direct)) return direct;
+  const fromShape = (events: unknown): readonly unknown[] | null => {
+    if (Array.isArray(events)) return events;
+    // LIVE API shape (verified against the real endpoint): `events` is a MAP
+    // of targetId → rrweb event array — one stream per page/target. Flatten
+    // all targets and order by rrweb `timestamp` so the replay plays as one
+    // continuous timeline.
+    if (events !== null && typeof events === "object") {
+      const flattened = Object.values(events as Record<string, unknown>)
+        .filter(Array.isArray)
+        .flat();
+      return [...flattened].sort((a, b) => {
+        const ta = (a as { timestamp?: number }).timestamp ?? 0;
+        const tb = (b as { timestamp?: number }).timestamp ?? 0;
+        return ta - tb;
+      });
+    }
+    return null;
+  };
+  const direct = fromShape(obj["events"]);
+  if (direct !== null) return direct;
   const result = obj["result"];
   if (result !== null && typeof result === "object") {
-    const events = (result as Record<string, unknown>)["events"];
-    if (Array.isArray(events)) return events;
+    return fromShape((result as Record<string, unknown>)["events"]);
   }
   return null;
 };
