@@ -256,7 +256,14 @@ export const attachCdp = (
       close: () =>
         Effect.tryPromise({
           try: async () => {
-            await page.close().catch(() => undefined);
+            // DISCONNECT ONLY — never `page.close()`. The demo commands
+            // (record start → play → record stop) share ONE pre-acquired
+            // Browser Run session via `?browser_session=<id>` re-attach;
+            // closing the session's only page makes the browser exit, killing
+            // the session, and the NEXT command's attach fails. The page (and
+            // the app state loaded into it) must outlive each short-lived CLI
+            // connect; only `record stop`'s explicit `browser.close()` ends
+            // the session (which is also what finalizes the recording).
             await browser.disconnect();
           },
           catch: () => undefined,
