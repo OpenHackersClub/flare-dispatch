@@ -9,11 +9,13 @@
 #   * CONFIG_KV entries — `loadSecrets` resolves these into the env record
 #     handed to `sandbox.exec`. Set with `wrangler kv key put --binding=CONFIG_KV`.
 #     The agent is provider-agnostic on `@effect/ai`'s LanguageModel Tag over
-#     the OpenAI wire protocol; the choice of provider lives in MODEL_BASE_URL.
+#     the OpenAI wire protocol, always routed through a Cloudflare AI Gateway.
+#     The model endpoint is DERIVED from CLOUDFLARE_ACCOUNT_ID + CF_AI_GATEWAY_ID
+#     (no MODEL_BASE_URL).
 #     Three required + two optional, all namespaced under `product-demo.secret/`:
 #       Required
-#       - product-demo.secret/MODEL_BASE_URL         (AI Gateway `/v1/<acct>/<id>/compat`
-#                                                    endpoint)
+#       - product-demo.secret/CF_AI_GATEWAY_ID       (AI Gateway slug; the agent
+#                                                    builds /v1/<acct>/<slug>/compat)
 #       - product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 #       - product-demo.secret/CLOUDFLARE_API_TOKEN
 #       Optional (independent axes)
@@ -78,7 +80,7 @@ require_secret BROWSER_CDP_API_TOKEN
 
 echo
 echo "CONFIG_KV — transport secrets (product-demo.secret/, required)"
-require_kv_key product-demo.secret/MODEL_BASE_URL
+require_kv_key product-demo.secret/CF_AI_GATEWAY_ID
 require_kv_key product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 require_kv_key product-demo.secret/CLOUDFLARE_API_TOKEN
 

@@ -70,7 +70,7 @@ export class ModelCallFailed extends Schema.TaggedError<ModelCallFailed>()(
   },
 ) {}
 
-/** A required environment variable is missing (e.g. MODEL_BASE_URL). */
+/** A required environment variable is missing (e.g. CF_AI_GATEWAY_ID). */
 export class MissingEnv extends Schema.TaggedError<MissingEnv>()(
   "MissingEnv",
   {

@@ -256,16 +256,16 @@ export const productDemo = defineRun({
       //    container holds NO ambient credentials — every `sandbox.exec` is
       //    explicit about which env vars cross the boundary. The agent's
       //    model transport is provider-agnostic (built on `@effect/ai`'s
-      //    `LanguageModel` Tag over the OpenAI wire protocol), so the same
-      //    three keys point at OpenAI, Anthropic-via-compat, Workers AI,
-      //    Bedrock-via-compat, Ollama, or any AI Gateway URL — the operator
-      //    picks the upstream by what they configure on the gateway.
-      //      * `MODEL_BASE_URL`         — OpenAI-compatible endpoint URL.
-      //        For production use Cloudflare AI Gateway's
+      //    `LanguageModel` Tag over the OpenAI wire protocol) and always routes
+      //    through a Cloudflare AI Gateway; the operator picks the upstream by
+      //    what they configure on the gateway.
+      //      * `CF_AI_GATEWAY_ID`       — the gateway slug. The agent derives
+      //        the endpoint as
       //        `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`
-      //        so upstream credentials stay in gateway BYOK.
-      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
-      //        Rendering session; the recorder REST URL keys off this.
+      //        from this + `CLOUDFLARE_ACCOUNT_ID` (no `MODEL_BASE_URL`).
+      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the gateway AND the
+      //        Browser Rendering session; both the model URL and the recorder
+      //        REST URL key off this.
       //      * `CLOUDFLARE_API_TOKEN`   — same token shape as
       //        `BROWSER_CDP_API_TOKEN` on the Worker. Authorises the
       //        recording REST fetch.
@@ -279,7 +279,7 @@ export const productDemo = defineRun({
       //    All keys live under `product-demo.secret/` so the operator can
       //    namespace them away from feature-flag keys.
       const requiredAgentEnv = yield* loadSecrets(
-        ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        ["CF_AI_GATEWAY_ID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
       const optionalAgentEnv = yield* loadSecrets(
