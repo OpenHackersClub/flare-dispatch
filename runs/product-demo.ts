@@ -601,6 +601,11 @@ export const productDemo = defineRun({
               .upload({
                 name: `replay-${i}.json`,
                 path: replayJsonPath,
+                // `container` is REQUIRED — the runtime reads `path` from THIS
+                // container's filesystem. Omitting it silently fails the upload
+                // (caught below) so the artifact never lands in R2 — the cause
+                // of the empty replay links / "replay is not a valid url".
+                container,
                 contentType: "application/json",
                 signedUrlTTL: "30 days",
               })
@@ -614,6 +619,7 @@ export const productDemo = defineRun({
                     .upload({
                       name: `${story.name}.png`,
                       path: pj.keyScreenshotPath,
+                      container,
                       contentType: "image/png",
                       signedUrlTTL: "30 days",
                     })
@@ -708,6 +714,7 @@ export const productDemo = defineRun({
               artifact.upload({
                 name: "summary.md",
                 path: "/tmp/demo/summary.md",
+                container,
                 contentType: "text/markdown",
                 signedUrlTTL: "30 days",
               }),
