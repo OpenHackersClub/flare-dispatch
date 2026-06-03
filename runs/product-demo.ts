@@ -46,8 +46,73 @@ import {
   artifact,
   config,
   io,
+  ExecFailed,
+  ExecTimeout,
 } from "@flare-dispatch/core";
 import { loadSecrets } from "@flare-dispatch/core/primitives";
+
+// Shell single-quote a value so arbitrary story prose (quotes, URLs, `!`, `$`)
+// survives being embedded in the detached `sh -c` command below.
+const shellQuote = (value: string): string =>
+  `'${value.replace(/'/g, "'\\''")}'`;
+
+/**
+ * Poll a `DONE:<exit>` sentinel file written by a detached process, with the
+ * same transient-`ExecFailed` tolerance as runs/cdp-acceptance.ts: a poll
+ * `cat` whose container connection is killed says nothing about the detached
+ * process (which keeps running), so swallow it and keep polling; only a run of
+ * killed polls (a genuinely dead container) re-surfaces the failure. Uses the
+ * ambient sandbox (product-demo holds no `Container` handle).
+ */
+const pollSentinel = ({
+  sentinel,
+  maxAttempts,
+  pollEverySec = 5,
+  maxConsecutiveExecFailures = 12,
+}: {
+  readonly sentinel: string;
+  readonly maxAttempts: number;
+  readonly pollEverySec?: number;
+  readonly maxConsecutiveExecFailures?: number;
+}) =>
+  Effect.gen(function* () {
+    let consecutive = 0;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const polled = yield* sandbox
+        .exec({ command: `cat ${sentinel} 2>/dev/null || true` })
+        .pipe(
+          Effect.map((r) => Option.some(r.stdout)),
+          Effect.catchTag("ExecFailed", () =>
+            Effect.logWarning(
+              `play-wait: poll exec killed (transient, ${consecutive + 1}/${maxConsecutiveExecFailures}), continuing`,
+            ).pipe(Effect.as(Option.none<string>())),
+          ),
+        );
+      if (Option.isNone(polled)) {
+        consecutive += 1;
+        if (consecutive >= maxConsecutiveExecFailures) {
+          return yield* Effect.fail(
+            new ExecFailed({
+              exitCode: -1,
+              stderrTail: `play-wait: ${maxConsecutiveExecFailures} consecutive poll execs killed — container appears dead`,
+            }),
+          );
+        }
+        yield* Effect.sleep(`${pollEverySec} seconds`);
+        continue;
+      }
+      consecutive = 0;
+      const match = /DONE:(-?\d+)/.exec(polled.value);
+      if (match) return Number(match[1]);
+      yield* Effect.sleep(`${pollEverySec} seconds`);
+    }
+    return yield* Effect.fail(
+      new ExecTimeout({
+        timeoutSec: 0,
+        command: `play-wait: sentinel ${sentinel} never appeared after ${maxAttempts} polls`,
+      }),
+    );
+  });
 
 // A user story is just a name + prose. The agent reads the prose, decides
 // the next browser action, applies it over the live CDP session, captures
@@ -361,25 +426,83 @@ export const productDemo = defineRun({
       //    `screenshotsDir`, and emits one JSON line per story with the
       //    chapter offsets (rrweb timestamps), status, narrative, and the
       //    key-screenshot path. Concurrency 1 — see `limits` above.
-      const playResults = yield* step("play-stories", () =>
-        Effect.forEach(
-          resolvedStories,
-          (story) =>
-            sandbox.exec({
-              command: [
-                "demo-agent", "play",
-                "--cdp-ws", cdpWsUrl,
-                "--name", story.name,
-                "--prose", story.prose,
-                "--screenshots", screenshotsDir,
-                "--max-sec", String(perStorySec),
-                "--model", playModel,
-              ],
-              env: agentEnv,
-              timeoutSec: perStorySec + 30,
-            }),
-          { concurrency: 1 },
-        ),
+      // Each `demo-agent play` is a MULTI-MINUTE run (the model drives the
+      // browser action-by-action). A blocking `sandbox.exec` held that long has
+      // its container connection killed by the CF Sandbox (~10-20s) and fails
+      // `ExecFailed` before the story finishes — so launch DETACHED and poll a
+      // sentinel, exactly like runs/cdp-acceptance.ts's test command. stdout
+      // (the result JSON) + stderr go to per-story files that survive the
+      // detach; stderr is collected for debugging via `upload-play-logs` below.
+      const playResults = yield* step(
+        "play-stories",
+        () =>
+          Effect.forEach(
+            resolvedStories,
+            (story, i) =>
+              Effect.gen(function* () {
+                const outPath = `/tmp/demo/play-${i}.out`;
+                const errPath = `/tmp/demo/play-${i}.err`;
+                const donePath = `/tmp/demo/play-${i}.done`;
+                const playCmd = [
+                  "demo-agent",
+                  "play",
+                  "--cdp-ws",
+                  shellQuote(cdpWsUrl),
+                  "--name",
+                  shellQuote(story.name),
+                  "--prose",
+                  shellQuote(story.prose),
+                  "--screenshots",
+                  shellQuote(screenshotsDir),
+                  "--max-sec",
+                  String(perStorySec),
+                  "--model",
+                  shellQuote(playModel),
+                ].join(" ");
+                yield* sandbox.runDetached({
+                  env: agentEnv,
+                  command: `( ${playCmd} > ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${donePath}`,
+                });
+                const exitCode = yield* pollSentinel({
+                  sentinel: donePath,
+                  maxAttempts: Math.ceil((perStorySec + 60) / 5),
+                });
+                const read = (path: string) =>
+                  sandbox
+                    .exec({ command: `cat ${path} 2>/dev/null || true` })
+                    .pipe(Effect.map((r) => r.stdout));
+                const stdout = yield* read(outPath);
+                const stderr = yield* read(errPath);
+                if (exitCode !== 0 || stdout.trim() === "") {
+                  yield* io.log(
+                    "warn",
+                    `play '${story.name}' exit=${exitCode} stderrTail=${stderr.slice(-800)}`,
+                  );
+                }
+                return { stdout, stderr, exitCode };
+              }),
+            { concurrency: 1 },
+          ),
+        { retries: 0 },
+      );
+
+      // Collect every story's stderr into one signed-R2 artifact so a failed
+      // play is debuggable from the check-run (the per-exec stderr is otherwise
+      // lost when a run fails). Best-effort — never masks the verdict.
+      yield* step("upload-play-logs", () =>
+        Effect.gen(function* () {
+          yield* sandbox.exec({
+            command: `cat /tmp/demo/play-*.err > /tmp/demo/play-stderr.log 2>/dev/null || true`,
+          });
+          return yield* artifact
+            .upload({
+              name: "play-stderr.log",
+              path: "/tmp/demo/play-stderr.log",
+              contentType: "text/plain",
+              signedUrlTTL: "30 days",
+            })
+            .pipe(Effect.catchAll(() => Effect.succeed("")));
+        }),
       );
 
       // 4. Close the CDP session and pull the recording. Browser Run only
