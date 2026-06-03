@@ -17,6 +17,14 @@ export type Page = {
 /** A direct CDP attach: typed Network / Page / Runtime event streams. */
 export type CDPSession = {
   readonly wsEndpoint: string;
+  /**
+   * The Browser Rendering session id — the key the Session Recording REST API
+   * (`GET /accounts/<id>/browser-rendering/recording/<sessionId>`) is fetched
+   * by. Present only when the session was pre-acquired with `recording: true`;
+   * the plain connect path mints its session lazily inside the WS handshake,
+   * where no caller can observe the id.
+   */
+  readonly sessionId?: string;
   readonly close: Effect.Effect<void>;
 };
 
@@ -26,6 +34,13 @@ export interface BrowserService {
   }) => Effect.Effect<Page, BrowserUnavailable>;
   readonly newCDPSession: (opts: {
     targetUrl: string;
+    /**
+     * Opt this session into Browser Run Session Recording (rrweb, Beta). The
+     * live Layer pre-acquires the session (`?acquire=1&recording=true` against
+     * the dispatcher's cdp route) so the REAL session id is known up front,
+     * and returns a `?browser_session=<id>` re-attach endpoint.
+     */
+    recording?: boolean;
   }) => Effect.Effect<CDPSession, BrowserUnavailable>;
 }
 
@@ -37,6 +52,6 @@ export class Browser extends Context.Tag("@flare-dispatch/core/Browser")<
 export const browser = {
   newPage: (opts?: { viewport?: { w: number; h: number } }) =>
     Effect.flatMap(Browser, (b) => b.newPage(opts)),
-  newCDPSession: (opts: { targetUrl: string }) =>
+  newCDPSession: (opts: { targetUrl: string; recording?: boolean }) =>
     Effect.flatMap(Browser, (b) => b.newCDPSession(opts)),
 } as const;

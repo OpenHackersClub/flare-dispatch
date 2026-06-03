@@ -473,14 +473,26 @@ export const productDemo = defineRun({
           const errPath = `/tmp/demo/play-${i}.err`;
           const sentinelPath = `/tmp/demo/play-${i}.done`;
 
-          // attach — this story's OWN recording session.
-          const cdpWsUrl = yield* step(`attach-cdp-${i}`, () =>
+          // attach — this story's OWN session, pre-acquired with Session
+          // Recording armed (Browser Run rrweb, Beta). The pre-acquire gives us
+          // the REAL session id (the key the recording REST API is fetched by)
+          // + a `?browser_session=<id>` re-attach endpoint every demo-agent
+          // exec below dials.
+          const attached = yield* step(`attach-cdp-${i}`, () =>
             browser
-              .newCDPSession({ targetUrl: input.deployedUrl })
-              .pipe(Effect.map((session) => session.wsEndpoint)),
+              .newCDPSession({ targetUrl: input.deployedUrl, recording: true })
+              .pipe(
+                Effect.map((session) => ({
+                  wsEndpoint: session.wsEndpoint,
+                  sessionId: session.sessionId ?? "",
+                })),
+              ),
           );
+          const cdpWsUrl = attached.wsEndpoint;
 
-          // record-start — navigate to the app + capture this session's id.
+          // record-start — navigate to the app + persist the REAL session id
+          // (passed through; the CDP-derived fallback is not recognised by the
+          // recording REST API).
           yield* step(`record-start-${i}`, () =>
             sandbox.exec({
               container,
@@ -490,6 +502,9 @@ export const productDemo = defineRun({
                 "--viewport", viewport,
                 "--session-id-out", sessionIdPath,
                 "--url", input.deployedUrl,
+                ...(attached.sessionId !== ""
+                  ? ["--session-id", attached.sessionId]
+                  : []),
               ],
               env: agentEnv,
             }),

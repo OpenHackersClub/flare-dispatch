@@ -93,6 +93,13 @@ const urlOption = Options.text("url").pipe(
   Options.optional,
 );
 
+const explicitSessionIdOption = Options.text("session-id").pipe(
+  Options.withDescription(
+    "Optional: the REAL Browser Run session id (from the dispatcher's recording pre-acquire). When given, `record start` writes it verbatim and `record stop` fetches the recording by it — the CDP-derived fallback id is NOT recognised by the Session Recording REST API.",
+  ),
+  Options.optional,
+);
+
 // ---------------------------------------------------------------------------
 // `record start`
 
@@ -103,8 +110,9 @@ const recordStart = Command.make(
     viewport: viewportOption,
     sessionIdOut: sessionIdOutOption,
     url: urlOption,
+    sessionId: explicitSessionIdOption,
   },
-  ({ cdpWs, viewport, sessionIdOut, url }) =>
+  ({ cdpWs, viewport, sessionIdOut, url, sessionId: sessionIdOpt }) =>
     Effect.gen(function* () {
       const { session, page } = yield* attachCdp(cdpWs);
       yield* applyViewport(page, viewport as ViewportPreset);
@@ -117,7 +125,14 @@ const recordStart = Command.make(
       if (Option.isSome(url)) {
         yield* session.goto(url.value);
       }
-      const sessionId = yield* session.sessionId();
+      // Prefer the REAL Browser Run session id (the dispatcher's recording
+      // pre-acquire passes it via --session-id) — it is the key the Session
+      // Recording REST API is fetched by. The CDP-derived fallback is a legacy
+      // guess the recording API does NOT recognise.
+      const sessionId = yield* Option.match(sessionIdOpt, {
+        onNone: () => session.sessionId(),
+        onSome: (v) => Effect.succeed(v),
+      });
       yield* writeFile(sessionIdOut, sessionId);
       // `record start` does NOT disconnect — the WebSocket would close
       // server-side and finalize the recording prematurely. The platform
@@ -140,16 +155,26 @@ const recordStop = Command.make(
     sessionIdIn: sessionIdInOption,
     out: outOption,
   },
-  ({ cdpWs: _cdpWs, sessionIdIn, out }) =>
+  ({ cdpWs, sessionIdIn, out }) =>
     Effect.gen(function* () {
-      // The agent's role here is NOT to close the browser — `attachCdp` opens
-      // a *fresh* connection from this short-lived CLI invocation; closing
-      // it would not affect the underlying Browser Rendering session that
-      // the play loop already finished using. Browser Rendering finalizes
-      // the recording on its own session-idle timer once the play step
-      // returns. We just need to fetch.
       const sessionId = yield* readFile(sessionIdIn).pipe(
         Effect.map((s) => s.trim()),
+      );
+      // CLOSE the Browser Run session first — recordings only finalize after
+      // the session closes ("After a session closes, its recording is
+      // available"), and the session's keep_alive idle timer (minutes) far
+      // outlives the fetch's ~12s retry budget. Re-attach over the same
+      // `?browser_session=<id>` endpoint and send a real `Browser.close`
+      // (puppeteer `browser.close()`); best-effort — if the session is
+      // already gone the fetch may still succeed.
+      yield* attachCdp(cdpWs).pipe(
+        Effect.flatMap(({ browser }) =>
+          Effect.tryPromise({
+            try: () => browser.close(),
+            catch: (e) => e,
+          }),
+        ),
+        Effect.catchAll(() => Effect.void),
       );
       const cfg = yield* recordingConfigFromEnv(process.env);
       const events = yield* fetchRecording(sessionId, cfg);
