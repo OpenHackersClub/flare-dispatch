@@ -269,18 +269,23 @@ export const productDemo = defineRun({
       //      * `CLOUDFLARE_API_TOKEN`   — same token shape as
       //        `BROWSER_CDP_API_TOKEN` on the Worker. Authorises the
       //        recording REST fetch.
-      //      * `MODEL_API_KEY` (optional) — set when the operator's chosen
-      //        endpoint requires a direct credential (going around BYOK).
-      //        Empty / unset is fine for the BYOK-via-gateway path.
+      //      * `MODEL_API_KEY` (optional) — UPSTREAM provider key, sent as
+      //        `Authorization: Bearer`. Set only to go around BYOK; empty /
+      //        unset is fine for the BYOK-via-gateway path.
+      //      * `CF_AI_GATEWAY_TOKEN` (optional) — the gateway's OWN auth
+      //        ("Authenticated Gateway"), sent as `cf-aig-authorization`.
+      //        Orthogonal to `MODEL_API_KEY`; set only when the gateway is
+      //        locked down.
       //    All keys live under `product-demo.secret/` so the operator can
       //    namespace them away from feature-flag keys.
       const requiredAgentEnv = yield* loadSecrets(
         ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
-      const optionalAgentEnv = yield* loadSecrets(["MODEL_API_KEY"], {
-        prefix: "product-demo.secret/",
-      });
+      const optionalAgentEnv = yield* loadSecrets(
+        ["MODEL_API_KEY", "CF_AI_GATEWAY_TOKEN"],
+        { prefix: "product-demo.secret/" },
+      );
       const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };
 
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No

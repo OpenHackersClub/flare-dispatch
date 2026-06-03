@@ -30,8 +30,8 @@
 
 import { LanguageModel, Tool, Toolkit } from "@effect/ai";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import { FetchHttpClient } from "@effect/platform";
-import { Config, Effect, Layer, Match, Option, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "@effect/platform";
+import { Config, Effect, Layer, Match, Option, Redacted, Schema } from "effect";
 import { MissingEnv, ModelCallFailed } from "./errors.js";
 import {
   type ModelAction,
@@ -162,32 +162,63 @@ const ActionToolkitHandlersLayer = ActionToolkit.toLayer({
 // Provider Layer — operator-pinned via env.
 
 /**
- * Layer providing `LanguageModel` backed by an OpenAI-compatible endpoint.
- * `MODEL_BASE_URL` defaults to OpenAI's public API; in production an
- * operator points it at Cloudflare AI Gateway's `/v1/<account>/<gateway>/compat`
- * or any other compatible endpoint (Workers AI, Anthropic-via-compat, Ollama,
- * vLLM, …). The wire protocol is `/v1/chat/completions`; the provider behind
- * it is the operator's choice.
+ * Layer providing `LanguageModel` over the OpenAI wire protocol, pointed at a
+ * Cloudflare AI Gateway by `MODEL_BASE_URL`
+ * (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`). The
+ * gateway fans out to the upstream provider (OpenAI, Workers AI,
+ * Anthropic-via-compat, Bedrock, …) so this code stays provider-agnostic — the
+ * upstream is a gateway/CONFIG_KV concern, not a code edit.
+ *
+ * Three orthogonal credentials, each on its own axis:
+ *   - `MODEL_BASE_URL`        — the gateway `/compat` endpoint (required).
+ *   - `MODEL_API_KEY`         — the UPSTREAM provider key, sent as
+ *                               `Authorization: Bearer`. Optional: leave unset
+ *                               under BYOK (the gateway holds the upstream key).
+ *   - `CF_AI_GATEWAY_TOKEN`   — the gateway's OWN auth (Cloudflare "Authenticated
+ *                               Gateway"), sent as `cf-aig-authorization: Bearer`.
+ *                               Optional: set only when the gateway is locked
+ *                               down. NOT the same thing as `MODEL_API_KEY` —
+ *                               it gates access *to* the gateway, orthogonal to
+ *                               the upstream `Authorization` header.
  */
 export const makeLanguageModelLayer = (
   modelName: string,
 ): Layer.Layer<LanguageModel.LanguageModel, never, never> => {
-  const clientLayer = OpenAiClient.layerConfig({
-    apiKey: Config.redacted("MODEL_API_KEY").pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ),
-    apiUrl: Config.string("MODEL_BASE_URL").pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ),
-  }).pipe(Layer.provide(FetchHttpClient.layer));
+  // The gateway-auth header is keyed off a redacted Config value, so the client
+  // is built inside an Effect (`unwrapEffect`) rather than `layerConfig` — the
+  // latter can't thread a Config-derived value into `transformClient`.
+  const clientLayer = Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const apiKey = yield* Config.redacted("MODEL_API_KEY").pipe(Config.option);
+      const apiUrl = yield* Config.string("MODEL_BASE_URL").pipe(Config.option);
+      const aigToken = yield* Config.redacted("CF_AI_GATEWAY_TOKEN").pipe(
+        Config.option,
+      );
+
+      return OpenAiClient.layer({
+        apiKey: Option.getOrUndefined(apiKey),
+        apiUrl: Option.getOrUndefined(apiUrl),
+        // Authenticated Gateway: inject `cf-aig-authorization` on every request
+        // when the token is present; otherwise pass the client through untouched.
+        transformClient: Option.match(aigToken, {
+          onNone: () => undefined,
+          onSome: (token) => (client: HttpClient.HttpClient) =>
+            HttpClient.mapRequest(
+              client,
+              HttpClientRequest.setHeader(
+                "cf-aig-authorization",
+                `Bearer ${Redacted.value(token)}`,
+              ),
+            ),
+        }),
+      });
+    }),
+  ).pipe(Layer.provide(FetchHttpClient.layer));
 
   const languageModelLayer = OpenAiLanguageModel.layer({ model: modelName });
 
-  // `layerConfig` carries a `ConfigError` channel — orDie collapses it; a
-  // missing MODEL_API_KEY / MODEL_BASE_URL would surface as a runtime defect,
-  // which is the right shape for a misconfigured deploy (fail fast, loudly).
+  // A misconfigured deploy (no `MODEL_BASE_URL`) surfaces as a runtime defect
+  // via `orDie` — fail fast, loudly — rather than a typed error nobody handles.
   return Layer.provide(languageModelLayer, clientLayer).pipe(Layer.orDie);
 };
 

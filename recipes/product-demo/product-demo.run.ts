@@ -193,15 +193,19 @@ export const productDemo = defineRun({
       //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
       //        Rendering session.
       //      * `CLOUDFLARE_API_TOKEN`   — recording REST fetch auth.
-      //      * `MODEL_API_KEY` (optional) — direct credential when not using
-      //        gateway BYOK.
+      //      * `MODEL_API_KEY` (optional) — upstream provider key
+      //        (`Authorization: Bearer`); unset under gateway BYOK.
+      //      * `CF_AI_GATEWAY_TOKEN` (optional) — the gateway's own auth
+      //        (`cf-aig-authorization`), for an Authenticated Gateway.
+      //        Orthogonal to `MODEL_API_KEY`.
       const requiredAgentEnv = yield* loadSecrets(
         ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
-      const optionalAgentEnv = yield* loadSecrets(["MODEL_API_KEY"], {
-        prefix: "product-demo.secret/",
-      });
+      const optionalAgentEnv = yield* loadSecrets(
+        ["MODEL_API_KEY", "CF_AI_GATEWAY_TOKEN"],
+        { prefix: "product-demo.secret/" },
+      );
       const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };
 
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No

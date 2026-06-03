@@ -77,7 +77,9 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 2. Add `product-demo.run.ts` to your repo's `runs/` directory.
 3. Copy `ci.yml` into `.github/workflows/`. Set `vars.PREVIEW_URL` (or adjust the inline URL convention) so the `pull_request` trigger knows where to drive the demo.
 4. **Bake the `demo-agent` binary into your sandbox image.** Open [`Dockerfile.example`](Dockerfile.example) — it's a two-stage layer pair (build `demo-agent` from a pinned `flare-dispatch` ref, copy the bundle into a stock `cloudflare/sandbox` runtime). Paste the two stages into your own `Dockerfile.sandbox` (the one referenced by `wrangler.jsonc` `containers[].image`); `wrangler deploy` does the rest. No registry credentials, no `flare-dispatch-demo` pull — your sandbox image IS the integration. Pin `FD_REF` to a tag for reproducible builds.
-5. **Pick a model provider.** The agent talks to any OpenAI-compatible endpoint via `@effect/ai`'s provider-agnostic `LanguageModel`; the operator picks the upstream by what they put in `MODEL_BASE_URL`. Recommended: a Cloudflare AI Gateway with BYOK so the container never holds an upstream key. Other valid targets — OpenAI directly, Workers AI's OpenAI-compatible endpoint, an Anthropic-via-compat gateway, Bedrock-via-compat, Ollama or vLLM for self-hosted models.
+5. **Point at a Cloudflare AI Gateway.** The agent speaks the OpenAI wire protocol via `@effect/ai`'s provider-agnostic `LanguageModel`; `MODEL_BASE_URL` is the gateway's `/v1/<account>/<gateway>/compat` endpoint, and the gateway fans out to the upstream provider (OpenAI, Workers AI, Anthropic-via-compat, Bedrock, …). Run the gateway in **BYOK** mode so the container never holds an upstream key — the gateway holds it. Two optional auth knobs layer on top, each on its own axis:
+   - `MODEL_API_KEY` — the **upstream provider** key (`Authorization: Bearer`). Leave unset under BYOK; set it only to bypass BYOK with a direct provider credential.
+   - `CF_AI_GATEWAY_TOKEN` — the **gateway's own** auth token (`cf-aig-authorization: Bearer`), for a gateway with [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/) turned on. Orthogonal to `MODEL_API_KEY` — it gates access *to* the gateway, not to the upstream.
 6. **Configure the run's runtime credentials.** Two Worker Secrets + a small set of `CONFIG_KV` entries (the agent reads zero ambient env vars; every credential flows in through `loadSecrets`):
 
    ```sh
@@ -86,10 +88,13 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
    wrangler secret put BROWSER_CDP_API_TOKEN      # Cloudflare API token, Browser Rendering edit
 
    # CONFIG_KV transport secrets — read by `loadSecrets`, passed as env to every demo-agent exec.
-   # MODEL_BASE_URL is required; MODEL_API_KEY only if your endpoint needs a
-   # direct credential (AI Gateway BYOK = leave unset).
+   # MODEL_BASE_URL (the AI Gateway /compat endpoint) is required. The two model
+   # auth knobs are optional and independent: MODEL_API_KEY = upstream provider
+   # key (Authorization), unset under BYOK; CF_AI_GATEWAY_TOKEN = the gateway's
+   # own auth (cf-aig-authorization), set only for an Authenticated Gateway.
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_BASE_URL        https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat
-   wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_API_KEY         <optional: direct provider key when not using BYOK>
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/MODEL_API_KEY         <optional: upstream provider key; unset under gateway BYOK>
+   wrangler kv key put --binding=CONFIG_KV product-demo.secret/CF_AI_GATEWAY_TOKEN   <optional: gateway auth token; set only for an Authenticated Gateway>
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_ACCOUNT_ID <account-id>
    wrangler kv key put --binding=CONFIG_KV product-demo.secret/CLOUDFLARE_API_TOKEN  <token-with-browser-rendering-read>
 
