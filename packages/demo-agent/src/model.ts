@@ -626,11 +626,24 @@ navigates away from the app and breaks the demo. Use \`nav\` ONLY for an absolut
 URL the story TEXT literally spells out (e.g. a store-listing link to paste).
 
 Rules:
-- Prefer accessibility-tree node references (role + name) over CSS selectors.
+- TARGETS ARE NAMES, NOT SELECTORS. For click/type, the \`target\` MUST be the
+  element's VISIBLE LABEL or accessible name EXACTLY as it appears in the
+  accessibility snapshot — e.g. a button's text ("Add game"), a link's name, or
+  a text field's label/placeholder ("Paste a store URL"). NEVER emit a CSS
+  selector, tag, or attribute query as the target: \`input[type=url]\`,
+  \`.btn\`, \`#submit\`, \`textarea[placeholder*=store]\` WILL NOT MATCH and waste
+  an action. If you must target a text input, use the name/label shown for the
+  textbox node in the snapshot.
+- Only operate on elements that ACTUALLY APPEAR in the current snapshot. If the
+  thing the story asks for (a nav item, a field) is NOT in the snapshot, it does
+  not exist on this page — do not guess names; navigate using a label that IS
+  present, or call \`done\` status=failed explaining what was missing.
 - Emit ONE \`screenshot\` per story, at the moment that best captures the
   outcome.
-- Stop ASAP. Call \`done\` as soon as the story's success condition is
-  observable in the snapshot.
+- Stop ASAP. The MOMENT the story's success condition is visible in the
+  snapshot, call \`done\` with status=passed — do not take extra confirming
+  actions. Lingering past the success state wastes the action budget and is a
+  common cause of "never signalled done".
 - If the page is broken (500 error, locked-out account, unreachable element),
   call \`done\` with status=failed and a narrative explaining why.
 - Respect the time budget; if \`secsRemaining < 30\`, wrap up.`;
