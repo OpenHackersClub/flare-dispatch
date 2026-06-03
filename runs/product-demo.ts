@@ -476,6 +476,10 @@ export const productDemo = defineRun({
                   String(perStorySec),
                   "--model",
                   shellQuote(playModel),
+                  // Navigate to the app if the page is still blank (the first
+                  // story, or if record-start's navigation didn't carry over).
+                  "--url",
+                  shellQuote(input.deployedUrl),
                 ].join(" ");
                 // Hard `timeout` wrapper GUARANTEES the sentinel is written by
                 // ~perStorySec+30 even if `demo-agent play` hangs on something

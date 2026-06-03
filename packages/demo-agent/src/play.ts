@@ -34,6 +34,13 @@ export type PlayInput = {
   readonly maxActions?: number;
   /** Wall-clock at session attach time — chapter offsets ride off this. */
   readonly attachedAtMs: number;
+  /**
+   * The app-under-test URL. If the page is still on `about:blank` when the
+   * story starts (the first story, or a session that didn't carry navigation
+   * across the connect boundary), the loop navigates here ONCE so the agent
+   * has the real app to drive instead of a blank page.
+   */
+  readonly startUrl?: string;
 };
 
 export type PlayDeps = {
@@ -47,7 +54,7 @@ export type PlayDeps = {
   readonly now?: () => number;
 };
 
-const MAX_ACTIONS_DEFAULT = 20;
+const MAX_ACTIONS_DEFAULT = 40;
 const FINAL_KEY_SCREENSHOT_FALLBACK = "final.png";
 
 /**
@@ -69,6 +76,16 @@ export const runPlayLoop = (
     const deadlineMs = startMs + input.maxSec * 1_000;
 
     yield* ensureDir(input.screenshotsDir);
+
+    // If the page is still blank (first story, or navigation didn't carry
+    // across the connect boundary), load the app under test ONCE — otherwise
+    // the agent drives about:blank and has nothing to do.
+    if (input.startUrl !== undefined) {
+      const url = yield* deps.session.currentUrl();
+      if (url === "about:blank" || url === "" || url === "chrome://newtab/") {
+        yield* deps.session.goto(input.startUrl).pipe(Effect.ignore);
+      }
+    }
 
     const history: string[] = [];
     let keyScreenshotPath: string | undefined;

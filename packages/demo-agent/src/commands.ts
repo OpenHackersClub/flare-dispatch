@@ -177,8 +177,9 @@ const playCommand = Command.make(
     screenshots: screenshotsOption,
     maxSec: maxSecOption,
     model: modelOption,
+    url: urlOption,
   },
-  ({ cdpWs, name, prose, screenshots, maxSec, model }) =>
+  ({ cdpWs, name, prose, screenshots, maxSec, model, url }) =>
     Effect.gen(function* () {
       const attachedAtMs = Date.now();
       const attached = yield* attachCdp(cdpWs);
@@ -189,6 +190,7 @@ const playCommand = Command.make(
           screenshotsDir: screenshots,
           maxSec,
           attachedAtMs,
+          startUrl: Option.getOrUndefined(url),
         },
         { session: attached.session },
       ).pipe(Effect.provide(makeLanguageModelLayer(model)));

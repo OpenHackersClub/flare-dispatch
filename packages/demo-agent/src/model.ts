@@ -619,6 +619,12 @@ of actions you have already applied. Pick ONE next action by calling exactly
 one of the registered tools (click | type | nav | key | wait | screenshot |
 done). Do NOT respond with prose — the tool call IS the action.
 
+THE TARGET APP IS ALREADY LOADED in the browser — the accessibility snapshot you
+see IS the app under test. Operate it directly with click/type/key. Do NOT
+\`nav\` to a homepage or guess a URL (e.g. never invent "app.example.com") — that
+navigates away from the app and breaks the demo. Use \`nav\` ONLY for an absolute
+URL the story TEXT literally spells out (e.g. a store-listing link to paste).
+
 Rules:
 - Prefer accessibility-tree node references (role + name) over CSS selectors.
 - Emit ONE \`screenshot\` per story, at the moment that best captures the

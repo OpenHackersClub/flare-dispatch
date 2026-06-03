@@ -25,6 +25,8 @@ import { VIEWPORTS, type ViewportPreset } from "./schemas.js";
 export interface CdpSession {
   /** Navigate the active page; resolves when the navigation commits. */
   readonly goto: (url: string) => Effect.Effect<void, CdpCommandFailed>;
+  /** The page's current URL (puppeteer `page.url()`). */
+  readonly currentUrl: () => Effect.Effect<string, never>;
   /** Click an element by accessibility node id or CSS selector. */
   readonly click: (target: string) => Effect.Effect<void, CdpCommandFailed>;
   /** Focus an element and type a string into it. */
@@ -167,17 +169,50 @@ export const attachCdp = (
       });
     }
 
+    // Resolve an agent-supplied target to an element. The agent reads the
+    // ACCESSIBILITY tree, so it usually supplies an accessible name ("Home",
+    // "Sign in") — not a CSS selector. Try puppeteer's ARIA selector first (by
+    // accessible name/role), then a raw CSS selector, then visible text. This is
+    // what lets the agent operate a real app it has only ever seen as an a11y
+    // tree, instead of failing every `page.click("Home")` as a bad CSS selector.
+    const resolveElement = async (target: string) => {
+      for (const sel of [`::-p-aria(${target})`, target, `::-p-text(${target})`]) {
+        try {
+          const el = await page.$(sel);
+          if (el !== null) return el;
+        } catch {
+          // selector invalid for this strategy — fall through to the next.
+        }
+      }
+      return null;
+    };
+
     const session: CdpSession = {
       goto: (url) =>
         wrapCmd("Page.navigate", () =>
           page.goto(url, { waitUntil: "domcontentloaded" }).then(() => undefined),
         ),
+      currentUrl: () => Effect.sync(() => page.url()),
       click: (target) =>
-        wrapCmd("Input.click", () => page.click(target).then(() => undefined)),
+        wrapCmd("Input.click", async () => {
+          const el = await resolveElement(target);
+          if (el === null) {
+            throw new Error(
+              `no element matching "${target}" (tried accessible-name, CSS, and text)`,
+            );
+          }
+          await el.click();
+        }),
       type: (target, text) =>
         wrapCmd("Input.type", async () => {
-          await page.focus(target);
-          await page.type(target, text);
+          const el = await resolveElement(target);
+          if (el === null) {
+            throw new Error(
+              `no element matching "${target}" (tried accessible-name, CSS, and text)`,
+            );
+          }
+          await el.focus();
+          await el.type(text);
         }),
       key: (key) =>
         wrapCmd("Input.keyboard", () => page.keyboard.press(key as never)),
