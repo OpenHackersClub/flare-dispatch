@@ -46,6 +46,7 @@ export {
   BACKEND_KEYS,
   type BackendKeyDescriptor,
   namespacedKeys,
+  namespacedKey,
   backendConfigKey,
   promptKey,
   type ResolvedBackend,

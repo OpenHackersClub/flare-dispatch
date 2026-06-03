@@ -25,11 +25,8 @@
 // Spec: specs/04-gha-integration.md § Check-runs callback, specs/pm/plan.md
 // § PR6 / § 6 (token-cache eviction risk).
 
-import { GithubApiError } from "./errors";
+import { assertOk, ghHeaders, resolveClient } from "./http";
 import { signAppJwt } from "./jwt";
-
-/** GitHub's API host — overridable for tests / GitHub Enterprise. */
-const DEFAULT_API_BASE = "https://api.github.com";
 
 /** Treat a token as expired this many ms before its real expiry. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -92,8 +89,7 @@ export const getInstallationToken = async (
     }
   }
 
-  const apiBase = opts.apiBase ?? DEFAULT_API_BASE;
-  const doFetch = opts.fetchImpl ?? fetch;
+  const { apiBase, doFetch } = resolveClient(opts);
 
   const jwt = await signAppJwt({
     appId: opts.appId,
@@ -103,21 +99,10 @@ export const getInstallationToken = async (
   const url = `${apiBase}/app/installations/${key}/access_tokens`;
   const res = await doFetch(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "flare-dispatch",
-    },
+    headers: ghHeaders(jwt),
   });
 
-  if (!res.ok) {
-    throw new GithubApiError(
-      `installation-token exchange failed`,
-      res.status,
-      await res.text().catch(() => ""),
-    );
-  }
+  await assertOk(res, "installation-token exchange failed");
 
   const body = (await res.json()) as AccessTokenResponse;
   const expiresMs = Date.parse(body.expires_at);
@@ -166,8 +151,7 @@ export const resolveRepoInstallationId = async (
   const cached = repoInstallationCache.get(opts.repo);
   if (cached !== undefined) return cached;
 
-  const apiBase = opts.apiBase ?? DEFAULT_API_BASE;
-  const doFetch = opts.fetchImpl ?? fetch;
+  const { apiBase, doFetch } = resolveClient(opts);
 
   const jwt = await signAppJwt({
     appId: opts.appId,
@@ -177,21 +161,10 @@ export const resolveRepoInstallationId = async (
   const url = `${apiBase}/repos/${opts.repo}/installation`;
   const res = await doFetch(url, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "flare-dispatch",
-    },
+    headers: ghHeaders(jwt),
   });
 
-  if (!res.ok) {
-    throw new GithubApiError(
-      `repo installation lookup failed for ${opts.repo}`,
-      res.status,
-      await res.text().catch(() => ""),
-    );
-  }
+  await assertOk(res, `repo installation lookup failed for ${opts.repo}`);
 
   const body = (await res.json()) as { readonly id: number };
   repoInstallationCache.set(opts.repo, body.id);

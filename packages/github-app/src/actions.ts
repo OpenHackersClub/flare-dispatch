@@ -9,26 +9,13 @@
 // plain `async`; the Effect Layer (`makeGithubLive` in @flare-dispatch/runtime-cf)
 // wraps it.
 
-import { GithubApiError } from "./errors";
-
-/** GitHub's API host — overridable for tests / GitHub Enterprise. */
-const DEFAULT_API_BASE = "https://api.github.com";
-
-/** Split an `"owner/repo"` slug; throws on a malformed slug. */
-const splitRepo = (repo: string): { owner: string; name: string } => {
-  const slash = repo.indexOf("/");
-  if (slash <= 0 || slash === repo.length - 1) {
-    throw new GithubApiError(`malformed repo slug "${repo}"`, 0, "");
-  }
-  return { owner: repo.slice(0, slash), name: repo.slice(slash + 1) };
-};
-
-const headers = (token: string): HeadersInit => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "X-GitHub-Api-Version": "2022-11-28",
-  "User-Agent": "flare-dispatch",
-});
+import {
+  assertOk,
+  DEFAULT_API_BASE,
+  ghHeaders,
+  resolveClient,
+  splitRepo,
+} from "./http";
 
 /** One workflow run, normalized from GitHub's `actions/runs` payload. */
 export type ActionRun = {
@@ -108,16 +95,12 @@ export const normalizeRun = (repo: string, raw: RawWorkflowRun): ActionRun => {
 export const listActionRuns = async (
   opts: ListActionRunsOptions,
 ): Promise<readonly ActionRun[]> => {
-  const doFetch = opts.fetchImpl ?? fetch;
-  const url = actionRunsUrl(opts);
-  const res = await doFetch(url, { method: "GET", headers: headers(opts.token) });
-  if (!res.ok) {
-    throw new GithubApiError(
-      `actions runs list failed for ${opts.repo}`,
-      res.status,
-      await res.text().catch(() => ""),
-    );
-  }
+  const { doFetch } = resolveClient(opts);
+  const res = await doFetch(actionRunsUrl(opts), {
+    method: "GET",
+    headers: ghHeaders(opts.token),
+  });
+  await assertOk(res, `actions runs list failed for ${opts.repo}`);
   const body = (await res.json()) as { workflow_runs?: RawWorkflowRun[] };
   return (body.workflow_runs ?? []).map((r) => normalizeRun(opts.repo, r));
 };

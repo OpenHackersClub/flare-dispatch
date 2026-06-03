@@ -101,12 +101,24 @@ export const namespacedKeys = (
   },
 });
 
+/**
+ * The CONFIG_KV key builder for a namespace — `namespacedKey("spec-drift")` →
+ * `(suffix) => "spec-drift.<suffix>"`. The single home for the `<ns>.<key>`
+ * convention, so a run reads `key("repos")` / `key("base")` instead of
+ * re-interpolating the namespace at every call site.
+ */
+export const namespacedKey =
+  (namespace: string) =>
+  (suffix: string): string =>
+    `${namespace}.${suffix}`;
+
 /** The CONFIG_KV key naming the active backend for a namespace. */
 export const backendConfigKey = (namespace: string): string =>
-  `${namespace}.backend`;
+  namespacedKey(namespace)("backend");
 
 /** The CONFIG_KV key carrying a namespace's optional system-prompt override. */
-export const promptKey = (namespace: string): string => `${namespace}.prompt`;
+export const promptKey = (namespace: string): string =>
+  namespacedKey(namespace)("prompt");
 
 /** The CONFIG_KV key naming the active backend (default `pr-review` namespace). */
 export const BACKEND_CONFIG_KEY = backendConfigKey(DEFAULT_NAMESPACE);

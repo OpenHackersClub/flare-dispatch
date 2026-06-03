@@ -220,13 +220,9 @@ const coerceDomainOutput = (value: unknown): unknown => {
   }
 };
 
-/** The `report` tool sent to the model in tools mode. */
-const ReportTool: ModelTool = {
-  name: "report",
-  description:
-    "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.",
-  parameters: toolParametersSchema(DomainOutput),
-};
+/** The `report` tool's description (the tool itself is built by `completeStructured`). */
+const REPORT_TOOL_DESCRIPTION =
+  "Report this domain's review findings (possibly empty). Each finding is anchored to a file + line range in the diff.";
 
 export type ReviewDomainInput = {
   /** The domain this reviewer owns — e.g. "security", "performance". */
@@ -300,11 +296,24 @@ export type CompleteStructuredInput<A> = {
   /** The system-role instruction. */
   readonly system: string;
   /**
-   * The user-role message, rendered per mode — the tools-mode and json-mode
-   * instructions differ (a json-mode call must spell out the JSON contract,
-   * since no tool is attached).
+   * The domain-specific user-role body. The engine appends the per-mode framing
+   * itself — a "call the tool" line in tools mode, or a strict-JSON instruction
+   * (+ the optional {@link jsonContract}) in json mode — so a caller need not
+   * restate that boilerplate (or the schema) at every call site.
    */
-  readonly renderUser: (mode: ReviewMode) => string;
+  readonly userBody?: string;
+  /**
+   * Optional one-line JSON shape (e.g. `{"items":[{"x":string}]}`) appended in
+   * json mode so the model knows the exact contract. Lives next to the schema
+   * at the call site; kept compact on purpose (raw draft-07 JSON Schema is far
+   * more verbose and token-heavy than this TypeScript-shaped hint).
+   */
+  readonly jsonContract?: string;
+  /**
+   * Escape hatch for full control of the per-mode user message — overrides
+   * {@link userBody} / {@link jsonContract}. Most callers should not need it.
+   */
+  readonly renderUser?: (mode: ReviewMode) => string;
   /** Schema the structured output is decoded against. */
   readonly schema: Schema.Schema<A, any>;
   /**
@@ -353,12 +362,24 @@ export const completeStructured = <A>(
     parameters: toolParametersSchema(input.schema),
   };
 
+  // The per-mode user message: a caller-supplied `renderUser` override, else
+  // the domain `userBody` with the engine's per-mode framing appended.
+  const framedUser = (m: ReviewMode): string =>
+    input.renderUser !== undefined
+      ? input.renderUser(m)
+      : frameUserMessage(input.userBody ?? "", m, {
+          toolName,
+          ...(input.jsonContract !== undefined
+            ? { jsonContract: input.jsonContract }
+            : {}),
+        });
+
   const jsonAttempt = Effect.gen(function* () {
     const result = yield* completeRaw({
       backend: input.backend,
       model: input.model,
       system: input.system,
-      user: input.renderUser("json"),
+      user: framedUser("json"),
       ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
     });
     return yield* parseStructured(result.text, decode, ctx);
@@ -369,7 +390,7 @@ export const completeStructured = <A>(
       backend: input.backend,
       model: input.model,
       system: input.system,
-      user: input.renderUser("tools"),
+      user: framedUser("tools"),
       tools: [tool],
       ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
     });
@@ -419,40 +440,50 @@ export const reviewDomain = (
     model: input.model,
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
     system: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
-    renderUser: (mode) => renderDomainUserMessage(input, mode),
+    userBody: renderDomainBody(input),
+    jsonContract: DOMAIN_JSON_CONTRACT,
     schema: DomainOutput,
     coerce: coerceDomainOutput,
     toolName: "report",
-    toolDescription: ReportTool.description,
+    toolDescription: REPORT_TOOL_DESCRIPTION,
     surface: "review",
     maxTokens: REVIEW_MAX_TOKENS,
   }).pipe(Effect.map((o) => o.findings));
 
-/** The user-role message for a domain reviewer (system prompt is sent separately). */
-const renderDomainUserMessage = (
-  input: ReviewDomainInput,
-  mode: ReviewMode,
-): string => {
-  const base = [
+/** The domain-specific body of a reviewer's user message (no per-mode framing). */
+const renderDomainBody = (input: ReviewDomainInput): string =>
+  [
     `Review domain: ${input.agent}`,
     `Risk tier: ${input.tier}`,
     "",
     "Unified diff:",
     input.diff.length === 0 ? "(empty diff)" : input.diff,
-    "",
-  ];
-  return mode === "json"
-    ? [...base, DOMAIN_JSON_INSTRUCTION].join("\n")
-    : [
-        ...base,
-        "Call the `report` tool exactly once with your findings for this domain.",
-      ].join("\n");
-};
+  ].join("\n");
 
-/** Strict-JSON instruction appended in "json" mode (no tools available). */
-const DOMAIN_JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no prose, no markdown:
-{"findings":[{"path":string,"startLine":number,"endLine":number,"level":"notice"|"warning"|"failure","title":string,"message":string}]}
-Use an empty "findings" array when the diff is clean for your domain. Do not wrap the JSON in code fences. Do not include any text before or after the JSON object.`;
+/** The compact JSON shape a `report` tool / json-mode reviewer must emit. */
+const DOMAIN_JSON_CONTRACT = `{"findings":[{"path":string,"startLine":number,"endLine":number,"level":"notice"|"warning"|"failure","title":string,"message":string}]}`;
+
+/**
+ * Append the per-mode framing to a caller's `userBody`: a "call the tool" line
+ * in tools mode, or a strict-JSON instruction (+ optional one-line contract) in
+ * json mode. The single home for the framing the engine adds, so no caller —
+ * `reviewDomain` or a recipe — restates it.
+ */
+const frameUserMessage = (
+  body: string,
+  mode: ReviewMode,
+  opts: { toolName: string; jsonContract?: string },
+): string =>
+  mode === "tools"
+    ? `${body}\n\nCall the \`${opts.toolName}\` tool exactly once with your output (an empty result is valid when there is nothing to report).`
+    : [
+        body,
+        "",
+        "Respond with ONLY a single JSON object — no prose, no markdown code fences, nothing before or after the object.",
+        ...(opts.jsonContract !== undefined
+          ? ["It must match this shape:", opts.jsonContract]
+          : []),
+      ].join("\n");
 
 // ---------------------------------------------------------------------------
 // `coordinate` — DETERMINISTIC assembly. No model call.

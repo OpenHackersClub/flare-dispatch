@@ -16,27 +16,7 @@
 // PAT. Provider-neutral plain `async`; the Effect Layer (`makeGithubLive`)
 // wraps it.
 
-import { GithubApiError } from "./errors";
-
-/** GitHub's API host — overridable for tests / GitHub Enterprise. */
-const DEFAULT_API_BASE = "https://api.github.com";
-
-/** Split an `"owner/repo"` slug; throws on a malformed slug. */
-const splitRepo = (repo: string): { owner: string; name: string } => {
-  const slash = repo.indexOf("/");
-  if (slash <= 0 || slash === repo.length - 1) {
-    throw new GithubApiError(`malformed repo slug "${repo}"`, 0, "");
-  }
-  return { owner: repo.slice(0, slash), name: repo.slice(slash + 1) };
-};
-
-const headers = (token: string): HeadersInit => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "Content-Type": "application/json",
-  "X-GitHub-Api-Version": "2022-11-28",
-  "User-Agent": "flare-dispatch",
-});
+import { assertOk, ghHeaders, resolveClient, splitRepo } from "./http";
 
 /** A file edit — full new content keyed by repo-relative path. */
 export type FileEdit = { readonly path: string; readonly content: string };
@@ -91,8 +71,7 @@ export const openDraftPullRequest = async (
   opts: OpenDraftPullRequestOptions,
 ): Promise<OpenDraftPullRequestResult> => {
   const { owner, name } = splitRepo(opts.repo);
-  const apiBase = opts.apiBase ?? DEFAULT_API_BASE;
-  const doFetch = opts.fetchImpl ?? fetch;
+  const { apiBase, doFetch } = resolveClient(opts);
   const repoUrl = `${apiBase}/repos/${owner}/${name}`;
 
   const api = async <T>(
@@ -102,17 +81,15 @@ export const openDraftPullRequest = async (
   ): Promise<{ status: number; json: T }> => {
     const res = await doFetch(`${repoUrl}${path}`, {
       method: init?.method ?? "GET",
-      headers: headers(opts.token),
+      headers: ghHeaders(opts.token, { json: true }),
       ...(init?.body !== undefined
         ? { body: JSON.stringify(init.body) }
         : {}),
     });
-    if (!res.ok && !(okExtra?.(res.status) ?? false)) {
-      throw new GithubApiError(
-        `git data call ${init?.method ?? "GET"} ${path} failed`,
-        res.status,
-        await res.text().catch(() => ""),
-      );
+    // A 422 on `POST /git/refs` (ref exists) is expected; the caller passes
+    // `okExtra` to tolerate it and fall through to a force-update.
+    if (!(okExtra?.(res.status) ?? false)) {
+      await assertOk(res, `git data call ${init?.method ?? "GET"} ${path} failed`);
     }
     const json = (await res.json().catch(() => ({}))) as T;
     return { status: res.status, json };

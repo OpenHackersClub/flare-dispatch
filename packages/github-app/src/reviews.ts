@@ -11,27 +11,7 @@
 // never an App JWT, never a PAT. Provider-neutral plain `async`; the Effect
 // Layer (`makeGithubLive` in @flare-dispatch/runtime-cf) wraps it.
 
-import { GithubApiError } from "./errors";
-
-/** GitHub's API host — overridable for tests / GitHub Enterprise. */
-const DEFAULT_API_BASE = "https://api.github.com";
-
-/** Split an `"owner/repo"` slug; throws on a malformed slug. */
-const splitRepo = (repo: string): { owner: string; name: string } => {
-  const slash = repo.indexOf("/");
-  if (slash <= 0 || slash === repo.length - 1) {
-    throw new GithubApiError(`malformed repo slug "${repo}"`, 0, "");
-  }
-  return { owner: repo.slice(0, slash), name: repo.slice(slash + 1) };
-};
-
-const headers = (token: string): HeadersInit => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "Content-Type": "application/json",
-  "X-GitHub-Api-Version": "2022-11-28",
-  "User-Agent": "flare-dispatch",
-});
+import { assertOk, ghHeaders, resolveClient, splitRepo } from "./http";
 
 /** The review event family GitHub accepts on `POST .../reviews`. */
 export type PullReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
@@ -64,14 +44,13 @@ export const createPullReview = async (
   opts: CreatePullReviewOptions,
 ): Promise<void> => {
   const { owner, name: repoName } = splitRepo(opts.repo);
-  const apiBase = opts.apiBase ?? DEFAULT_API_BASE;
-  const doFetch = opts.fetchImpl ?? fetch;
+  const { apiBase, doFetch } = resolveClient(opts);
 
   const res = await doFetch(
     `${apiBase}/repos/${owner}/${repoName}/pulls/${opts.pr}/reviews`,
     {
       method: "POST",
-      headers: headers(opts.token),
+      headers: ghHeaders(opts.token, { json: true }),
       body: JSON.stringify({
         commit_id: opts.sha,
         body: opts.body,
@@ -80,11 +59,5 @@ export const createPullReview = async (
     },
   );
 
-  if (!res.ok) {
-    throw new GithubApiError(
-      "pull review create failed",
-      res.status,
-      await res.text().catch(() => ""),
-    );
-  }
+  await assertOk(res, "pull review create failed");
 };

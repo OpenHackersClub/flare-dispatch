@@ -13,10 +13,7 @@
 //
 // Spec: specs/04-gha-integration.md § Check-runs callback.
 
-import { GithubApiError } from "./errors";
-
-/** GitHub's API host — overridable for tests / GitHub Enterprise. */
-const DEFAULT_API_BASE = "https://api.github.com";
+import { assertOk, ghHeaders, resolveClient, splitRepo } from "./http";
 
 /** A check-run conclusion — the terminal verdict GitHub renders. */
 export type CheckConclusion =
@@ -31,24 +28,6 @@ export type CheckRunOutput = {
   readonly title: string;
   readonly summary: string;
 };
-
-/** Split an `"owner/repo"` slug; throws on a malformed slug. */
-const splitRepo = (repo: string): { owner: string; name: string } => {
-  const slash = repo.indexOf("/");
-  if (slash <= 0 || slash === repo.length - 1) {
-    throw new GithubApiError(`malformed repo slug "${repo}"`, 0, "");
-  }
-  return { owner: repo.slice(0, slash), name: repo.slice(slash + 1) };
-};
-
-/** Common request headers for an installation-token-authenticated call. */
-const headers = (token: string): HeadersInit => ({
-  Authorization: `Bearer ${token}`,
-  Accept: "application/vnd.github+json",
-  "Content-Type": "application/json",
-  "X-GitHub-Api-Version": "2022-11-28",
-  "User-Agent": "flare-dispatch",
-});
 
 /** GitHub's check-run response — only the fields we consume. */
 type CheckRunResponse = { readonly id: number };
@@ -90,14 +69,13 @@ export const createCheckRun = async (
   opts: CreateCheckRunOptions,
 ): Promise<string> => {
   const { owner, name: repoName } = splitRepo(opts.repo);
-  const apiBase = opts.apiBase ?? DEFAULT_API_BASE;
-  const doFetch = opts.fetchImpl ?? fetch;
+  const { apiBase, doFetch } = resolveClient(opts);
 
   const res = await doFetch(
     `${apiBase}/repos/${owner}/${repoName}/check-runs`,
     {
       method: "POST",
-      headers: headers(opts.token),
+      headers: ghHeaders(opts.token, { json: true }),
       body: JSON.stringify({
         name: opts.name,
         head_sha: opts.sha,
@@ -109,13 +87,7 @@ export const createCheckRun = async (
     },
   );
 
-  if (!res.ok) {
-    throw new GithubApiError(
-      "check-run create failed",
-      res.status,
-      await res.text().catch(() => ""),
-    );
-  }
+  await assertOk(res, "check-run create failed");
 
   const body = (await res.json()) as CheckRunResponse;
   return String(body.id);
@@ -144,14 +116,13 @@ export const updateCheckRun = async (
   opts: UpdateCheckRunOptions,
 ): Promise<void> => {
   const { owner, name: repoName } = splitRepo(opts.repo);
-  const apiBase = opts.apiBase ?? DEFAULT_API_BASE;
-  const doFetch = opts.fetchImpl ?? fetch;
+  const { apiBase, doFetch } = resolveClient(opts);
 
   const res = await doFetch(
     `${apiBase}/repos/${owner}/${repoName}/check-runs/${opts.checkRunId}`,
     {
       method: "PATCH",
-      headers: headers(opts.token),
+      headers: ghHeaders(opts.token, { json: true }),
       body: JSON.stringify({
         status: "completed",
         conclusion: opts.conclusion,
@@ -162,11 +133,5 @@ export const updateCheckRun = async (
     },
   );
 
-  if (!res.ok) {
-    throw new GithubApiError(
-      "check-run update failed",
-      res.status,
-      await res.text().catch(() => ""),
-    );
-  }
+  await assertOk(res, "check-run update failed");
 };

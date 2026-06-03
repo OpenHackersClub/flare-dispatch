@@ -33,7 +33,7 @@
 // Mode: Schedule mode — specs/04-gha-integration.md § Schedule mode. The cron
 // MUST also be in wrangler.jsonc `triggers.crons`.
 
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import {
   config,
   defineRun,
@@ -44,32 +44,28 @@ import {
   step,
   type Container,
 } from "@flare-dispatch/core";
-import { workspace } from "@flare-dispatch/core/primitives";
+import type { GitHubApiError } from "@flare-dispatch/core";
+import { isoDate, parseList, workspace } from "@flare-dispatch/core/primitives";
 import {
+  type BackendUnconfigured,
   completeStructured,
+  type ModelCallFailed,
+  namespacedKey,
   promptKey,
   resolveBackend,
+  type StructuredOutputInvalid,
 } from "@flare-dispatch/review-agent";
 
 /** The config namespace — every key this run reads is `spec-drift.*`. */
 const NAMESPACE = "spec-drift";
-const REPOS_KEY = `${NAMESPACE}.repos`;
-const BASE_KEY = `${NAMESPACE}.base`;
+const key = namespacedKey(NAMESPACE);
+const REPOS_KEY = key("repos");
+const BASE_KEY = key("base");
 
 /** Caps so a huge repo can't blow the model context window. */
 const MAX_SPECS_CHARS = 40_000;
 const MAX_TREE_CHARS = 12_000;
 const PROPOSAL_MAX_TOKENS = 4096;
-
-// UTC calendar date — the cron-window dedup key + the draft branch suffix.
-const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-
-/** Split a comma/space/newline-separated repo list, dropping blanks. */
-const parseRepos = (raw: string | undefined): readonly string[] =>
-  (raw ?? "")
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 
 /** The model's proposed reconciliation — full new contents per spec file. */
 const DriftProposal = Schema.Struct({
@@ -138,7 +134,7 @@ export const specDriftPr = defineRun({
 
       // 1. Scope: the operator's repo list. No enumeration — an empty list is a
       //    no-op (the run is a backstop, not an installation-wide crawler).
-      const repos = parseRepos(
+      const repos = parseList(
         yield* step("resolve-repos", () => config.get(REPOS_KEY)),
       );
       if (repos.length === 0) {
@@ -248,8 +244,8 @@ const scanRepo = (args: ScanArgs) =>
         model: args.resolved.model,
         mode: args.resolved.mode,
         system: args.systemPrompt,
-        renderUser: (mode) =>
-          renderUserMessage({ repo: args.repo, specsText, tree, recentLog }, mode),
+        userBody: renderUserBody({ repo: args.repo, specsText, tree, recentLog }),
+        jsonContract: DRIFT_JSON_CONTRACT,
         schema: DriftProposal,
         toolName: "propose_spec_edits",
         toolDescription:
@@ -307,20 +303,17 @@ const shOut = (container: Container, cwd: string, script: string) =>
 
 // --- Prompt + PR rendering ---------------------------------------------------
 
-const JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no prose, no markdown fences:
-{"summary":string,"edits":[{"path":string,"newContent":string,"rationale":string}]}
-Use an empty "edits" array when the specs are already in sync. "newContent" is the FULL new file content.`;
+/** The compact JSON shape the model must emit (engine appends it in json mode). */
+const DRIFT_JSON_CONTRACT = `{"summary":string,"edits":[{"path":string,"newContent":string,"rationale":string}]}`;
 
-const renderUserMessage = (
-  ctx: {
-    repo: string;
-    specsText: string;
-    tree: string;
-    recentLog: string;
-  },
-  mode: "tools" | "json",
-): string => {
-  const base = [
+/** The domain body of the user message (the engine appends the per-mode framing). */
+const renderUserBody = (ctx: {
+  repo: string;
+  specsText: string;
+  tree: string;
+  recentLog: string;
+}): string =>
+  [
     `Repository: ${ctx.repo}`,
     "",
     "## specs/ (full contents)",
@@ -331,15 +324,7 @@ const renderUserMessage = (
     "",
     "## Recent commits",
     ctx.recentLog,
-    "",
-  ];
-  return mode === "json"
-    ? [...base, JSON_INSTRUCTION].join("\n")
-    : [
-        ...base,
-        "Call the `propose_spec_edits` tool exactly once with the reconciling edits (an empty array is valid).",
-      ].join("\n");
-};
+  ].join("\n");
 
 const MARKER = "<!-- flare-dispatch: spec-drift-pr -->";
 
@@ -359,13 +344,32 @@ const renderPrBody = (
     MARKER,
   ].join("\n");
 
+/** The errors `scanRepo`'s `catchAll` knows how to describe precisely. */
+type CaughtError =
+  | BackendUnconfigured
+  | ModelCallFailed
+  | StructuredOutputInvalid
+  | GitHubApiError;
+
 /** Human-readable one-liner for any caught error (model / git / GitHub). */
-const describe = (err: unknown): string => {
-  const e = err as { _tag?: string; message?: string; missing?: string };
-  if (e && typeof e._tag === "string") {
-    return e.missing !== undefined
-      ? `${e._tag} (${e.missing})`
-      : (e.message ?? e._tag);
-  }
-  return err instanceof Error ? err.message : JSON.stringify(err);
-};
+const describe = (err: unknown): string =>
+  Match.value(err as CaughtError).pipe(
+    Match.tag(
+      "BackendUnconfigured",
+      (e) => `backend "${e.backend}" misconfigured — set ${e.missing}`,
+    ),
+    Match.tag(
+      "ModelCallFailed",
+      (e) => `model call failed (${e.reason}): ${e.message}`,
+    ),
+    Match.tag(
+      "StructuredOutputInvalid",
+      (e) => `unparseable model output (${e.reason})`,
+    ),
+    Match.tag("GitHubApiError", (e) => `GitHub API ${e.status} (${e.reason})`),
+    // Sandbox/git errors and anything else fall here — every tagged error
+    // extends `Error`, so its `message` is a faithful one-liner.
+    Match.orElse(() =>
+      err instanceof Error ? err.message : JSON.stringify(err),
+    ),
+  );

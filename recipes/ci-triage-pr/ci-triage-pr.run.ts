@@ -47,29 +47,24 @@ import {
   type DeploymentRef,
   type WorkflowRunRef,
 } from "@flare-dispatch/core";
+import { isoDate, parseList } from "@flare-dispatch/core/primitives";
 import {
   completeStructured,
+  namespacedKey,
   promptKey,
   resolveBackend,
 } from "@flare-dispatch/review-agent";
 
 const NAMESPACE = "ci-triage";
-const REPOS_KEY = `${NAMESPACE}.repos`;
-const PROJECTS_KEY = `${NAMESPACE}.projects`;
-const REPORT_REPO_KEY = `${NAMESPACE}.report-repo`;
-const BASE_KEY = `${NAMESPACE}.base`;
-const WINDOW_KEY = `${NAMESPACE}.window-hours`;
+const key = namespacedKey(NAMESPACE);
+const REPOS_KEY = key("repos");
+const PROJECTS_KEY = key("projects");
+const REPORT_REPO_KEY = key("report-repo");
+const BASE_KEY = key("base");
+const WINDOW_KEY = key("window-hours");
 
 const DEFAULT_WINDOW_HOURS = 24;
 const TRIAGE_MAX_TOKENS = 3072;
-
-const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-
-const parseList = (raw: string | undefined): readonly string[] =>
-  (raw ?? "")
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 
 /** The model's triage of the day's failures. */
 const TriageReport = Schema.Struct({
@@ -235,8 +230,8 @@ export const ciTriagePr = defineRun({
           model: resolved.model,
           mode: resolved.mode,
           system: systemPrompt,
-          renderUser: (mode) =>
-            renderUserMessage({ actionFailures, deployFailures }, mode),
+          userBody: renderUserBody({ actionFailures, deployFailures }),
+          jsonContract: TRIAGE_JSON_CONTRACT,
           schema: TriageReport,
           toolName: "report_triage",
           toolDescription: "Report the triage of the day's CI failures.",
@@ -291,8 +286,8 @@ export const ciTriagePr = defineRun({
 
 // --- Prompt + report rendering ----------------------------------------------
 
-const JSON_INSTRUCTION = `Respond with ONLY a single JSON object, no prose, no markdown fences:
-{"summary":string,"items":[{"title":string,"area":string,"diagnosis":string,"suggestedFix":string}]}`;
+/** The compact JSON shape the model must emit (engine appends it in json mode). */
+const TRIAGE_JSON_CONTRACT = `{"summary":string,"items":[{"title":string,"area":string,"diagnosis":string,"suggestedFix":string}]}`;
 
 const failureLines = (
   actions: readonly WorkflowRunRef[],
@@ -309,26 +304,16 @@ const failureLines = (
   return [...a, ...d].join("\n");
 };
 
-const renderUserMessage = (
-  ctx: {
-    actionFailures: readonly WorkflowRunRef[];
-    deployFailures: readonly DeploymentRef[];
-  },
-  mode: "tools" | "json",
-): string => {
-  const base = [
+/** The domain body of the user message (the engine appends the per-mode framing). */
+const renderUserBody = (ctx: {
+  actionFailures: readonly WorkflowRunRef[];
+  deployFailures: readonly DeploymentRef[];
+}): string =>
+  [
     "Recent CI failures to triage:",
     "",
     failureLines(ctx.actionFailures, ctx.deployFailures),
-    "",
-  ];
-  return mode === "json"
-    ? [...base, JSON_INSTRUCTION].join("\n")
-    : [
-        ...base,
-        "Call the `report_triage` tool exactly once with your clustered triage.",
-      ].join("\n");
-};
+  ].join("\n");
 
 const MARKER = "<!-- flare-dispatch: ci-triage-pr -->";
 

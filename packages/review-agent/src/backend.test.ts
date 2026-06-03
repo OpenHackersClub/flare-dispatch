@@ -10,6 +10,7 @@ import {
   BACKEND_KEYS,
   DEFAULT_BACKEND,
   backendConfigKey,
+  namespacedKey,
   namespacedKeys,
   parseBackend,
   parseMode,
@@ -101,6 +102,7 @@ describe("resolveBackend", () => {
 
 describe("namespaced config (downstream recipe reuse)", () => {
   it("derives per-namespace keys without colliding with pr-review", () => {
+    expect(namespacedKey("spec-drift")("repos")).toBe("spec-drift.repos");
     expect(backendConfigKey("spec-drift")).toBe("spec-drift.backend");
     expect(promptKey("spec-drift")).toBe("spec-drift.prompt");
     expect(namespacedKeys("ci-triage").opencode.modelKey).toBe(
