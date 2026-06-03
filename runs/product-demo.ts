@@ -433,12 +433,14 @@ export const productDemo = defineRun({
       // sentinel, exactly like runs/cdp-acceptance.ts's test command. stdout
       // (the result JSON) + stderr go to per-story files that survive the
       // detach; stderr is collected for debugging via `upload-play-logs` below.
-      const playResults = yield* step(
-        "play-stories",
-        () =>
-          Effect.forEach(
-            resolvedStories,
-            (story, i) =>
+      // Each story is its OWN durable step so it stays under CF Workflows'
+      // ~10-min per-`step.do` ceiling — one step wrapping all stories (the
+      // render-waiting "generate-creatives" can take ~5 min by itself) blew
+      // that 600s cap. The instance itself can run far longer (maxDurationSec).
+      const playResults = yield* Effect.forEach(
+        resolvedStories,
+        (story, i) =>
+          step(`play-${i}`, () =>
               Effect.gen(function* () {
                 const outPath = `/tmp/demo/play-${i}.out`;
                 const errPath = `/tmp/demo/play-${i}.err`;
@@ -481,9 +483,9 @@ export const productDemo = defineRun({
                 }
                 return { stdout, stderr, exitCode };
               }),
-            { concurrency: 1 },
+            { retries: 0 },
           ),
-        { retries: 0 },
+        { concurrency: 1 },
       );
 
       // Collect every story's stderr into one signed-R2 artifact so a failed
