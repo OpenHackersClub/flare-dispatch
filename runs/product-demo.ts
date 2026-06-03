@@ -463,7 +463,16 @@ export const productDemo = defineRun({
       //    the expensive work is genuinely concurrent even on one container.
       //    Concurrency is capped so we don't exhaust the Browser Rendering
       //    session pool or the container CPU; extra stories queue.
-      const PER_STORY_CONCURRENCY = 3;
+      //
+      // CONCURRENCY 1 (sequential): at 3-wide, three node+puppeteer+model loops
+      // (each now also driving a recording session) saturated the standard-4
+      // box — even the short `cat` sentinel polls queued, so plays never
+      // returned a result before the step ceiling ("exceeded wall-clock
+      // budget", exit -2). Sequential keeps the box responsive so each play
+      // self-aborts at its `--max-sec` and returns a real verdict; total wall
+      // time (~3×5min) still fits maxDurationSec. Raise once a play reliably
+      // completes + we confirm the box can take 2-wide.
+      const PER_STORY_CONCURRENCY = 1;
 
       const playStory = (story: { name: string; prose: string }, i: number) =>
         Effect.gen(function* () {
