@@ -491,6 +491,30 @@ export const productDemo = defineRun({
                 return { stdout, stderr, exitCode };
               }),
             { retries: 0 },
+          ).pipe(
+            // Hard wall-clock bound per story step, BELOW CF Workflows' ~10-min
+            // per-`step.do` cap: if the detached play never writes its sentinel
+            // (a hung exec the inner timeouts didn't catch), the step still
+            // returns a failed result instead of being killed by CF — so the
+            // run ALWAYS reaches `record-stop`/`summarize`, posts a verdict, and
+            // uploads the play logs for debugging.
+            Effect.timeoutTo({
+              duration: "8 minutes",
+              onSuccess: (r: { stdout: string; stderr: string; exitCode: number }) =>
+                r,
+              onTimeout: () => ({
+                stdout: "",
+                stderr: "play step exceeded its 8-minute wall-clock budget",
+                exitCode: -2,
+              }),
+            }),
+            Effect.catchAll((cause) =>
+              Effect.succeed({
+                stdout: "",
+                stderr: `play step failed: ${String(cause)}`,
+                exitCode: -3,
+              }),
+            ),
           ),
         { concurrency: 1 },
       );
@@ -561,7 +585,11 @@ export const productDemo = defineRun({
         }
       };
       const parsed = resolvedStories.map((story, i) => {
-        const result = playResults[i]!;
+        const result = playResults[i] as {
+          stdout: string;
+          stderr: string;
+          exitCode: number;
+        };
         const json = parseLastJson<PlayJson>(result.stdout, {
           status: "failed",
           durationMs: 0,
