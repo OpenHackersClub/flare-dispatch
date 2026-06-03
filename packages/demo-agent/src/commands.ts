@@ -162,20 +162,29 @@ const recordStop = Command.make(
       );
       // CLOSE the Browser Run session first — recordings only finalize after
       // the session closes ("After a session closes, its recording is
-      // available"), and the session's keep_alive idle timer (minutes) far
-      // outlives the fetch's ~12s retry budget. Re-attach over the same
-      // `?browser_session=<id>` endpoint and send a real `Browser.close`
-      // (puppeteer `browser.close()`); best-effort — if the session is
-      // already gone the fetch may still succeed.
+      // available"), and the keep_alive idle timer (minutes) outlives the
+      // fetch's retry budget. Re-attach and send a Browser.close, but DO NOT
+      // wait for puppeteer's full teardown: `browser.close()` blocks until the
+      // browser process exit propagates back — which through the CDP proxy it
+      // never does, hanging record-stop ~10min (near the step cap). Send the
+      // `Browser.close` CDP frame directly, then disconnect. The frame is what
+      // triggers finalization; we don't need the teardown ack. Best-effort.
       yield* attachCdp(cdpWs).pipe(
-        Effect.flatMap(({ browser }) =>
+        Effect.flatMap(({ browser, page }) =>
           Effect.tryPromise({
-            try: () => browser.close(),
+            try: async () => {
+              const cdp = await page.createCDPSession();
+              await cdp.send("Browser.close").catch(() => undefined);
+              await browser.disconnect().catch(() => undefined);
+            },
             catch: (e) => e,
           }),
         ),
+        Effect.timeout("20 seconds"),
         Effect.catchAll(() => Effect.void),
       );
+      // Give the platform a moment to finalize before the first fetch.
+      yield* Effect.sleep("3 seconds");
       const cfg = yield* recordingConfigFromEnv(process.env);
       const events = yield* fetchRecording(sessionId, cfg);
       yield* writeFile(out, JSON.stringify(events));
