@@ -666,17 +666,8 @@ export const productDemo = defineRun({
 
           yield* io.log(
             "info",
-            `story '${story.name}': ${pj.status} (${rs.eventCount} rrweb events)`,
+            `story '${story.name}': ${pj.status} (${rs.eventCount} rrweb events, replay ${rs.sessionId !== "" ? "ok" : "none: " + (recordStopResult.stderr || "").slice(-120)})`,
           );
-
-          // TEMP diagnostic: when no replay was produced, surface the
-          // record-stop attach-id + exit + stderr tail in the narrative so the
-          // in-run failure (e.g. "Recording not found" 404 = zero events) is
-          // visible in summary_json. Remove once replay is reliable.
-          const recDiag =
-            rs.sessionId === ""
-              ? ` [rec-stop attachId=${attached.sessionId || "(none)"} exit=${recordStopResult.exitCode} stderr=${(recordStopResult.stderr || "").slice(-220)} stdout=${(recordStopResult.stdout || "").slice(-120)}]`
-              : "";
 
           return {
             name: story.name,
@@ -684,7 +675,7 @@ export const productDemo = defineRun({
             durationMs: pj.durationMs,
             chapterStartMs: pj.chapterStartMs,
             chapterEndMs: pj.chapterEndMs,
-            narrative: pj.narrative + recDiag,
+            narrative: pj.narrative,
             keyScreenshotUri,
             replayUri,
             replayJsonUri,
@@ -778,21 +769,16 @@ export const productDemo = defineRun({
           ),
       );
 
-      // 4. HONEST CHECK — TEMPORARILY DISABLED for the agent-tuning phase.
-      //    Normally a demo where NO chapter passed must Effect.fail (so the
-      //    dispatcher posts `failure`). BUT on a failed Exit the dispatcher
-      //    DISCARDS the output, so the per-story narratives (summary_json) are
-      //    lost — and the R2 summary.md diagnostic has been flaky — leaving me
-      //    blind on the fail path. While tuning the agent toward 3/3, ALWAYS
-      //    return the output so `summary_json` (with every chapter's narrative)
-      //    persists in D1 and is readable. RESTORE the fail-on-zero before
-      //    marking PR #79 ready:
-      //        if (passedCount === 0) return yield* Effect.fail(new AcceptanceFailed({ exitCode: 1 }));
-      yield* io.log(
-        "info",
-        `product-demo: ${passedCount}/${stories.length} passed (honest-fail temporarily disabled for tuning visibility)`,
-      );
-      void AcceptanceFailed;
+      // 4. HONEST CHECK: a demo where NO chapter passed is broken, not green —
+      //    fail so the dispatcher posts a `failure` conclusion (the verdict
+      //    derives from the run Exit; the markdown summary + per-story replays
+      //    are persisted to R2 as `summary.md` above, so a red run is still
+      //    diagnosable). A partial pass still SUCCEEDS so the green check + the
+      //    summary table show which chapters passed/failed, and the email links
+      //    the replay URL of the first recorded chapter.
+      if (passedCount === 0) {
+        return yield* Effect.fail(new AcceptanceFailed({ exitCode: 1 }));
+      }
 
       // The check-run summary the Dispatcher posts EMBEDS `summaryMd` verbatim.
       return {
