@@ -51,11 +51,19 @@ export {
   normalizeDeployment,
 } from "./cloudflare-live";
 export {
+  makeChildRunsLive,
+  deriveChildInstanceId,
+  type ChildRunsLiveConfig,
+  type ChildGithubContext,
+  type WorkflowBindingLike,
+} from "./child-runs-cf";
+export {
   makeModelGatewayLive,
   type AiBinding,
 } from "./model-gateway-cf";
 export {
   BrowserDeferred,
+  ChildRunsDeferred,
   CloudflareDeferred,
   ConfigDeferred,
   GithubDeferred,

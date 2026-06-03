@@ -156,6 +156,23 @@ export class StsAssumeRoleFailed extends Schema.TaggedError<StsAssumeRoleFailed>
   },
 ) {}
 
+/**
+ * A `spawnChildRun` could not instantiate a child Workflow instance. Carries
+ * the child `run` name and the semantic `instanceId` the spawn targeted so a
+ * fan-out parent can report which shard failed to launch. A duplicate
+ * instance id is NOT this error — it resolves to `created: false`; this fires
+ * only when the platform `create({id})` call itself rejected for another
+ * reason (binding missing, rate limit, transport).
+ */
+export class ChildSpawnFailed extends Schema.TaggedError<ChildSpawnFailed>()(
+  "ChildSpawnFailed",
+  {
+    run: Schema.String,
+    instanceId: Schema.String,
+    cause: Schema.Unknown,
+  },
+) {}
+
 /** The closed union of every error a run can fail with. */
 export type RunError =
   | CheckoutFailed
@@ -175,4 +192,5 @@ export type RunError =
   | GitHubApiError
   | CloudflareApiError
   | OidcSigningFailed
-  | StsAssumeRoleFailed;
+  | StsAssumeRoleFailed
+  | ChildSpawnFailed;

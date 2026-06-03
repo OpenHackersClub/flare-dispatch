@@ -18,6 +18,7 @@ import {
   ExecFailed,
   ExecTimeout,
   ExposePortFailed,
+  ChildSpawnFailed,
   GitHubApiError,
   OidcSigningFailed,
   PortNeverOpened,
@@ -51,6 +52,7 @@ const summarize = (e: RunError): string =>
     Match.tag("CloudflareApiError", ({ status, reason }) => `cloudflare ${status} ${reason}`),
     Match.tag("OidcSigningFailed", ({ reason }) => `oidc ${reason}`),
     Match.tag("StsAssumeRoleFailed", ({ provider, reason }) => `sts ${provider} ${reason}`),
+    Match.tag("ChildSpawnFailed", ({ run, instanceId }) => `child spawn ${run} ${instanceId}`),
     Match.exhaustive,
   );
 
@@ -149,6 +151,15 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
         reason: "role-mismatch",
       }),
       expect: "sts aws role-mismatch",
+    },
+    {
+      name: "ChildSpawnFailed",
+      err: new ChildSpawnFailed({
+        run: "pr-review",
+        instanceId: "pr-review:o_n:42",
+        cause: "rate limited",
+      }),
+      expect: "child spawn pr-review pr-review:o_n:42",
     },
   ];
 

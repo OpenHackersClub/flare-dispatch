@@ -17,6 +17,8 @@ import {
   Browser,
   BrowserUnavailable,
   type BrowserService,
+  ChildRuns,
+  type ChildRunsService,
   Cloudflare,
   type CloudflareService,
   Config,
@@ -46,6 +48,24 @@ export const BrowserDeferred: Layer.Layer<Browser> = Layer.succeed(
         new BrowserUnavailable({
           reason: "transient",
         }),
+      ),
+  }))(),
+);
+
+/**
+ * ChildRuns — the fallback when no `RUNS_WORKFLOW` binding is threaded into the
+ * runtime. `RUNS_WORKFLOW` is a required Dispatcher binding, so the live runtime
+ * always wires `makeChildRunsLive`; this stub only covers a runtime built
+ * without it (a stand-alone capability harness). A run that calls
+ * `spawnChildRun` on such a runtime dies loudly rather than silently dropping
+ * the fan-out.
+ */
+export const ChildRunsDeferred: Layer.Layer<ChildRuns> = Layer.succeed(
+  ChildRuns,
+  ((): ChildRunsService => ({
+    spawn: ({ run }) =>
+      Effect.die(
+        `spawnChildRun: no RUNS_WORKFLOW binding on this runtime (run="${run}")`,
       ),
   }))(),
 );

@@ -36,6 +36,7 @@ import { makeR2ArtifactLive } from "./artifact-r2";
 import { makeChecksGithubLive } from "./checks-github";
 import {
   BrowserDeferred,
+  ChildRunsDeferred,
   CloudflareDeferred,
   ConfigDeferred,
   GithubDeferred,
@@ -104,6 +105,8 @@ const makeRuntimeUnderTest = (
     makeChecksGithubLive(undefined),
     // No Email Routing in this suite → the no-op `Email` Layer.
     makeEmailCloudflareLive(undefined),
+    // No RUNS_WORKFLOW binding in this suite → the dying `ChildRuns` stub.
+    ChildRunsDeferred,
     executions,
     Layer.provide(stepRunner, Layer.merge(executions, io)),
   );
