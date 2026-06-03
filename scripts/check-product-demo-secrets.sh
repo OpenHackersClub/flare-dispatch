@@ -9,18 +9,22 @@
 #   * CONFIG_KV entries — `loadSecrets` resolves these into the env record
 #     handed to `sandbox.exec`. Set with `wrangler kv key put --binding=CONFIG_KV`.
 #     The agent is provider-agnostic on `@effect/ai`'s LanguageModel Tag over
-#     the OpenAI wire protocol; the choice of provider lives in MODEL_BASE_URL.
-#     Three required + one optional, all namespaced under `product-demo.secret/`:
+#     the OpenAI wire protocol, always routed through a Cloudflare AI Gateway.
+#     The model endpoint is DERIVED from CLOUDFLARE_ACCOUNT_ID + CF_AI_GATEWAY_ID
+#     (no MODEL_BASE_URL).
+#     Three required + two optional, all namespaced under `product-demo.secret/`:
 #       Required
-#       - product-demo.secret/MODEL_BASE_URL         (OpenAI-compatible endpoint —
-#                                                    AI Gateway `/v1/<acct>/<id>/compat`
-#                                                    is the recommended default)
+#       - product-demo.secret/CF_AI_GATEWAY_ID       (AI Gateway slug; the agent
+#                                                    builds /v1/<acct>/<slug>/compat)
 #       - product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 #       - product-demo.secret/CLOUDFLARE_API_TOKEN
-#       Optional
-#       - product-demo.secret/MODEL_API_KEY          (only when the chosen endpoint
-#                                                    needs a direct credential; with
-#                                                    AI Gateway BYOK this stays unset)
+#       Optional (independent axes)
+#       - product-demo.secret/MODEL_API_KEY          (UPSTREAM provider key,
+#                                                    Authorization: Bearer; unset
+#                                                    under AI Gateway BYOK)
+#       - product-demo.secret/CF_AI_GATEWAY_TOKEN    (the gateway's OWN auth,
+#                                                    cf-aig-authorization; set only
+#                                                    for an Authenticated Gateway)
 #
 # Usage
 #   ./scripts/check-product-demo-secrets.sh                 # check default env
@@ -62,10 +66,11 @@ require_kv_key() {
 
 optional_kv_key() {
   local key=$1
+  local hint=${2:-}
   if wrangler kv key get --binding=CONFIG_KV "$key" "${ENV_ARGS[@]}" >/dev/null 2>&1; then
     ok "CONFIG_KV: $key (optional, present)"
   else
-    note "CONFIG_KV: $key (optional, unset — only required if your AI Gateway has Authenticated Gateway on)"
+    note "CONFIG_KV: $key (optional, unset${hint:+ — $hint})"
   fi
 }
 
@@ -75,13 +80,16 @@ require_secret BROWSER_CDP_API_TOKEN
 
 echo
 echo "CONFIG_KV — transport secrets (product-demo.secret/, required)"
-require_kv_key product-demo.secret/MODEL_BASE_URL
+require_kv_key product-demo.secret/CF_AI_GATEWAY_ID
 require_kv_key product-demo.secret/CLOUDFLARE_ACCOUNT_ID
 require_kv_key product-demo.secret/CLOUDFLARE_API_TOKEN
 
 echo
 echo "CONFIG_KV — transport secrets (product-demo.secret/, optional)"
-optional_kv_key product-demo.secret/MODEL_API_KEY
+optional_kv_key product-demo.secret/MODEL_API_KEY \
+  "upstream provider key (Authorization); unset under gateway BYOK"
+optional_kv_key product-demo.secret/CF_AI_GATEWAY_TOKEN \
+  "gateway auth (cf-aig-authorization); set only for an Authenticated Gateway"
 
 echo
 echo "CONFIG_KV — model ids (required; no provider-neutral default)"

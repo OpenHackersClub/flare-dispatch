@@ -184,24 +184,28 @@ export const productDemo = defineRun({
       // 0. Resolve the demo-agent's runtime credentials from CONFIG_KV. The
       //    container holds NO ambient credentials. The agent is
       //    provider-agnostic on `@effect/ai`'s `LanguageModel` Tag and speaks
-      //    the OpenAI wire format, so the same three keys point at OpenAI,
-      //    Anthropic-via-compat, Workers AI, Bedrock-via-compat, Ollama, or
-      //    any AI Gateway URL.
-      //      * `MODEL_BASE_URL`         — OpenAI-compatible endpoint URL.
-      //        AI Gateway's `/v1/<account>/<gateway>/compat` is the
-      //        recommended production value.
-      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the Browser
-      //        Rendering session.
+      //    the OpenAI wire format, always routed through a Cloudflare AI
+      //    Gateway; the upstream is the operator's gateway config.
+      //      * `CF_AI_GATEWAY_ID`       — gateway slug. The endpoint
+      //        `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`
+      //        is derived from this + `CLOUDFLARE_ACCOUNT_ID` (no
+      //        `MODEL_BASE_URL`).
+      //      * `CLOUDFLARE_ACCOUNT_ID`  — account that owns the gateway AND the
+      //        Browser Rendering session.
       //      * `CLOUDFLARE_API_TOKEN`   — recording REST fetch auth.
-      //      * `MODEL_API_KEY` (optional) — direct credential when not using
-      //        gateway BYOK.
+      //      * `MODEL_API_KEY` (optional) — upstream provider key
+      //        (`Authorization: Bearer`); unset under gateway BYOK.
+      //      * `CF_AI_GATEWAY_TOKEN` (optional) — the gateway's own auth
+      //        (`cf-aig-authorization`), for an Authenticated Gateway.
+      //        Orthogonal to `MODEL_API_KEY`.
       const requiredAgentEnv = yield* loadSecrets(
-        ["MODEL_BASE_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+        ["CF_AI_GATEWAY_ID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
         { prefix: "product-demo.secret/", required: true },
       );
-      const optionalAgentEnv = yield* loadSecrets(["MODEL_API_KEY"], {
-        prefix: "product-demo.secret/",
-      });
+      const optionalAgentEnv = yield* loadSecrets(
+        ["MODEL_API_KEY", "CF_AI_GATEWAY_TOKEN"],
+        { prefix: "product-demo.secret/" },
+      );
       const agentEnv = { ...requiredAgentEnv, ...optionalAgentEnv };
 
       // 1. Attach Browser Run over CDP against the DEPLOYED URL. No

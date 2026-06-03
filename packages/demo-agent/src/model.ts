@@ -2,12 +2,11 @@
 //
 // The whole agent is provider-agnostic by construction: every model call goes
 // through the abstract `LanguageModel` Tag from `@effect/ai`; the concrete
-// provider (OpenAI / Workers AI / a BYOK AI Gateway / Bedrock-via-compat /
-// Ollama / any OpenAI-compatible endpoint) is supplied as a Layer at the run
-// boundary (`makeLanguageModelLayer` below). Operators swap providers by
-// pointing `MODEL_BASE_URL` at the right endpoint and putting the matching
-// provider model id in the `product-demo.model.*` CONFIG_KV keys. No code
-// edit.
+// provider (OpenAI / Workers AI / Anthropic-via-compat / Bedrock / …) sits
+// behind a Cloudflare AI Gateway and is supplied as a Layer at the run boundary
+// (`makeLanguageModelLayer` below). Operators swap providers by reconfiguring
+// the gateway and putting the matching provider model id in the
+// `product-demo.model.*` CONFIG_KV keys. No code edit.
 //
 // Two call sites:
 //
@@ -30,8 +29,8 @@
 
 import { LanguageModel, Tool, Toolkit } from "@effect/ai";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import { FetchHttpClient } from "@effect/platform";
-import { Config, Effect, Layer, Match, Option, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "@effect/platform";
+import { Config, Effect, Layer, Match, Option, Redacted, Schema } from "effect";
 import { MissingEnv, ModelCallFailed } from "./errors.js";
 import {
   type ModelAction,
@@ -161,33 +160,73 @@ const ActionToolkitHandlersLayer = ActionToolkit.toLayer({
 // ---------------------------------------------------------------------------
 // Provider Layer — operator-pinned via env.
 
+// The Cloudflare AI Gateway OpenAI-compat endpoint. The host is fixed; only the
+// account + gateway slug vary, so operators set those (not a hand-pasted URL).
+const gatewayCompatUrl = (accountId: string, gatewayId: string): string =>
+  `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/compat`;
+
 /**
- * Layer providing `LanguageModel` backed by an OpenAI-compatible endpoint.
- * `MODEL_BASE_URL` defaults to OpenAI's public API; in production an
- * operator points it at Cloudflare AI Gateway's `/v1/<account>/<gateway>/compat`
- * or any other compatible endpoint (Workers AI, Anthropic-via-compat, Ollama,
- * vLLM, …). The wire protocol is `/v1/chat/completions`; the provider behind
- * it is the operator's choice.
+ * Layer providing `LanguageModel` over the OpenAI wire protocol, always pointed
+ * at a Cloudflare AI Gateway. The endpoint is DERIVED from the account + gateway
+ * id (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`) — there
+ * is no `MODEL_BASE_URL` to hand-paste. The gateway fans out to the upstream
+ * provider (OpenAI, Workers AI, Anthropic-via-compat, Bedrock, …) so this code
+ * stays provider-agnostic — the upstream is a gateway/CONFIG_KV concern.
+ *
+ * Credentials, each on its own axis:
+ *   - `CLOUDFLARE_ACCOUNT_ID` — account owning the gateway (required; also used
+ *                               by the recorder).
+ *   - `CF_AI_GATEWAY_ID`      — the gateway slug in the compat URL (required).
+ *   - `MODEL_API_KEY`         — the UPSTREAM provider key, sent as
+ *                               `Authorization: Bearer`. Optional: leave unset
+ *                               under BYOK (the gateway holds the upstream key).
+ *   - `CF_AI_GATEWAY_TOKEN`   — the gateway's OWN auth (Cloudflare "Authenticated
+ *                               Gateway"), sent as `cf-aig-authorization: Bearer`.
+ *                               Optional: set only when the gateway is locked
+ *                               down. NOT the same thing as `MODEL_API_KEY` —
+ *                               it gates access *to* the gateway, orthogonal to
+ *                               the upstream `Authorization` header.
  */
 export const makeLanguageModelLayer = (
   modelName: string,
 ): Layer.Layer<LanguageModel.LanguageModel, never, never> => {
-  const clientLayer = OpenAiClient.layerConfig({
-    apiKey: Config.redacted("MODEL_API_KEY").pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ),
-    apiUrl: Config.string("MODEL_BASE_URL").pipe(
-      Config.option,
-      Config.map(Option.getOrUndefined),
-    ),
-  }).pipe(Layer.provide(FetchHttpClient.layer));
+  // The endpoint + gateway-auth header are keyed off Config values, so the client
+  // is built inside an Effect (`unwrapEffect`) rather than `layerConfig` — the
+  // latter can't thread a Config-derived value into `apiUrl` / `transformClient`.
+  const clientLayer = Layer.unwrapEffect(
+    Effect.gen(function* () {
+      const accountId = yield* Config.string("CLOUDFLARE_ACCOUNT_ID");
+      const gatewayId = yield* Config.string("CF_AI_GATEWAY_ID");
+      const apiKey = yield* Config.redacted("MODEL_API_KEY").pipe(Config.option);
+      const aigToken = yield* Config.redacted("CF_AI_GATEWAY_TOKEN").pipe(
+        Config.option,
+      );
+
+      return OpenAiClient.layer({
+        apiKey: Option.getOrUndefined(apiKey),
+        apiUrl: gatewayCompatUrl(accountId, gatewayId),
+        // Authenticated Gateway: inject `cf-aig-authorization` on every request
+        // when the token is present; otherwise pass the client through untouched.
+        transformClient: Option.match(aigToken, {
+          onNone: () => undefined,
+          onSome: (token) => (client: HttpClient.HttpClient) =>
+            HttpClient.mapRequest(
+              client,
+              HttpClientRequest.setHeader(
+                "cf-aig-authorization",
+                `Bearer ${Redacted.value(token)}`,
+              ),
+            ),
+        }),
+      });
+    }),
+  ).pipe(Layer.provide(FetchHttpClient.layer));
 
   const languageModelLayer = OpenAiLanguageModel.layer({ model: modelName });
 
-  // `layerConfig` carries a `ConfigError` channel — orDie collapses it; a
-  // missing MODEL_API_KEY / MODEL_BASE_URL would surface as a runtime defect,
-  // which is the right shape for a misconfigured deploy (fail fast, loudly).
+  // A misconfigured deploy (missing CLOUDFLARE_ACCOUNT_ID / CF_AI_GATEWAY_ID)
+  // surfaces as a runtime defect via `orDie` — fail fast, loudly — rather than a
+  // typed error nobody handles.
   return Layer.provide(languageModelLayer, clientLayer).pipe(Layer.orDie);
 };
 
