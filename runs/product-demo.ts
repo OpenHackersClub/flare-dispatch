@@ -488,7 +488,10 @@ export const productDemo = defineRun({
                     input.deployedUrl,
                   ],
                   env: agentEnv,
-                  timeoutSec: perStorySec + 30,
+                  // Headroom over the agent's `--max-sec` so the loop can
+                  // self-abort after a final (≤45s-bounded) action and RETURN a
+                  // result, instead of the exec timing out (ExecTimeout) first.
+                  timeoutSec: perStorySec + 90,
                 });
                 if (result.exitCode !== 0 || result.stdout.trim() === "") {
                   yield* io.log(

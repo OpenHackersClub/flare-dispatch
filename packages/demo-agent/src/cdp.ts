@@ -77,7 +77,21 @@ const wrapCmd = <T>(
         method,
         message: e instanceof Error ? e.message : String(e),
       }),
-  });
+  }).pipe(
+    // Bound every CDP op so a single hung action (a click on an unresponsive
+    // element, a goto to a page that never finishes loading) can't block the
+    // play loop past its `--max-sec` budget — which on the dispatcher overran
+    // the exec's `timeoutSec` and surfaced as ExecTimeout. On timeout the op
+    // becomes a normal CdpCommandFailed the loop records and moves past.
+    Effect.timeoutFail({
+      duration: "45 seconds",
+      onTimeout: () =>
+        new CdpCommandFailed({
+          method,
+          message: `${method} timed out after 45s`,
+        }),
+    }),
+  );
 
 /** Apply the viewport preset via Emulation.setDeviceMetricsOverride. */
 export const applyViewport = (
