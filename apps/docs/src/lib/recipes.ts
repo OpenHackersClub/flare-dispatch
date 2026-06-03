@@ -257,4 +257,26 @@ export const recipes: Recipe[] = [
     files: [{ name: "scheduled-deps.run.ts", lang: "ts" }],
     hasReadme: true,
   },
+  {
+    slug: "spec-drift-pr",
+    label: "Spec drift → draft PR",
+    useCase:
+      "Daily spec/implementation drift detection — files the reconciling spec edits as a draft PR",
+    mode: "Schedule",
+    blurb:
+      "A daily Cron Trigger scans each configured repo for drift between specs/ and the implementation, asks the same configurable opencode/reasonix backend ai-code-review uses (under its own spec-drift.* CONFIG_KV namespace), and commits the proposed spec edits via the GitHub Git Data API — straight from the Worker, no container git push — as a draft PR a human reviews.",
+    files: [{ name: "spec-drift-pr.run.ts", lang: "ts" }],
+    hasReadme: true,
+  },
+  {
+    slug: "ci-triage-pr",
+    label: "CI triage → draft PR",
+    useCase:
+      "Daily triage of GitHub Actions + Cloudflare deploy failures — files the write-up as a draft PR",
+    mode: "Schedule",
+    blurb:
+      "A daily Cron Trigger reads recent failures from github.actionRuns and the read-only cloudflare capability (Pages deployments), clusters them with a model-written diagnosis + suggested next steps (ci-triage.* namespace, operator-overridable prompt), and opens one draft PR carrying the triage report. A green day opens nothing and never calls the model.",
+    files: [{ name: "ci-triage-pr.run.ts", lang: "ts" }],
+    hasReadme: true,
+  },
 ];
