@@ -144,7 +144,21 @@ export const attachCdp = (
           reason: classifyAttachError(e),
           message: e instanceof Error ? e.message : String(e),
         }),
-    });
+    }).pipe(
+      // Bound the connect — `puppeteer.connect` to a Browser Run re-attach
+      // endpoint can hang indefinitely if the session is wedged, which (before
+      // the play loop's deadline even starts) would otherwise wedge the whole
+      // play. Fail fast as a normal attach error the caller records.
+      Effect.timeoutFail({
+        duration: "30 seconds",
+        onTimeout: () =>
+          new CdpAttachFailed({
+            wsEndpoint,
+            reason: "timeout",
+            message: "puppeteer.connect timed out after 30s",
+          }),
+      }),
+    );
 
     const page = yield* Effect.tryPromise({
       try: async () => {
@@ -271,4 +285,18 @@ export const attachCdp = (
     };
 
     return { browser, page, session };
-  });
+  }).pipe(
+    // Bound the WHOLE attach, not just `puppeteer.connect`: a wedged Browser
+    // Run re-attach can hang in `browser.pages()` / the CDP handshake too,
+    // which would otherwise wedge whichever command attached (record start /
+    // play / record stop) to the step cap. Fail fast as a normal attach error.
+    Effect.timeoutFail({
+      duration: "50 seconds",
+      onTimeout: () =>
+        new CdpAttachFailed({
+          wsEndpoint,
+          reason: "timeout",
+          message: "attachCdp timed out after 50s",
+        }),
+    }),
+  );

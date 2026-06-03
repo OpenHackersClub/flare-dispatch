@@ -215,6 +215,34 @@ const playCommand = Command.make(
   },
   ({ cdpWs, name, prose, screenshots, maxSec, model, url }) =>
     Effect.gen(function* () {
+      // HARD process-level failsafe deadline. The play loop's between-action
+      // deadline check can't fire while an action is in flight, and the
+      // in-container `timeout -s KILL` has proven unreliable at stopping a
+      // wedged play (it ran to the 600s step cap). So arm an OS timer that, if
+      // ANYTHING wedges the play past its budget — a slow/hung `attachCdp`, a
+      // model call choking on a huge DOM snapshot, a stuck CDP op — writes a
+      // parseable failed verdict to stdout and exits, so the run gets a result
+      // instead of a hung container. `unref()` so it never delays a clean exit;
+      // cleared on the normal path below.
+      const killer = setTimeout(() => {
+        try {
+          process.stdout.write(
+            JSON.stringify({
+              status: "failed",
+              durationMs: (maxSec + 45) * 1000,
+              chapterStartMs: 0,
+              chapterEndMs: 0,
+              narrative: `play hit the hard ${maxSec + 45}s process deadline — wedged before completing (likely a slow/hung attach, accessibility snapshot, or model call)`,
+              keyScreenshotPath: "",
+            }) + "\n",
+          );
+        } catch {
+          /* stdout may be gone */
+        }
+        process.exit(0);
+      }, (maxSec + 45) * 1000);
+      if (typeof killer.unref === "function") killer.unref();
+
       const attachedAtMs = Date.now();
       const attached = yield* attachCdp(cdpWs);
       const result = yield* runPlayLoop(
@@ -229,6 +257,7 @@ const playCommand = Command.make(
         { session: attached.session },
       ).pipe(Effect.provide(makeLanguageModelLayer(model)));
       yield* attached.session.close();
+      yield* Effect.sync(() => clearTimeout(killer));
       yield* Console.log(JSON.stringify(result));
     }).pipe(Effect.catchAll(reportAndDie)),
 );
