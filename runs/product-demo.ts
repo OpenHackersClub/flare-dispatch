@@ -470,7 +470,7 @@ export const productDemo = defineRun({
                 // this is the backstop.
                 yield* sandbox.runDetached({
                   env: agentEnv,
-                  command: `( timeout ${perStorySec + 30} ${playCmd} > ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${donePath}`,
+                  command: `( timeout -s KILL ${perStorySec + 30} ${playCmd} > ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${donePath}`,
                 });
                 const exitCode = yield* pollSentinel({
                   sentinel: donePath,
