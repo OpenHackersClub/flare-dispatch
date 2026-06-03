@@ -658,13 +658,22 @@ export const productDemo = defineRun({
             `story '${story.name}': ${pj.status} (${rs.eventCount} rrweb events)`,
           );
 
+          // TEMP diagnostic: when no replay was produced, surface the
+          // record-stop attach-id + exit + stderr tail in the narrative so the
+          // in-run failure (e.g. "Recording not found" 404 = zero events) is
+          // visible in summary_json. Remove once replay is reliable.
+          const recDiag =
+            rs.sessionId === ""
+              ? ` [rec-stop attachId=${attached.sessionId || "(none)"} exit=${recordStopResult.exitCode} stderr=${(recordStopResult.stderr || "").slice(-220)} stdout=${(recordStopResult.stdout || "").slice(-120)}]`
+              : "";
+
           return {
             name: story.name,
             status: pj.status,
             durationMs: pj.durationMs,
             chapterStartMs: pj.chapterStartMs,
             chapterEndMs: pj.chapterEndMs,
-            narrative: pj.narrative,
+            narrative: pj.narrative + recDiag,
             keyScreenshotUri,
             replayUri,
             replayJsonUri,
