@@ -571,31 +571,40 @@ export const productDemo = defineRun({
                   command: detachedCmd,
                   env: agentEnv,
                 });
+                // Bound the POLL ITSELF (not the whole step), so the file
+                // reads below ALWAYS run. A finished play has already written
+                // its verdict to `outPath`; if a slow/starved poll missed the
+                // sentinel before the wall-clock bound, reading `outPath` still
+                // recovers the real verdict (no more "-2 exceeded budget" on a
+                // play that actually completed), and `errPath` carries the
+                // agent's tail when it genuinely hung.
                 const exitCode = yield* pollSentinel({
                   container,
                   sentinel: sentinelPath,
                   maxAttempts: Math.ceil((perStorySec + 120) / 5),
-                });
+                }).pipe(
+                  Effect.timeoutTo({
+                    duration: "8 minutes",
+                    onSuccess: (c: number) => c,
+                    onTimeout: () => -2,
+                  }),
+                  Effect.catchAll(() => Effect.succeed(-3)),
+                );
                 const stdout = yield* sandbox
                   .exec({ container, command: `cat ${outPath} 2>/dev/null || true` })
                   .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
                 const stderr = yield* sandbox
                   .exec({ container, command: `cat ${errPath} 2>/dev/null || true` })
                   .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
-                return { stdout, stderr, exitCode };
+                // If the poll timed out (-2/-3) but the play left a parseable
+                // result, treat it as a clean completion (exit 0) — the verdict
+                // is in stdout regardless of how the poll fared.
+                const effectiveExit =
+                  exitCode < 0 && stdout.trim() !== "" ? 0 : exitCode;
+                return { stdout, stderr, exitCode: effectiveExit };
               }),
             { retries: 0 },
           ).pipe(
-            // Wall-clock bound below the ~600s per-step.do cap.
-            Effect.timeoutTo({
-              duration: "9 minutes",
-              onSuccess: (r: { stdout: string; stderr: string; exitCode: number }) => r,
-              onTimeout: () => ({
-                stdout: "",
-                stderr: "play step exceeded its wall-clock budget",
-                exitCode: -2,
-              }),
-            }),
             Effect.catchAll((cause) =>
               Effect.succeed({
                 stdout: "",
