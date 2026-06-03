@@ -761,11 +761,24 @@ export const productDemo = defineRun({
       //     `summarize` can call out what's new / regressed since the last
       //     demo run. `Option.match` — never `_tag` access (CLAUDE.md
       //     Effect-TS rules).
+      // Best-effort: prior-run context is a SUMMARY nicety, never load-bearing.
+      // `io.priorExecution` slow/erroring (observed: a 312s failure that sank a
+      // run whose plays + recording had all succeeded) must not fail the run —
+      // fall back to "no prior" so the verdict still lands. Same posture as
+      // `summarize` / the uploads below.
       const prior = yield* step("load-prior", () =>
-        io.priorExecution({
-          family: `product-demo:${input.repo}:${input.deployedUrl}`,
-          outputSchema: Output,
-        }),
+        io
+          .priorExecution({
+            family: `product-demo:${input.repo}:${input.deployedUrl}`,
+            outputSchema: Output,
+          })
+          .pipe(
+            Effect.catchAll((cause) =>
+              io
+                .log("warn", `product-demo load-prior failed (ignoring): ${cause}`)
+                .pipe(Effect.as(Option.none<{ output: typeof Output.Type }>())),
+            ),
+          ),
       );
 
       // 11. Hand the previous summary to the agent as a file IF it exists.
