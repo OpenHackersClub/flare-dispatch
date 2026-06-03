@@ -28,6 +28,10 @@ import {
   type ChecksGithubConfig,
   makeChecksGithubLive,
 } from "./checks-github";
+import {
+  type WorkflowBindingLike,
+  makeChildRunsLive,
+} from "./child-runs-cf";
 import { makeConfigKvLive } from "./config-kv";
 import {
   type EmailCloudflareConfig,
@@ -35,6 +39,7 @@ import {
 } from "./email-cf";
 import {
   BrowserDeferred,
+  ChildRunsDeferred,
   CloudflareDeferred,
   ConfigDeferred,
   ModelGatewayDeferred,
@@ -67,6 +72,16 @@ export type CFRuntimeLiveOptions = {
   readonly sandboxNs: DurableObjectNamespace<Sandbox>;
   /** The `step` argument from `WorkflowEntrypoint.run`. */
   readonly workflowStep: WorkflowStepLike;
+  /**
+   * The CF `Workflow` binding (`env.RUNS_WORKFLOW`) backing the `childRuns`
+   * capability (`spawnChildRun` / the `fanOut` primitive). A run spawns child
+   * `RunWorkflow` instances through it, inheriting this execution's github
+   * context and recording this execution's id as each child's
+   * `parent_execution_id` lineage. `undefined` selects `ChildRunsDeferred`: a
+   * run that calls `spawnChildRun` then dies loudly. `RUNS_WORKFLOW` is a
+   * required Dispatcher binding, so the production call site always passes it.
+   */
+  readonly runsWorkflow?: WorkflowBindingLike;
   /** This execution's ULID — namespaces D1 rows, R2 keys, the sandbox id. */
   readonly executionId: string;
   /** repo/ref/sha/input the `executions` row requires. */
@@ -253,6 +268,27 @@ export const makeCFRuntimeLive = (
     opts.cloudflare === undefined
       ? CloudflareDeferred
       : makeCloudflareLive(opts.cloudflare);
+  // `ChildRuns` is live when the `RUNS_WORKFLOW` binding is threaded in;
+  // children inherit this execution's github context (so they post their own
+  // check-runs) and record this execution's id as their `parent_execution_id`.
+  // Absent the binding, the dying stub keeps a fan-out run from silently
+  // dropping its children.
+  const childRuns =
+    opts.runsWorkflow === undefined
+      ? ChildRunsDeferred
+      : makeChildRunsLive({
+          workflow: opts.runsWorkflow,
+          db: opts.db,
+          parentExecutionId: opts.executionId,
+          github: {
+            repo: opts.execution.repo,
+            ref: opts.execution.ref,
+            sha: opts.execution.sha,
+            ...(opts.checks?.installationId !== undefined
+              ? { installationId: opts.checks.installationId }
+              : {}),
+          },
+        });
 
   return Layer.mergeAll(
     sandbox,
@@ -267,6 +303,7 @@ export const makeCFRuntimeLive = (
     cloudflare,
     modelGateway,
     oidcLayer,
+    childRuns,
     executions,
     // StepRunnerCloudflare needs Executions + IO — supply them from the merge.
     Layer.provide(stepRunner, Layer.merge(executions, io)),

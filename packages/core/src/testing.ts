@@ -25,6 +25,11 @@ import {
   makeChecksFake,
 } from "./fakes/checks-fake";
 import {
+  ChildRunsFake,
+  type ChildRunsFakeState,
+  makeChildRunsFake,
+} from "./fakes/child-runs-fake";
+import {
   EmailFake,
   type EmailFakeState,
   makeEmailFake,
@@ -89,6 +94,12 @@ export {
   type CheckCreateCall,
   type CheckUpdateCall,
 } from "./fakes/checks-fake";
+export {
+  ChildRunsFake,
+  makeChildRunsFake,
+  type ChildRunsFakeState,
+  type SpawnRecord,
+} from "./fakes/child-runs-fake";
 export {
   EmailFake,
   makeEmailFake,
@@ -174,6 +185,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   CloudflareFake,
   ModelGatewayFake,
   OidcFake,
+  ChildRunsFake,
   ExecutionsFake,
   // StepRunnerInline needs Executions + IO — supply them from the merge above.
   Layer.provide(StepRunnerInline, Layer.merge(ExecutionsFake, IOFake)),
@@ -192,6 +204,7 @@ export type CFRuntimeTestHandles = {
   readonly cloudflare: CloudflareFakeState;
   readonly modelGateway: ModelGatewayFakeState;
   readonly oidc: OidcFakeState;
+  readonly childRuns: ChildRunsFakeState;
   /** The inline runner's event queue — feed `step.waitForEvent` from tests. */
   readonly eventQueue: import("./fakes/step-runner-inline").InlineEventQueue;
 };
@@ -211,6 +224,8 @@ export type CFRuntimeTestOptions = {
   readonly modelGateway?: Parameters<typeof makeModelGatewayFake>[0];
   /** Oidc fake options — issuer override + deterministic `iat` clock. */
   readonly oidc?: Parameters<typeof makeOidcFake>[0];
+  /** ChildRuns fake options — instance ids to treat as already-created. */
+  readonly childRuns?: Parameters<typeof makeChildRunsFake>[0];
   /** the execution id `StepRunnerInline` records steps under. */
   readonly executionId?: string;
   /** IO fake clock options. */
@@ -243,6 +258,7 @@ export const makeCFRuntimeTest = (
   const cloudflare = makeCloudflareFake(opts.cloudflare);
   const modelGateway = makeModelGatewayFake(opts.modelGateway);
   const oidcLayer = makeOidcFake(opts.oidc);
+  const childRuns = makeChildRunsFake(opts.childRuns);
   const executions = makeExecutionsFake();
   const eventQueue = opts.eventQueue ?? new Map<string, unknown[]>();
   const stepRunner = makeStepRunnerInline({
@@ -263,6 +279,7 @@ export const makeCFRuntimeTest = (
     cloudflare.layer,
     modelGateway.layer,
     oidcLayer.layer,
+    childRuns.layer,
     executions.layer,
     Layer.provide(stepRunner, Layer.merge(executions.layer, io.layer)),
   );
@@ -280,6 +297,7 @@ export const makeCFRuntimeTest = (
       cloudflare: cloudflare.state,
       modelGateway: modelGateway.state,
       oidc: oidcLayer.state,
+      childRuns: childRuns.state,
       executions: executions.state,
       eventQueue,
     },

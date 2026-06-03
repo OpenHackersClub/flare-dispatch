@@ -18,6 +18,8 @@ import {
   ExecFailed,
   ExecTimeout,
   ExposePortFailed,
+  ChildSpawnFailed,
+  ChildWaitTimeout,
   GitHubApiError,
   OidcSigningFailed,
   PortNeverOpened,
@@ -33,24 +35,31 @@ import {
  */
 const summarize = (e: RunError): string =>
   Match.value(e).pipe(
-    Match.tag("CheckoutFailed", ({ repo, sha }) => `checkout ${repo}@${sha}`),
-    Match.tag("ExecFailed", ({ exitCode }) => `exec exited ${exitCode}`),
-    Match.tag("ExecTimeout", ({ timeoutSec }) => `exec timeout ${timeoutSec}s`),
-    Match.tag("AcceptanceFailed", ({ exitCode }) => `acceptance exited ${exitCode}`),
-    Match.tag("ContainerLaunchFailed", ({ image }) => `launch ${image}`),
-    Match.tag("PortNeverOpened", ({ port }) => `port ${port} never opened`),
-    Match.tag("ExposePortFailed", ({ port }) => `expose port ${port} failed`),
-    Match.tag("BrowserUnavailable", ({ reason }) => `browser ${reason}`),
-    Match.tag("CacheError", ({ phase, key }) => `cache ${phase} ${key}`),
-    Match.tag("ArtifactUploadFailed", ({ name }) => `artifact ${name}`),
-    Match.tag("StepFailed", ({ step }) => `step ${step}`),
-    Match.tag("ApprovalTimedOut", ({ eventName }) => `approval ${eventName}`),
-    Match.tag("EventPayloadInvalid", ({ reason }) => `event payload ${reason}`),
-    Match.tag("SecretsMissing", ({ keys }) => `secrets missing ${keys.join(",")}`),
-    Match.tag("GitHubApiError", ({ status, reason }) => `github ${status} ${reason}`),
-    Match.tag("CloudflareApiError", ({ status, reason }) => `cloudflare ${status} ${reason}`),
-    Match.tag("OidcSigningFailed", ({ reason }) => `oidc ${reason}`),
-    Match.tag("StsAssumeRoleFailed", ({ provider, reason }) => `sts ${provider} ${reason}`),
+    // `Match.tags` (object form) collapses every branch into ONE pipe argument —
+    // the many-`Match.tag` form pushed `pipe` past its 20-arg typed overload
+    // once the union grew past ~18 members. Same exhaustiveness guarantee.
+    Match.tags({
+      CheckoutFailed: ({ repo, sha }) => `checkout ${repo}@${sha}`,
+      ExecFailed: ({ exitCode }) => `exec exited ${exitCode}`,
+      ExecTimeout: ({ timeoutSec }) => `exec timeout ${timeoutSec}s`,
+      AcceptanceFailed: ({ exitCode }) => `acceptance exited ${exitCode}`,
+      ContainerLaunchFailed: ({ image }) => `launch ${image}`,
+      PortNeverOpened: ({ port }) => `port ${port} never opened`,
+      ExposePortFailed: ({ port }) => `expose port ${port} failed`,
+      BrowserUnavailable: ({ reason }) => `browser ${reason}`,
+      CacheError: ({ phase, key }) => `cache ${phase} ${key}`,
+      ArtifactUploadFailed: ({ name }) => `artifact ${name}`,
+      StepFailed: ({ step }) => `step ${step}`,
+      ApprovalTimedOut: ({ eventName }) => `approval ${eventName}`,
+      EventPayloadInvalid: ({ reason }) => `event payload ${reason}`,
+      SecretsMissing: ({ keys }) => `secrets missing ${keys.join(",")}`,
+      GitHubApiError: ({ status, reason }) => `github ${status} ${reason}`,
+      CloudflareApiError: ({ status, reason }) => `cloudflare ${status} ${reason}`,
+      OidcSigningFailed: ({ reason }) => `oidc ${reason}`,
+      StsAssumeRoleFailed: ({ provider, reason }) => `sts ${provider} ${reason}`,
+      ChildSpawnFailed: ({ run, instanceId }) => `child spawn ${run} ${instanceId}`,
+      ChildWaitTimeout: ({ pending }) => `child wait ${pending.length} pending`,
+    }),
     Match.exhaustive,
   );
 
@@ -149,6 +158,23 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
         reason: "role-mismatch",
       }),
       expect: "sts aws role-mismatch",
+    },
+    {
+      name: "ChildSpawnFailed",
+      err: new ChildSpawnFailed({
+        run: "pr-review",
+        instanceId: "pr-review:o_n:42",
+        cause: "rate limited",
+      }),
+      expect: "child spawn pr-review pr-review:o_n:42",
+    },
+    {
+      name: "ChildWaitTimeout",
+      err: new ChildWaitTimeout({
+        pending: ["shard-1", "shard-3"],
+        waitedMs: 1_800_000,
+      }),
+      expect: "child wait 2 pending",
     },
   ];
 

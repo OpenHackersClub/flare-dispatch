@@ -15,6 +15,7 @@ import type { Artifact } from "./services/artifact";
 import type { Browser } from "./services/browser";
 import type { Cache } from "./services/cache";
 import type { Checks } from "./services/checks";
+import type { ChildRuns } from "./services/child-runs";
 import type { Cloudflare } from "./services/cloudflare";
 import type { Config } from "./services/config";
 import type { Email } from "./services/email";
@@ -40,5 +41,6 @@ export type RunContext =
   | Cloudflare
   | ModelGateway
   | Oidc
+  | ChildRuns
   | Executions
   | StepRunner;

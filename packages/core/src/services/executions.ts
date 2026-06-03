@@ -40,6 +40,12 @@ export type ExecutionRecord = {
   readonly startedAt: number;
   readonly completedAt?: number;
   readonly status?: StepStatus;
+  /**
+   * The execution id of the parent that spawned this one via `spawnChildRun`,
+   * or absent for a top-level (dispatched / scheduled) execution. The lineage
+   * column a fan-out parent reads back to join on its children's outcomes.
+   */
+  readonly parentExecutionId?: string;
 };
 
 /**
@@ -53,6 +59,12 @@ export interface ExecutionsService {
     id: string;
     run: string;
     startedAt: number;
+    /**
+     * The spawning parent's execution id, when this row is a `spawnChildRun`
+     * child. Persisted to the `executions.parent_execution_id` column so a
+     * fan-out parent can enumerate its children. Omitted for top-level rows.
+     */
+    parentExecutionId?: string;
   }) => Effect.Effect<void>;
 
   /** Mark an `executions` row terminal. */

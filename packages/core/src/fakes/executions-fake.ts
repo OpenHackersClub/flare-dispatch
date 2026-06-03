@@ -34,9 +34,14 @@ export const makeExecutionsFake = (): {
   const state: ExecutionsFakeState = { executions: [], steps: [] };
 
   const service: ExecutionsService = {
-    startExecution: ({ id, run, startedAt }) =>
+    startExecution: ({ id, run, startedAt, parentExecutionId }) =>
       Effect.sync(() => {
-        state.executions.push({ id, run, startedAt });
+        state.executions.push({
+          id,
+          run,
+          startedAt,
+          ...(parentExecutionId !== undefined ? { parentExecutionId } : {}),
+        });
       }),
 
     finishExecution: ({ id, completedAt, status }) =>

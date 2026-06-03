@@ -89,6 +89,14 @@ const DispatchPayload = Schema.Struct({
   /** the run inputs, decoded per-run against `run.inputs`. */
   inputs: Schema.Unknown,
   /**
+   * When this execution was spawned by a parent run via `spawnChildRun`, the
+   * parent's execution id — persisted to `executions.parent_execution_id` so a
+   * fan-out parent can enumerate its children. Absent for top-level
+   * (dispatched / scheduled) executions. The `childRuns` capability's live
+   * layer (`makeChildRunsLive`) sets it on every child's `create` params.
+   */
+  parentExecutionId: Schema.optional(Schema.String),
+  /**
    * Optional completion-notify recipients. When `emails` is non-empty, the
    * Workflow emails the run's verdict + output (artifact / demo / log links) to
    * each address at the finalize boundary, via the `email` capability. PR5's
@@ -249,6 +257,9 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       bucket: this.env.RUNS_STORAGE,
       sandboxNs,
       workflowStep: step,
+      // The `Workflow` binding backs the `childRuns` capability — a run can
+      // `spawnChildRun` / `fanOut` to independent child `RunWorkflow` instances.
+      runsWorkflow: this.env.RUNS_WORKFLOW,
       executionId: payload.executionId,
       execution: {
         repo: payload.github.repo,
@@ -306,6 +317,9 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         id: payload.executionId,
         run: payload.run,
         startedAt,
+        ...(payload.parentExecutionId !== undefined
+          ? { parentExecutionId: payload.parentExecutionId }
+          : {}),
       });
 
       // Open the check-run (`in_progress`). With no App config this resolves

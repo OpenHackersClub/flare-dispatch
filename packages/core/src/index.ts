@@ -109,6 +109,16 @@ export {
   type CheckOutput,
 } from "./services/checks";
 export {
+  spawnChildRun,
+  ChildRuns,
+  isTerminalChildStatus,
+  type ChildRunsService,
+  type ChildRunHandle,
+  type SpawnChildRunOpts,
+  type ChildRunStatus,
+  type ChildStatusRecord,
+} from "./services/child-runs";
+export {
   Executions,
   type ExecutionsService,
   type ExecutionRecord,
