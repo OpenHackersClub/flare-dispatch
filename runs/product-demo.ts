@@ -505,6 +505,12 @@ export const productDemo = defineRun({
           yield* step(`record-start-${i}`, () =>
             sandbox.exec({
               container,
+              // shellQuote every arg: the CF Sandbox runs array commands
+              // THROUGH a shell, and the recording cdpWsUrl now contains `&`
+              // (?token=…&browser_session=…&recording=true) — unquoted, bash
+              // backgrounds the binary and reads the next flag as a command
+              // (exit 127), silently breaking record-start/record-stop. Same
+              // pattern the play loop already uses.
               command: [
                 "demo-agent", "record", "start",
                 "--cdp-ws", cdpWsUrl,
@@ -514,7 +520,9 @@ export const productDemo = defineRun({
                 ...(attached.sessionId !== ""
                   ? ["--session-id", attached.sessionId]
                   : []),
-              ],
+              ]
+                .map(shellQuote)
+                .join(" "),
               env: agentEnv,
             }),
           );
@@ -585,12 +593,15 @@ export const productDemo = defineRun({
             sandbox
               .exec({
                 container,
+                // shellQuote — same `&` hazard as record-start above.
                 command: [
                   "demo-agent", "record", "stop",
                   "--cdp-ws", cdpWsUrl,
                   "--session-id-in", sessionIdPath,
                   "--out", replayJsonPath,
-                ],
+                ]
+                  .map(shellQuote)
+                  .join(" "),
                 env: agentEnv,
               })
               .pipe(
@@ -740,16 +751,18 @@ export const productDemo = defineRun({
         sandbox
           .exec({
             container,
-            // ARRAY command (argv, NO shell) so the multi-line markdown table
-            // with `|`, emoji, and quotes needs no escaping — a `printf '...'`
-            // shell string was fragile and silently produced no file. Reuse
-            // demo-agent's `write-prior`, which writes `--data` verbatim to
-            // `--out` (the same command the old summarize seeding used).
+            // shellQuote — the CF Sandbox runs commands through a shell, and
+            // the markdown `--data` (pipes, newlines, quotes, maybe `&`) would
+            // otherwise break parsing (this is also why the earlier array form
+            // silently produced no summary.md). write-prior writes `--data`
+            // verbatim to `--out`.
             command: [
               "demo-agent", "write-prior",
               "--out", "/tmp/demo/summary.md",
               "--data", summaryMd,
-            ],
+            ]
+              .map(shellQuote)
+              .join(" "),
           })
           .pipe(
             Effect.andThen(
