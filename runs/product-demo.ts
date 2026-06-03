@@ -691,6 +691,31 @@ export const productDemo = defineRun({
       const primary =
         stories.find((s) => s.replayUri !== "") ?? stories[0];
 
+      // 3.5. Persist the markdown summary (with per-story narratives) as an
+      //      artifact on BOTH the pass AND fail paths — so a FAILED run (whose
+      //      `summary_json` the dispatcher discards on a failed Exit) is still
+      //      diagnosable: fetch `artifacts/<execId>/summary.md` from R2. Without
+      //      this, an honest red check hides WHY every chapter failed.
+      //      Best-effort — never let a diagnostics upload change the verdict.
+      yield* step("upload-summary", () =>
+        sandbox
+          .exec({
+            container,
+            command: `printf '%s' ${shellQuote(summaryMd)} > /tmp/demo/summary.md`,
+          })
+          .pipe(
+            Effect.andThen(
+              artifact.upload({
+                name: "summary.md",
+                path: "/tmp/demo/summary.md",
+                contentType: "text/markdown",
+                signedUrlTTL: "30 days",
+              }),
+            ),
+            Effect.catchAll(() => Effect.succeed("")),
+          ),
+      );
+
       // 4. HONEST CHECK: a demo where NO chapter passed is broken, not green.
       //    Fail the run so the dispatcher posts a `failure` conclusion — the
       //    per-story breakdown is logged above + carried on the error. (A
