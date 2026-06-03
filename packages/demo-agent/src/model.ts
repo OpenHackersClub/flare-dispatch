@@ -634,12 +634,13 @@ Rules:
   \`.btn\`, \`#submit\`, \`textarea[placeholder*=store]\` WILL NOT MATCH and waste
   an action. If you must target a text input, use the name/label shown for the
   textbox node in the snapshot.
-- Operate on elements that appear in the current snapshot, by their label. If
-  the element the story needs is NOT in the snapshot yet, the page is probably
-  still loading (sign-in forms, SPA route changes, and async data render a beat
-  late) — call \`wait\` (1-2s) and take the NEXT snapshot before concluding it is
-  missing. Only treat something as truly absent after you have waited and
-  re-checked at least once. Do NOT invent a CSS selector to reach it.
+- Operate on elements that appear in the current snapshot, by their label. If a
+  needed element isn't there yet, the page may be loading — \`wait\` ONCE (≤2s)
+  and re-check. If it is STILL absent after that single wait, do not keep
+  waiting: either act on a different visible label, or call \`done\` status=failed
+  saying what was missing. Never wait more than ~3 times total in a story, and
+  never invent a CSS selector. Each action costs time — keep moving toward the
+  success condition; do not re-snapshot idly.
 - Emit ONE \`screenshot\` per story, at the moment that best captures the
   outcome.
 - Stop ASAP. The MOMENT the story's success condition is visible in the
