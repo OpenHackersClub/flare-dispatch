@@ -707,7 +707,16 @@ export const productDemo = defineRun({
         sandbox
           .exec({
             container,
-            command: `printf '%s' ${shellQuote(summaryMd)} > /tmp/demo/summary.md`,
+            // ARRAY command (argv, NO shell) so the multi-line markdown table
+            // with `|`, emoji, and quotes needs no escaping — a `printf '...'`
+            // shell string was fragile and silently produced no file. Reuse
+            // demo-agent's `write-prior`, which writes `--data` verbatim to
+            // `--out` (the same command the old summarize seeding used).
+            command: [
+              "demo-agent", "write-prior",
+              "--out", "/tmp/demo/summary.md",
+              "--data", summaryMd,
+            ],
           })
           .pipe(
             Effect.andThen(
