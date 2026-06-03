@@ -285,4 +285,18 @@ export const attachCdp = (
     };
 
     return { browser, page, session };
-  });
+  }).pipe(
+    // Bound the WHOLE attach, not just `puppeteer.connect`: a wedged Browser
+    // Run re-attach can hang in `browser.pages()` / the CDP handshake too,
+    // which would otherwise wedge whichever command attached (record start /
+    // play / record stop) to the step cap. Fail fast as a normal attach error.
+    Effect.timeoutFail({
+      duration: "50 seconds",
+      onTimeout: () =>
+        new CdpAttachFailed({
+          wsEndpoint,
+          reason: "timeout",
+          message: "attachCdp timed out after 50s",
+        }),
+    }),
+  );
