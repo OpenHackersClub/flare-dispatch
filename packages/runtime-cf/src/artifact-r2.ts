@@ -55,6 +55,7 @@ import {
   type ArtifactService,
 } from "@flare-dispatch/core";
 import { containerTarballPath, splitTarPath } from "./artifact-tar-path";
+import { readContainerFile } from "./container-file-stream";
 import { putStream } from "./r2-put-stream";
 
 /** R2 key prefix for per-execution artifacts. */
@@ -116,11 +117,12 @@ export const makeR2ArtifactLive = (
                 `tar czf exited ${tar.exitCode}: ${tar.stderr.trim()}`,
               );
             }
-            // `encoding:'none'` returns the raw stream AND the byte length in
-            // one RPC — exactly what R2 needs to stream without a stat hop.
-            const { content, size } = await box.readFile(tarballPath, {
-              encoding: "none",
-            });
+            // `stat` + `readFileStream` — NOT `readFile({encoding:'none'})`:
+            // that variant is rpc-transport-only and broke every container-tar
+            // upload on the deployed dispatcher (#88) with the cause swallowed.
+            // `readFileStream` is the proven pre-#70 path; the byte length R2
+            // needs comes from one tiny stat exec.
+            const { content, size } = await readContainerFile(box, tarballPath);
             await putStream(bucket, key, content, size, {
               contentType: contentType ?? "application/gzip",
             });

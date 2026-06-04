@@ -38,6 +38,7 @@
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { Effect, Layer } from "effect";
 import { Cache, CacheError, type CacheService } from "@flare-dispatch/core";
+import { readContainerFile } from "./container-file-stream";
 import { putStream } from "./r2-put-stream";
 import {
   composeRestoreOr,
@@ -78,11 +79,11 @@ export const makeCacheR2Live = (
         }
         // STREAM the archive into R2 — a node_modules / pnpm-store tarball can
         // be hundreds of MB, well past the Worker's 128 MB isolate budget if
-        // buffered whole. `encoding:'none'` yields the stream + byte length in
-        // one RPC, which `putStream` needs for R2's known-length requirement.
-        const { content, size } = await box.readFile(TARBALL_PATH, {
-          encoding: "none",
-        });
+        // buffered whole. `stat` + `readFileStream`, NOT
+        // `readFile({encoding:'none'})` — that variant is rpc-transport-only
+        // and broke the container upload path on the deployed dispatcher
+        // (#88); see container-file-stream.ts.
+        const { content, size } = await readContainerFile(box, TARBALL_PATH);
         await putStream(bucket, archiveKey(repo, opts.key), content, size, {
           contentType: "application/gzip",
         });

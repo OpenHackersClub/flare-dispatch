@@ -91,6 +91,16 @@ export class BrowserUnavailable extends Schema.TaggedError<BrowserUnavailable>()
   },
 ) {}
 
+/**
+ * Render an error's `cause` field for `message` getters. The Workflows
+ * attempt record only persists `error.name` + `error.message` — a swallowed
+ * cause turns a diagnosable failure ("readFile: encoding 'none' requires the
+ * rpc transport") into an opaque artifact name (#88). Keep it short: the
+ * attempt record is a log line, not a stack dump.
+ */
+const renderCause = (cause: unknown): string =>
+  cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
+
 export class CacheError extends Schema.TaggedError<CacheError>()(
   "CacheError",
   {
@@ -98,12 +108,23 @@ export class CacheError extends Schema.TaggedError<CacheError>()(
     key: Schema.String,
     cause: Schema.Unknown,
   },
-) {}
+) {
+  override get message(): string {
+    return `cache ${this.phase} "${this.key}" failed: ${renderCause(this.cause)}`;
+  }
+}
 
 export class ArtifactUploadFailed extends Schema.TaggedError<ArtifactUploadFailed>()(
   "ArtifactUploadFailed",
   { name: Schema.String, cause: Schema.Unknown },
-) {}
+) {
+  // NOTE: the `name` FIELD shadows `Error.name` on instances — the attempt
+  // record's name/message pair is the only diagnostic surface, so the
+  // message must carry both the artifact name and the cause (#88).
+  override get message(): string {
+    return `artifact "${this.name}" upload failed: ${renderCause(this.cause)}`;
+  }
+}
 
 export class StepFailed extends Schema.TaggedError<StepFailed>()(
   "StepFailed",

@@ -212,3 +212,33 @@ describe("RunError — exhaustive Match", () => {
     }
   });
 });
+
+describe("cause-carrying messages (#88)", () => {
+  // The Workflows attempt record persists only error.name + error.message —
+  // these getters are the ONLY diagnostic surface a failed upload gets.
+  it("ArtifactUploadFailed.message carries the artifact name AND the cause", () => {
+    const err = new ArtifactUploadFailed({
+      name: "demo-bundle",
+      cause: new Error("encoding 'none' requires the rpc transport"),
+    });
+    expect(err.message).toBe(
+      `artifact "demo-bundle" upload failed: Error: encoding 'none' requires the rpc transport`,
+    );
+  });
+
+  it("ArtifactUploadFailed.message stringifies non-Error causes", () => {
+    const err = new ArtifactUploadFailed({ name: "log", cause: "boom" });
+    expect(err.message).toBe(`artifact "log" upload failed: boom`);
+  });
+
+  it("CacheError.message carries phase, key, and cause", () => {
+    const err = new CacheError({
+      phase: "save",
+      key: "pnpm-abc123",
+      cause: new Error("tar czf exited 2"),
+    });
+    expect(err.message).toBe(
+      `cache save "pnpm-abc123" failed: Error: tar czf exited 2`,
+    );
+  });
+});
