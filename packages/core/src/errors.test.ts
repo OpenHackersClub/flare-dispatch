@@ -13,6 +13,7 @@ import {
   CacheError,
   CheckoutFailed,
   CloudflareApiError,
+  ContainerBusy,
   ContainerLaunchFailed,
   EventPayloadInvalid,
   ExecFailed,
@@ -44,6 +45,7 @@ const summarize = (e: RunError): string =>
       ExecTimeout: ({ timeoutSec }) => `exec timeout ${timeoutSec}s`,
       AcceptanceFailed: ({ exitCode }) => `acceptance exited ${exitCode}`,
       ContainerLaunchFailed: ({ image }) => `launch ${image}`,
+      ContainerBusy: ({ containerId }) => `container busy ${containerId}`,
       PortNeverOpened: ({ port }) => `port ${port} never opened`,
       ExposePortFailed: ({ port }) => `expose port ${port} failed`,
       BrowserUnavailable: ({ reason }) => `browser ${reason}`,
@@ -89,6 +91,15 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
       name: "ContainerLaunchFailed",
       err: new ContainerLaunchFailed({ image: "node:lts", cause: "x" }),
       expect: "launch node:lts",
+    },
+    {
+      name: "ContainerBusy",
+      err: new ContainerBusy({
+        containerId: "demo-acme-repo-abc123",
+        holder: "product-demo:acme_repo:abc123",
+        waitedMs: 600_000,
+      }),
+      expect: "container busy demo-acme-repo-abc123",
     },
     {
       name: "PortNeverOpened",

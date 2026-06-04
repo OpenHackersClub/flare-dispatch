@@ -35,6 +35,16 @@ export {
   type SendEmailBinding,
 } from "./email-cf";
 export { makeSandboxCloudflareLive } from "./sandbox-cf";
+export { previewSafeSandboxId } from "./preview-sandbox-id";
+export {
+  makeContainerLeaseD1,
+  LEASE_TTL_MS,
+  LEASE_POLL_EVERY_MS,
+  LEASE_HEARTBEAT_EVERY_MS,
+  LEASE_WAIT_TIMEOUT_MS,
+  type ContainerLeaseStore,
+  type LeaseHandle,
+} from "./container-lease-d1";
 export { makeStepRunnerCloudflare } from "./step-runner-cf";
 export {
   makeChecksGithubLive,

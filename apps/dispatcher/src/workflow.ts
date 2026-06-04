@@ -45,13 +45,22 @@
 
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
-import { Effect, Exit, Schedule, Schema } from "effect";
-import { Checks, Email, Executions } from "@flare-dispatch/core";
+import { Duration, Effect, Exit, Schedule, Schema } from "effect";
+import {
+  Checks,
+  Email,
+  Executions,
+  type RunContext,
+  type RunError,
+} from "@flare-dispatch/core";
 import {
   type BrowserRenderingConfig,
   type ChecksGithubConfig,
   type EmailCloudflareConfig,
+  LEASE_HEARTBEAT_EVERY_MS,
   makeCFRuntimeLive,
+  makeContainerLeaseD1,
+  previewSafeSandboxId,
 } from "@flare-dispatch/runtime-cf";
 import { lookupRun } from "./registry";
 import { selectSandboxNs } from "./sandbox-routing";
@@ -354,7 +363,51 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         Effect.orDie,
       );
 
-      const exit = yield* Effect.exit(run.run(input));
+      // --- Per-container-id serialization (the lease) ----------------------
+      //
+      // Two runs whose execution ids normalise to the SAME sandbox container id
+      // (e.g. `playwright-demo` + `product-demo` for one repo+sha, both
+      // `demo-<owner>-<repo>-<sha12>`) route to the same Durable Object and, run
+      // concurrently, contend — interleaved exec sessions, Browser Rendering
+      // pool contention — and fail nearly every time on a merge burst even
+      // though each passes solo. Acquire a lease on the container id before the
+      // run touches its container, hold it (heartbeating) for the run, release
+      // it after. A peer for the same id WAITS for us, then runs cleanly.
+      //
+      // `acquireUseRelease`: the heartbeat fiber + lease are torn down on EVERY
+      // exit path (success / run failure / defect / interrupt). A failed acquire
+      // (`ContainerBusy` after the wait ceiling) flows into `exit` as a normal
+      // `failure` — recorded + reported like any other run failure, never a
+      // thrown infra error.
+      const containerId = previewSafeSandboxId(payload.executionId);
+      const leaseStore = makeContainerLeaseD1(db);
+      const leased: Effect.Effect<unknown, RunError, RunContext> = Effect.gen(
+        function* () {
+          const lease = yield* leaseStore.acquire(
+            containerId,
+            payload.executionId,
+          );
+          // Keep the heartbeat fresh in the background so a long run (a 25-min
+          // matrix) is never reclaimed as stale mid-flight. Each beat swallows
+          // its own error so a transient D1 blip never propagates; forked into
+          // the scope, interrupted when the scope closes; the lease is released
+          // on EVERY exit path via `ensuring`.
+          const heartbeatLoop: Effect.Effect<void, never> = lease
+            .heartbeat()
+            .pipe(
+              Effect.ignore,
+              Effect.repeat(
+                Schedule.spaced(Duration.millis(LEASE_HEARTBEAT_EVERY_MS)),
+              ),
+              Effect.asVoid,
+            );
+          yield* Effect.forkScoped(heartbeatLoop);
+          return yield* run
+            .run(input)
+            .pipe(Effect.ensuring(lease.release().pipe(Effect.ignore)));
+        },
+      ).pipe(Effect.scoped);
+      const exit = yield* Effect.exit(leased);
       const completedAt = yield* Effect.sync(() => Date.now());
 
       const status = Exit.match(exit, {
