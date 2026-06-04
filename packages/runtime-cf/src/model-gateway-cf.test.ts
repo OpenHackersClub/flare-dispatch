@@ -173,6 +173,10 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
     expect(seen.gatewayId).toBe("my-gateway");
     expect(seen.request?.provider).toBe("anthropic");
     expect(seen.request?.endpoint).toBe("v1/messages");
+    // Anthropic rejects a Messages call without its API version pin.
+    expect(
+      (seen.request?.headers as Record<string, string>)["anthropic-version"],
+    ).toBe("2023-06-01");
     const query = seen.request?.query as Record<string, unknown>;
     // The `anthropic/` prefix is stripped — the provider gets its own naming.
     expect(query.model).toBe("claude-sonnet-4-6");

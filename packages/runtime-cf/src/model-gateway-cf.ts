@@ -151,6 +151,9 @@ const ANTHROPIC_PREFIX = "anthropic/";
  */
 const ANTHROPIC_DEFAULT_MAX_TOKENS = 2048;
 
+/** The Messages API version pin — required on every request. */
+const ANTHROPIC_VERSION = "2023-06-01";
+
 /** The slice of an Anthropic Messages response `content` block this Layer reads. */
 type AnthropicContentBlock = {
   readonly type: string;
@@ -292,7 +295,12 @@ const completeAnthropic = (
         gateway.run({
           provider: "anthropic",
           endpoint: "v1/messages",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            // The gateway forwards headers verbatim — Anthropic rejects a
+            // Messages call without its API version pin.
+            "anthropic-version": ANTHROPIC_VERSION,
+          },
           query: anthropicBody(req, model),
         }),
       catch: (cause) => {
