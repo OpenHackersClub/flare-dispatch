@@ -66,10 +66,10 @@ describe("makeModelGatewayLive", () => {
 
     // The model id passes through verbatim (bare @cf/...).
     expect(seen.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
-    // system + user are built into the messages array.
+    // Workers AI chat templates drop the system message when tools are present
+    // — on the tools path the system instruction is folded into the user turn.
     expect((seen.inputs as { messages: unknown }).messages).toEqual([
-      { role: "system", content: "you are a reviewer" },
-      { role: "user", content: "review this" },
+      { role: "user", content: "you are a reviewer\n\nreview this" },
     ]);
     // tools are forwarded in the Workers-AI function-tool shape.
     expect((seen.inputs as { tools: unknown }).tools).toEqual([
@@ -97,6 +97,11 @@ describe("makeModelGatewayLive", () => {
     expect(result.text).toBe("hello world");
     expect(result.toolCalls).toEqual([]);
     expect("tools" in (seen.inputs as object)).toBe(false);
+    // No tools → the template honours the system role; keep it separate.
+    expect((seen.inputs as { messages: unknown }).messages).toEqual([
+      { role: "system", content: "s" },
+      { role: "user", content: "u" },
+    ]);
   });
 
   it("passes the AI Gateway id through as { gateway: { id } }", async () => {

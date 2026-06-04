@@ -58,6 +58,8 @@ describe("resolveBackend", () => {
     expect(resolved.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
     // opencode defaults to the tool-calling path.
     expect(resolved.mode).toBe("tools");
+    // Catalog models get a catalog-context-sized diff cap.
+    expect(resolved.maxDiffChars).toBe(60_000);
   });
 
   it("resolves the reasonix backend", async () => {
@@ -85,6 +87,8 @@ describe("resolveBackend", () => {
     expect(resolved.model).toBe("anthropic/claude-sonnet-4-6");
     // Claude honours forced tool use — default to the tool-calling path.
     expect(resolved.mode).toBe("tools");
+    // Frontier context window → a far larger diff cap than the catalog's.
+    expect(resolved.maxDiffChars).toBe(240_000);
   });
 
   it("honours an explicit per-backend mode override", async () => {

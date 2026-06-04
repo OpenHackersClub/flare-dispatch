@@ -86,7 +86,29 @@ export type BackendKeyDescriptor = {
   readonly modeKey: string;
   /** Mode used when `modeKey` is unset/unrecognized. */
   readonly defaultMode: ReviewMode;
+  /**
+   * Max chars of (noise-stripped) diff a reviewer call may carry — aligned with
+   * the backend's context window, NOT one global constant. A cap above the
+   * model's context doesn't truncate visibly; it overflows invisibly (the
+   * provider clips or the model goes needle-blind), which reads as "reviewed
+   * everything, found nothing".
+   */
+  readonly defaultMaxDiffChars: number;
 };
+
+/**
+ * Workers AI catalog models top out around 24k–32k context tokens. ~60 KB of
+ * diff ≈ 15k tokens leaves room for the system prompt + per-mode framing +
+ * the response budget.
+ */
+const CATALOG_MAX_DIFF_CHARS = 60_000;
+
+/**
+ * Claude's context is 200k tokens; ~240 KB ≈ 60k tokens covers all but
+ * pathological PRs while bounding the per-review token spend (every domain
+ * reviewer embeds the whole diff).
+ */
+const ANTHROPIC_MAX_DIFF_CHARS = 240_000;
 
 /**
  * Build the per-backend config key names for a given namespace — the operator
@@ -100,6 +122,7 @@ export const namespacedKeys = (
     modelKey: `${namespace}.opencode.model`,
     modeKey: `${namespace}.opencode.mode`,
     defaultMode: "tools",
+    defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
   },
   reasonix: {
     modelKey: `${namespace}.reasonix.model`,
@@ -107,6 +130,7 @@ export const namespacedKeys = (
     // DeepSeek-class reasoning models don't honour tool-calls — default them
     // to json mode (validated against the live Workers AI binding).
     defaultMode: "json",
+    defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
   },
   anthropic: {
     modelKey: `${namespace}.anthropic.model`,
@@ -114,6 +138,7 @@ export const namespacedKeys = (
     // Claude honours forced tool use (`tool_choice: any`) reliably; tool
     // arguments come back as a parsed object the engine already tolerates.
     defaultMode: "tools",
+    defaultMaxDiffChars: ANTHROPIC_MAX_DIFF_CHARS,
   },
 });
 
@@ -149,6 +174,8 @@ export type ResolvedBackend = {
   readonly model: string;
   /** Output mode the engine drives this backend with. */
   readonly mode: ReviewMode;
+  /** Diff cap (chars) sized to this backend's context window — see `capDiff`. */
+  readonly maxDiffChars: number;
 };
 
 /** Narrow an arbitrary config string to a known `Backend`, or the default. */
@@ -189,7 +216,7 @@ export const resolveBackend = <R>(
 
     const mode = parseMode(yield* getConfig(keys.modeKey), keys.defaultMode);
 
-    return { backend, model, mode };
+    return { backend, model, mode, maxDiffChars: keys.defaultMaxDiffChars };
   });
 
 /** Map a `Match`-classified provider error to a `ModelCallFailed.reason`. */

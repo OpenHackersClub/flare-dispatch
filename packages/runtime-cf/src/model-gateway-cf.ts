@@ -206,14 +206,22 @@ const completeWorkersAi = (
   req: ModelCompletionRequest,
 ): Effect.Effect<ModelCompletionResult, ModelGatewayError> =>
   Effect.gen(function* () {
+    const sendingTools = req.tools !== undefined && req.tools.length > 0;
     const inputs: AiTextInputs = {
-      messages: [
-        { role: "system", content: req.system },
-        { role: "user", content: req.user },
-      ],
-      ...(req.tools !== undefined && req.tools.length > 0
+      // Workers AI chat templates (observed on llama-3.3) DROP the system
+      // message when `tools` are present — identical prompt token counts with
+      // and without it. Fold the system instruction into the user message on
+      // the tools path so it actually reaches the model; keep the separate
+      // system role on the plain-text path, where templates honour it.
+      messages: sendingTools
+        ? [{ role: "user", content: `${req.system}\n\n${req.user}` }]
+        : [
+            { role: "system", content: req.system },
+            { role: "user", content: req.user },
+          ],
+      ...(sendingTools
         ? {
-            tools: req.tools.map((t) => ({
+            tools: (req.tools ?? []).map((t) => ({
               type: "function" as const,
               function: {
                 name: t.name,

@@ -57,11 +57,12 @@ export const stripDiffNoise = (diff: string): string => {
 };
 
 /**
- * Max chars of (noise-stripped) diff sent to the model. A huge PR would
- * otherwise blow the provider context window (every domain reviewer embeds the
- * whole diff, and `full` tier fans out to seven of them) → the review hard-fails
- * and the token cost multiplies. ~120 KB ≈ 30k tokens, comfortably under a
- * typical 128k-context backend with room for the system prompt + response.
+ * Fallback max chars of (noise-stripped) diff sent to the model when the
+ * caller doesn't pass a backend-sized cap. Prefer `ResolvedBackend.maxDiffChars`
+ * (see backend.ts) — caps must track the model's context window: a huge PR
+ * would otherwise blow the provider context (every domain reviewer embeds the
+ * whole diff, and `full` tier fans out to seven of them), overflowing
+ * invisibly instead of truncating visibly.
  */
 export const MAX_DIFF_CHARS = 120_000;
 
