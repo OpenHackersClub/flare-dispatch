@@ -21,7 +21,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { it } from "@effect/vitest";
-import { Cause, Effect, Exit, Layer, Option } from "effect";
+import { Cause, Effect, Exit, Layer, Match, Option } from "effect";
 import { describe, expect } from "vitest";
 import {
   ExecFailed,
@@ -151,6 +151,24 @@ describe("cdp-acceptance", () => {
             })
           : undefined;
         expect(tag).toBe("AcceptanceFailed");
+
+        // The failure carries a short markdown summary linking the already-
+        // uploaded report + screenshots bundles (issue #85), so the red
+        // check-run points straight at the debugging artifacts.
+        const summaryMd = Exit.isFailure(exit)
+          ? Option.match(Cause.failureOption(exit.cause), {
+              onNone: () => undefined,
+              onSome: (failure) =>
+                Match.value(failure).pipe(
+                  Match.tag("AcceptanceFailed", (e) => e.summaryMd),
+                  Match.orElse(() => undefined),
+                ),
+            })
+          : undefined;
+        expect(summaryMd).toBeDefined();
+        expect(summaryMd).toContain("exited `1`");
+        expect(summaryMd).toContain("[Playwright report](");
+        expect(summaryMd).toContain("[Screenshots](");
       }).pipe(Effect.provide(layer));
     },
   );

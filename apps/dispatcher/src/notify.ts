@@ -32,6 +32,12 @@ export type RenderResultEmailInput = {
    * failed run (no output produced). Rendered as a labelled link/value table.
    */
   readonly output?: unknown;
+  /**
+   * Run-authored failure markdown (`AcceptanceFailed.summaryMd` — the same
+   * text the check-run failure summary embeds, issue #85). Rendered escaped
+   * inside a `<pre>` block on the failure branch only; ignored on success.
+   */
+  readonly failureDisplay?: string;
 };
 
 export type RenderedEmail = {
@@ -99,6 +105,16 @@ export const renderResultEmail = (
 ): RenderedEmail => {
   const badge = statusBadge(input.status);
   const rows = input.status === "success" ? outputRows(input.output) : [];
+  // The run-authored failure markdown, failure branch only. Caller-influenced
+  // text — always escaped, shown as-is in a <pre> (no markdown rendering in
+  // email; the verbatim table/text is still far more useful than the generic
+  // "no output" line it replaces).
+  const failureDisplay =
+    input.status === "failure" &&
+    input.failureDisplay !== undefined &&
+    input.failureDisplay.trim() !== ""
+      ? input.failureDisplay
+      : undefined;
 
   const subject = `[FlareDispatch] ${input.run} — ${input.status === "success" ? "✓ succeeded" : "✗ failed"}`;
 
@@ -125,11 +141,13 @@ export const renderResultEmail = (
           )
           .join("")}</table>`
       : input.status === "failure"
-        ? `<p style="font-size:14px;color:#57606a;">The run failed before producing output.${
-            input.detailsUrl !== undefined
-              ? ` See the <a href="${esc(input.detailsUrl)}">step logs</a> for the cause.`
-              : ""
-          }</p>`
+        ? failureDisplay !== undefined
+          ? `<h3 style="margin:20px 0 8px;font-size:15px;">Failure summary</h3><pre style="margin:0;padding:12px;background:#f6f8fa;border-radius:6px;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;">${esc(failureDisplay)}</pre>`
+          : `<p style="font-size:14px;color:#57606a;">The run failed before producing output.${
+              input.detailsUrl !== undefined
+                ? ` See the <a href="${esc(input.detailsUrl)}">step logs</a> for the cause.`
+                : ""
+            }</p>`
         : "";
 
   const detailsHtml =
@@ -166,7 +184,11 @@ ${detailsHtml}
       );
     }
   } else if (input.status === "failure") {
-    textLines.push("", "The run failed before producing output.");
+    if (failureDisplay !== undefined) {
+      textLines.push("", "Failure summary:", "", failureDisplay);
+    } else {
+      textLines.push("", "The run failed before producing output.");
+    }
   }
   if (input.detailsUrl !== undefined) {
     textLines.push("", `Step logs: ${input.detailsUrl}`);

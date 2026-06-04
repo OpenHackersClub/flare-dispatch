@@ -50,6 +50,44 @@ describe("renderResultEmail", () => {
     expect(text).toContain("FAILED");
   });
 
+  it("renders the run-authored failure summary on the failure branch", () => {
+    const { html, text } = renderResultEmail({
+      ...base,
+      status: "failure",
+      detailsUrl: "https://dash.cloudflare.com/x/instance/01J0EXEC",
+      failureDisplay: "# product-demo — 0/2 chapters passed\n| landing | ❌ fail |",
+    });
+
+    // The markdown is shown verbatim (escaped) in a <pre> block…
+    expect(html).toContain("<pre");
+    expect(html).toContain("0/2 chapters passed");
+    expect(html).toContain("| landing | ❌ fail |");
+    // …replacing the generic "no output" paragraph.
+    expect(html).not.toContain("failed before producing output");
+    // Plain-text alternative carries the same markdown.
+    expect(text).toContain("0/2 chapters passed");
+  });
+
+  it("HTML-escapes the failure summary (caller-influenced markdown)", () => {
+    const { html } = renderResultEmail({
+      ...base,
+      status: "failure",
+      failureDisplay: "<script>alert(1)</script>",
+    });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("ignores failureDisplay on a success", () => {
+    const { html } = renderResultEmail({
+      ...base,
+      status: "success",
+      output: { exitCode: 0 },
+      failureDisplay: "should not render",
+    });
+    expect(html).not.toContain("should not render");
+  });
+
   it("HTML-escapes caller-influenced output values", () => {
     const { html } = renderResultEmail({
       ...base,

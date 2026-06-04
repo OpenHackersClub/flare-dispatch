@@ -14,7 +14,7 @@
 // Browser Run and is exercised end-to-end on the Dispatcher, not here.
 
 import { it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Match, Option } from "effect";
 import { describe, expect } from "vitest";
 import { makeCFRuntimeTest } from "@flare-dispatch/core/testing";
 import { productDemo, parseStoriesMarkdown } from "./product-demo";
@@ -149,5 +149,55 @@ describe("product-demo input resolution", () => {
       },
       "duplicate story names",
     ),
+  );
+});
+
+describe("product-demo honest check (issue #85)", () => {
+  it.effect(
+    "fails with AcceptanceFailed CARRYING the per-chapter summaryMd when no story passes",
+    () => {
+      const { layer } = makeCFRuntimeTest({
+        // Seed the secrets `loadSecrets({ required: true })` resolves + the
+        // mandatory play model — the run dies before any story otherwise.
+        config: {
+          "product-demo.secret/CF_AI_GATEWAY_ID": "gw",
+          "product-demo.secret/CLOUDFLARE_ACCOUNT_ID": "acct",
+          "product-demo.secret/CLOUDFLARE_API_TOKEN": "tok",
+          "product-demo.model.play": "claude-opus-4-7",
+        },
+        // The sentinel poll reads `DONE:1` on its first `cat` (the detached
+        // play exited non-zero); the play's stdout stays empty, so the parse
+        // fallback marks the story failed → passedCount === 0 → honest fail.
+        sandboxProgram: { ".done": { exitCode: 0, stdout: "DONE:1" } },
+      });
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(
+          productDemo.run({
+            ...baseInput,
+            stories: [{ name: "landing", prose: "Visit the homepage." }],
+          } as Parameters<typeof productDemo.run>[0]),
+        );
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        const summaryMd = Exit.isFailure(exit)
+          ? Option.match(Cause.failureOption(exit.cause), {
+              onNone: () => undefined,
+              onSome: (failure) =>
+                Match.value(failure).pipe(
+                  Match.tag("AcceptanceFailed", (e) => e.summaryMd),
+                  Match.orElse(() => undefined),
+                ),
+            })
+          : undefined;
+
+        // The typed failure carries the SAME chapter table a green run
+        // returns as output — the dispatcher embeds it in the red check-run.
+        expect(summaryMd).toBeDefined();
+        expect(summaryMd).toContain("0/1 chapters passed");
+        expect(summaryMd).toContain("| landing |");
+        expect(summaryMd).toContain("❌ fail");
+      }).pipe(Effect.provide(layer));
+    },
   );
 });
