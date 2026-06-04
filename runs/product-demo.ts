@@ -89,6 +89,19 @@ const pollSentinel = ({
       const polled = yield* sandbox
         .exec({ container, command: `cat ${sentinel} 2>/dev/null || true` })
         .pipe(
+          // Bound the poll exec ITSELF: a container exec connection can HANG
+          // (not fail) — `catchTag` recovers failures, never hangs, so an
+          // unbounded poll would block the whole step to the Workflows step
+          // cap. A hung poll says nothing about the detached process, so it
+          // funnels into the same transient path as a killed one.
+          Effect.timeoutFail({
+            duration: "30 seconds",
+            onTimeout: () =>
+              new ExecFailed({
+                exitCode: -1,
+                stderrTail: "poll exec hung >30s (transient, treated like a killed poll)",
+              }),
+          }),
           Effect.map((r) => Option.some(r.stdout)),
           Effect.catchTag("ExecFailed", () =>
             Effect.logWarning(
@@ -292,7 +305,11 @@ export const productDemo = defineRun({
   run: (input) =>
     Effect.gen(function* () {
       const viewport = input.viewportPreset ?? "desktop";
-      const perStorySec = input.maxDurationSecPerStory ?? 180;
+      // Clamped: every step below is budgeted (detached kill → poll bound →
+      // bounded reads → explicit step `timeoutSec`) so its worst case stays
+      // under control; an unclamped operator value would silently push the
+      // play step past its budget arithmetic.
+      const perStorySec = Math.min(input.maxDurationSecPerStory ?? 180, 300);
 
       // -1. Resolve the effective story list BEFORE any browser/sandbox work,
       //     so a misconfigured payload dies cheaply (no CDP session leaked, no
@@ -433,8 +450,77 @@ export const productDemo = defineRun({
             container,
             command: "mkdir -p /tmp/demo/screenshots; demo-agent --help >/dev/null 2>&1 || true",
           })
-          .pipe(Effect.catchAll(() => Effect.succeed(undefined as never))),
+          .pipe(
+            Effect.timeout("60 seconds"),
+            Effect.catchAll(() => Effect.succeed(undefined as never)),
+          ),
       );
+
+      /**
+       * Run one demo-agent invocation with NO unbounded waits anywhere:
+       * detached exec + in-container `timeout -s KILL` + bounded sentinel poll
+       * + bounded out/err reads. This is the load-bearing reliability pattern —
+       * a container exec connection can HANG (not fail), and `catchAll`
+       * recovers failures, never hangs, so any unbounded blocking exec
+       * (or an unbounded poll/read after a detached one) eventually rides a
+       * step to the CF Workflows step cap and sinks the chapter. Worst-case
+       * wall clock ≈ 30s (detach) + pollBudgetSec + 30s (poll grace) + 90s
+       * (reads) — callers size their step `timeoutSec` above that.
+       */
+      const runAgent = ({
+        tag,
+        argv,
+        killAfterSec,
+        pollBudgetSec,
+      }: {
+        readonly tag: string;
+        readonly argv: ReadonlyArray<string>;
+        readonly killAfterSec: number;
+        readonly pollBudgetSec: number;
+      }) =>
+        Effect.gen(function* () {
+          const outPath = `/tmp/demo/${tag}.out`;
+          const errPath = `/tmp/demo/${tag}.err`;
+          const sentinelPath = `/tmp/demo/${tag}.done`;
+          const detachedCmd =
+            `( timeout -s KILL ${killAfterSec} ${argv.map(shellQuote).join(" ")} ` +
+            `> ${outPath} 2> ${errPath} ); echo "DONE:$?" > ${sentinelPath}`;
+          yield* sandbox
+            .runDetached({ container, command: detachedCmd, env: agentEnv })
+            .pipe(
+              Effect.timeoutFail({
+                duration: "30 seconds",
+                onTimeout: () =>
+                  new ExecTimeout({
+                    timeoutSec: 30,
+                    command: `${tag}: runDetached hung`,
+                  }),
+              }),
+            );
+          const exitCode = yield* pollSentinel({
+            container,
+            sentinel: sentinelPath,
+            maxAttempts: Math.ceil(pollBudgetSec / 5),
+          }).pipe(
+            Effect.timeoutTo({
+              duration: `${pollBudgetSec + 30} seconds`,
+              onSuccess: (c: number) => c,
+              onTimeout: () => -2,
+            }),
+            Effect.catchAll(() => Effect.succeed(-3)),
+          );
+          const readBounded = (path: string) =>
+            sandbox
+              .exec({ container, command: `cat ${path} 2>/dev/null || true` })
+              .pipe(
+                Effect.timeout("45 seconds"),
+                Effect.map((r) => r.stdout),
+                Effect.catchAll(() => Effect.succeed("")),
+              );
+          const stdout = yield* readBounded(outPath);
+          const stderr = yield* readBounded(errPath);
+          return { stdout, stderr, exitCode };
+        });
 
       // Defensive parse of an agent's last JSON stdout line — one bad story
       // marks itself failed, never throws and sinks the run.
@@ -495,9 +581,23 @@ export const productDemo = defineRun({
         Effect.gen(function* () {
           const sessionIdPath = `/tmp/demo/session-${i}`;
           const replayJsonPath = `/tmp/demo/replay-${i}.json`;
-          const outPath = `/tmp/demo/play-${i}.out`;
-          const errPath = `/tmp/demo/play-${i}.err`;
-          const sentinelPath = `/tmp/demo/play-${i}.done`;
+
+          // prep — reap any demo-agent left wedged by a PRIOR chapter (a hung
+          // play/record process keeps puppeteer + its CDP socket alive and
+          // degrades every later chapter's CDP ops on the shared box). The
+          // pattern can't match this exec's own shell (its cmdline carries the
+          // literal `(play|record)` group, not the word). Best-effort.
+          yield* step(`prep-${i}`, () =>
+            sandbox
+              .exec({
+                container,
+                command: `pkill -9 -f 'demo-agent (play|record)' 2>/dev/null; mkdir -p ${screenshotsDir}; true`,
+              })
+              .pipe(
+                Effect.timeout("30 seconds"),
+                Effect.catchAll(() => Effect.succeed(undefined as never)),
+              ),
+          );
 
           // attach — this story's OWN session, pre-acquired with Session
           // Recording armed (Browser Run rrweb, Beta). The pre-acquire gives us
@@ -514,96 +614,119 @@ export const productDemo = defineRun({
                 })),
               ),
           );
-          const cdpWsUrl = attached.wsEndpoint;
+          // The session the rest of the chapter dials — replaced by a fresh
+          // one if record-start finds it dead (see recovery below).
+          let activeWs = attached.wsEndpoint;
+          let activeSessionId = attached.sessionId;
 
           // record-start — navigate to the app + persist the REAL session id
           // (passed through; the CDP-derived fallback is not recognised by the
-          // recording REST API).
-          yield* step(`record-start-${i}`, () =>
-            sandbox.exec({
-              container,
-              // shellQuote every arg: the CF Sandbox runs array commands
-              // THROUGH a shell, and the recording cdpWsUrl now contains `&`
-              // (?token=…&browser_session=…&recording=true) — unquoted, bash
-              // backgrounds the binary and reads the next flag as a command
-              // (exit 127), silently breaking record-start/record-stop. Same
-              // pattern the play loop already uses.
-              command: [
-                "demo-agent", "record", "start",
-                "--cdp-ws", cdpWsUrl,
-                "--viewport", viewport,
-                "--session-id-out", sessionIdPath,
-                "--url", input.deployedUrl,
-                ...(attached.sessionId !== ""
-                  ? ["--session-id", attached.sessionId]
-                  : []),
-              ]
-                .map(shellQuote)
-                .join(" "),
-              env: agentEnv,
-            }),
+          // recording REST API). Runs DETACHED + bounded (`runAgent`): as a
+          // blocking exec this was the run's worst wedge — the navigation to a
+          // heavy app page can hang the agent, and a hung exec connection rode
+          // the step to the Workflows step cap, killing the session and the
+          // chapter with it.
+          const recordStartArgv = (ws: string, sid: string) => [
+            "demo-agent", "record", "start",
+            "--cdp-ws", ws,
+            "--viewport", viewport,
+            "--session-id-out", sessionIdPath,
+            "--url", input.deployedUrl,
+            ...(sid !== "" ? ["--session-id", sid] : []),
+          ];
+          const startResult = yield* step(
+            `record-start-${i}`,
+            () =>
+              runAgent({
+                tag: `record-start-${i}`,
+                argv: recordStartArgv(activeWs, activeSessionId),
+                killAfterSec: 120,
+                pollBudgetSec: 150,
+              }),
+            { timeoutSec: 360, retries: 0 },
+          ).pipe(
+            Effect.catchAll((cause) =>
+              Effect.succeed({
+                stdout: "",
+                stderr: `record-start step failed: ${String(cause)}`,
+                exitCode: -3,
+              }),
+            ),
           );
 
-          // play — DETACHED + sentinel-poll (the reliable pattern; explicit
-          // container), bounded so a hung play returns a failed result.
+          // recovery — a failed record-start usually means the pre-acquired
+          // session died (or never came up). Acquire ONE fresh session and
+          // retry; if that fails too, play anyway WITHOUT a recording (the
+          // agent's play navigates an about:blank page itself). A chapter
+          // with no replay beats a chapter lost to recording setup.
+          if (startResult.exitCode !== 0) {
+            yield* io.log(
+              "warn",
+              `story '${story.name}': record-start failed (exit ${startResult.exitCode}) — re-acquiring session. stderr tail: ${startResult.stderr.slice(-200)}`,
+            );
+            const fresh = yield* step(`reattach-cdp-${i}`, () =>
+              browser
+                .newCDPSession({ targetUrl: input.deployedUrl, recording: true })
+                .pipe(
+                  Effect.map((session) => ({
+                    wsEndpoint: session.wsEndpoint,
+                    sessionId: session.sessionId ?? "",
+                  })),
+                ),
+            ).pipe(
+              Effect.catchAll(() =>
+                Effect.succeed<{ wsEndpoint: string; sessionId: string } | null>(
+                  null,
+                ),
+              ),
+            );
+            if (fresh !== null) {
+              activeWs = fresh.wsEndpoint;
+              activeSessionId = fresh.sessionId;
+              yield* step(
+                `record-start-${i}-retry`,
+                () =>
+                  runAgent({
+                    tag: `record-start-${i}-retry`,
+                    argv: recordStartArgv(activeWs, activeSessionId),
+                    killAfterSec: 120,
+                    pollBudgetSec: 150,
+                  }),
+                { timeoutSec: 360, retries: 0 },
+              ).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+            }
+          }
+
+          // play — DETACHED + sentinel-poll via `runAgent` (every wait
+          // bounded). If the poll missed the sentinel (-2/-3) but the play
+          // left a parseable verdict in its out file, treat it as a clean
+          // completion — the verdict is the verdict regardless of how the
+          // poll fared.
           const playResult = yield* step(
             `play-${i}`,
             () =>
-              Effect.gen(function* () {
-                const playArgv = [
+              runAgent({
+                tag: `play-${i}`,
+                argv: [
                   "demo-agent", "play",
-                  "--cdp-ws", cdpWsUrl,
+                  "--cdp-ws", activeWs,
                   "--name", story.name,
                   "--prose", story.prose,
                   "--screenshots", screenshotsDir,
                   "--max-sec", String(perStorySec),
                   "--model", playModel,
                   "--url", input.deployedUrl,
-                ]
-                  .map(shellQuote)
-                  .join(" ");
-                const detachedCmd =
-                  `mkdir -p ${screenshotsDir}; ` +
-                  `( timeout -s KILL ${perStorySec + 90} ${playArgv} > ${outPath} 2> ${errPath} ); ` +
-                  `echo "DONE:$?" > ${sentinelPath}`;
-                yield* sandbox.runDetached({
-                  container,
-                  command: detachedCmd,
-                  env: agentEnv,
-                });
-                // Bound the POLL ITSELF (not the whole step), so the file
-                // reads below ALWAYS run. A finished play has already written
-                // its verdict to `outPath`; if a slow/starved poll missed the
-                // sentinel before the wall-clock bound, reading `outPath` still
-                // recovers the real verdict (no more "-2 exceeded budget" on a
-                // play that actually completed), and `errPath` carries the
-                // agent's tail when it genuinely hung.
-                const exitCode = yield* pollSentinel({
-                  container,
-                  sentinel: sentinelPath,
-                  maxAttempts: Math.ceil((perStorySec + 120) / 5),
-                }).pipe(
-                  Effect.timeoutTo({
-                    duration: "8 minutes",
-                    onSuccess: (c: number) => c,
-                    onTimeout: () => -2,
-                  }),
-                  Effect.catchAll(() => Effect.succeed(-3)),
-                );
-                const stdout = yield* sandbox
-                  .exec({ container, command: `cat ${outPath} 2>/dev/null || true` })
-                  .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
-                const stderr = yield* sandbox
-                  .exec({ container, command: `cat ${errPath} 2>/dev/null || true` })
-                  .pipe(Effect.map((r) => r.stdout), Effect.catchAll(() => Effect.succeed("")));
-                // If the poll timed out (-2/-3) but the play left a parseable
-                // result, treat it as a clean completion (exit 0) — the verdict
-                // is in stdout regardless of how the poll fared.
-                const effectiveExit =
-                  exitCode < 0 && stdout.trim() !== "" ? 0 : exitCode;
-                return { stdout, stderr, exitCode: effectiveExit };
-              }),
-            { retries: 0 },
+                ],
+                killAfterSec: perStorySec + 60,
+                pollBudgetSec: perStorySec + 90,
+              }).pipe(
+                Effect.map((r) => ({
+                  ...r,
+                  exitCode:
+                    r.exitCode < 0 && r.stdout.trim() !== "" ? 0 : r.exitCode,
+                })),
+              ),
+            { timeoutSec: perStorySec + 330, retries: 0 },
           ).pipe(
             Effect.catchAll((cause) =>
               Effect.succeed({
@@ -615,32 +738,28 @@ export const productDemo = defineRun({
           );
 
           // record-stop — close THIS session + pull its rrweb recording.
-          const recordStopResult = yield* step(`record-stop-${i}`, () =>
-            sandbox
-              .exec({
-                container,
-                // shellQuote — same `&` hazard as record-start above.
-                command: [
+          // DETACHED + bounded like record-start: the recording REST fetch
+          // retries + the session close can both stall, and a blocking exec
+          // that hangs would ride the step to the cap. Best-effort.
+          const recordStopResult = yield* step(
+            `record-stop-${i}`,
+            () =>
+              runAgent({
+                tag: `record-stop-${i}`,
+                argv: [
                   "demo-agent", "record", "stop",
-                  "--cdp-ws", cdpWsUrl,
+                  "--cdp-ws", activeWs,
                   "--session-id-in", sessionIdPath,
                   "--out", replayJsonPath,
-                ]
-                  .map(shellQuote)
-                  .join(" "),
-                env: agentEnv,
-              })
-              .pipe(
-                Effect.catchAll(() =>
-                  Effect.succeed({
-                    stdout: "",
-                    stderr: "",
-                    exitCode: 1,
-                    durationMs: 0,
-                    logPath: "",
-                  }),
-                ),
-              ),
+                ],
+                killAfterSec: 120,
+                pollBudgetSec: 150,
+              }),
+            { timeoutSec: 360, retries: 0 },
+          ).pipe(
+            Effect.catchAll(() =>
+              Effect.succeed({ stdout: "", stderr: "", exitCode: 1 }),
+            ),
           );
 
           const pj = parseLastJson<PlayJson>(playResult.stdout, {
@@ -670,7 +789,12 @@ export const productDemo = defineRun({
                 contentType: "application/json",
                 signedUrlTTL: "30 days",
               })
-              .pipe(Effect.catchAll(() => Effect.succeed(""))),
+              .pipe(
+                // The upload reads from the container FS — bound it like every
+                // other container interaction (a hung read = a capped step).
+                Effect.timeout("90 seconds"),
+                Effect.catchAll(() => Effect.succeed("")),
+              ),
           );
           const keyScreenshotUri =
             pj.keyScreenshotPath === ""
@@ -684,7 +808,10 @@ export const productDemo = defineRun({
                       contentType: "image/png",
                       signedUrlTTL: "30 days",
                     })
-                    .pipe(Effect.catchAll(() => Effect.succeed(""))),
+                    .pipe(
+                      Effect.timeout("90 seconds"),
+                      Effect.catchAll(() => Effect.succeed("")),
+                    ),
                 );
 
           const replayUri =
@@ -782,6 +909,7 @@ export const productDemo = defineRun({
               .join(" "),
           })
           .pipe(
+            Effect.timeout("60 seconds"),
             Effect.andThen(
               artifact.upload({
                 name: "summary.md",
@@ -791,6 +919,7 @@ export const productDemo = defineRun({
                 signedUrlTTL: "30 days",
               }),
             ),
+            Effect.timeout("3 minutes"),
             Effect.catchAll(() => Effect.succeed("")),
           ),
       );
