@@ -32,7 +32,18 @@ export class ExecTimeout extends Schema.TaggedError<ExecTimeout>()(
  */
 export class AcceptanceFailed extends Schema.TaggedError<AcceptanceFailed>()(
   "AcceptanceFailed",
-  { exitCode: Schema.Number },
+  {
+    exitCode: Schema.Number,
+    /**
+     * Optional run-authored failure presentation — markdown the dispatcher
+     * embeds beneath the generic "execution failed" line in the check-run
+     * summary (and the notify email), so a red check explains itself instead
+     * of pointing at R2. A run that already builds a human-readable verdict
+     * (e.g. `product-demo`'s per-chapter table) attaches it here; absent ⇒
+     * the generic line renders alone, exactly as before.
+     */
+    summaryMd: Schema.optional(Schema.String),
+  },
 ) {}
 
 export class ContainerLaunchFailed extends Schema.TaggedError<ContainerLaunchFailed>()(

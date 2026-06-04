@@ -803,7 +803,13 @@ export const productDemo = defineRun({
       //    summary table show which chapters passed/failed, and the email links
       //    the replay URL of the first recorded chapter.
       if (passedCount === 0) {
-        return yield* Effect.fail(new AcceptanceFailed({ exitCode: 1 }));
+        // Attach the per-chapter table to the typed failure (issue #85) — the
+        // dispatcher embeds `summaryMd` beneath the generic line in the red
+        // check-run summary + the notify email, so the failure narrative is
+        // visible on the PR itself, not only in the R2 `summary.md`.
+        return yield* Effect.fail(
+          new AcceptanceFailed({ exitCode: 1, summaryMd }),
+        );
       }
 
       // The check-run summary the Dispatcher posts EMBEDS `summaryMd` verbatim.

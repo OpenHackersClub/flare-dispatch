@@ -55,6 +55,7 @@ import {
 } from "@flare-dispatch/runtime-cf";
 import { lookupRun } from "./registry";
 import { selectSandboxNs } from "./sandbox-routing";
+import { appendFailureSummary, failureSummaryMd } from "./failure-summary";
 import { renderResultEmail } from "./notify";
 import { workflowDashboardUrl } from "./dashboard-url";
 import type { Env } from "./env";
@@ -361,6 +362,14 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         onFailure: () => "failure" as const,
       });
 
+      // The run-authored failure presentation (issue #85): a typed failure may
+      // carry markdown (`AcceptanceFailed.summaryMd` — e.g. `product-demo`'s
+      // per-chapter table). Extracted ONCE here and reused by both the
+      // check-run failure summary and the notify email below. `undefined` on
+      // success, on a defect/interrupt, and on a summary-less failure — those
+      // render the generic line alone, exactly as before.
+      const failureMd = failureSummaryMd(exit);
+
       // Persist the run output as JSON so `io.priorExecution` can recover it
       // on the next execution in the semantic family. A failed Exit has no
       // output; the column stays NULL.
@@ -397,7 +406,14 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
           summary: Exit.match(exit, {
             onSuccess: () =>
               `✓ ${payload.run} — execution succeeded.${logsSuffix}`,
-            onFailure: () => `✗ ${payload.run} — execution failed.${logsSuffix}`,
+            // The run's own markdown (when the failure carries one) renders
+            // beneath the generic line + logs link, truncated to GitHub's
+            // 65535-char summary limit.
+            onFailure: () =>
+              appendFailureSummary(
+                `✗ ${payload.run} — execution failed.${logsSuffix}`,
+                failureMd,
+              ),
           }),
         },
       });
@@ -420,6 +436,9 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
             onSuccess: (out) => out,
             onFailure: () => undefined,
           }),
+          // The same run-authored markdown the check-run embeds — rendered
+          // (escaped) on the email's failure branch.
+          ...(failureMd !== undefined ? { failureDisplay: failureMd } : {}),
         });
         yield* email
           .send({

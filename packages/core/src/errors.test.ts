@@ -178,6 +178,21 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
     },
   ];
 
+describe("AcceptanceFailed — optional failure presentation (summaryMd)", () => {
+  it("carries the run-authored markdown when provided", () => {
+    const err = new AcceptanceFailed({
+      exitCode: 1,
+      summaryMd: "# product-demo — 0/3 chapters passed",
+    });
+    expect(err.summaryMd).toBe("# product-demo — 0/3 chapters passed");
+  });
+
+  it("is constructible without summaryMd (backward compatible)", () => {
+    const err = new AcceptanceFailed({ exitCode: 1 });
+    expect(err.summaryMd).toBeUndefined();
+  });
+});
+
 describe("RunError — exhaustive Match", () => {
   for (const { name, err, expect: want } of samples) {
     it(`matches ${name}`, () => {

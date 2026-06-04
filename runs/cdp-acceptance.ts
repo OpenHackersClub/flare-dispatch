@@ -327,9 +327,24 @@ export const cdpAcceptance = defineRun({
       yield* io.log("info", `cdp-acceptance exited ${exitCode}`);
       // A non-zero suite exit is a real test failure — fail the run so the
       // check-run conclusion is `failure`. Uploads above already ran, so the
-      // report + screenshots are available for debugging the red run.
+      // report + screenshots are available for debugging the red run — and
+      // the failure carries their links as `summaryMd` (issue #85) so the
+      // red check-run points straight at them instead of a bare "failed".
       if (exitCode !== 0) {
-        return yield* Effect.fail(new AcceptanceFailed({ exitCode }));
+        return yield* Effect.fail(
+          new AcceptanceFailed({
+            exitCode,
+            summaryMd: [
+              `Test suite exited \`${exitCode}\`.`,
+              ...(reportUri !== ""
+                ? [`- [Playwright report](${reportUri})`]
+                : []),
+              ...(screenshotsUri !== ""
+                ? [`- [Screenshots](${screenshotsUri})`]
+                : []),
+            ].join("\n"),
+          }),
+        );
       }
       return { exitCode, reportUri, screenshotsUri };
     }),
