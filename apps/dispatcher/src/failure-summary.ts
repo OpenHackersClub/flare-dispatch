@@ -20,7 +20,9 @@ import type { RunError } from "@flare-dispatch/core";
  */
 export const CHECK_SUMMARY_MAX_CHARS = 65_535;
 
-const TRUNCATION_NOTE = "\n\n_… summary truncated to fit the check-run limit._";
+/** Appended when the run's markdown is cut — exported for the boundary test. */
+export const TRUNCATION_NOTE =
+  "\n\n_… summary truncated to fit the check-run limit._";
 
 /**
  * Extract the run-authored failure markdown from a run's `Exit`, when one is
@@ -28,6 +30,11 @@ const TRUNCATION_NOTE = "\n\n_… summary truncated to fit the check-run limit._
  * is none — there is no typed failure to read), and on any typed failure that
  * carries no presentation. Only `AcceptanceFailed` carries one today; new
  * error variants opt in by growing a branch here.
+ *
+ * `Cause.failureOption` picks the LEFTMOST failure, so a multi-error Cause
+ * (parallel/sequential composition) surfaces at most one summary — and
+ * degrades to the generic line when that leftmost failure carries none. By
+ * design: a run fails with one typed error in practice.
  */
 export const failureSummaryMd = (
   exit: Exit.Exit<unknown, RunError>,
@@ -66,5 +73,11 @@ export const appendFailureSummary = (
   // A generic line that alone exhausts the limit cannot happen today (it is a
   // single sentence), but guard anyway: drop the summary rather than the line.
   if (budget <= 0) return genericLine.slice(0, CHECK_SUMMARY_MAX_CHARS);
-  return `${genericLine}\n\n${summaryMd.slice(0, budget)}${TRUNCATION_NOTE}`;
+  // `slice` counts UTF-16 units, so the cut can land inside a surrogate pair —
+  // strip a trailing lone high surrogate so the checks payload stays
+  // well-formed (a mangled pair can 422 the whole update).
+  const truncated = summaryMd
+    .slice(0, budget)
+    .replace(/[\uD800-\uDBFF]$/, "");
+  return `${genericLine}\n\n${truncated}${TRUNCATION_NOTE}`;
 };

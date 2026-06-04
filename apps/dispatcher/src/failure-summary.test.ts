@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { AcceptanceFailed, ExecFailed } from "@flare-dispatch/core";
 import {
   CHECK_SUMMARY_MAX_CHARS,
+  TRUNCATION_NOTE,
   appendFailureSummary,
   failureSummaryMd,
 } from "./failure-summary";
@@ -81,6 +82,25 @@ describe("appendFailureSummary", () => {
     expect(combined.length).toBeLessThanOrEqual(CHECK_SUMMARY_MAX_CHARS);
     expect(combined.startsWith(`${generic}\n\n`)).toBe(true);
     expect(combined).toContain("summary truncated");
+  });
+
+  it("does not leave a lone high surrogate when the cut lands inside an astral char", () => {
+    // Position an astral (two-UTF-16-unit) char so the truncation boundary
+    // falls between its surrogate halves.
+    const budget =
+      CHECK_SUMMARY_MAX_CHARS -
+      generic.length -
+      "\n\n".length -
+      TRUNCATION_NOTE.length;
+    const md = "x".repeat(budget - 1) + "😀".repeat(2000);
+    const combined = appendFailureSummary(generic, md);
+
+    expect(combined.length).toBeLessThanOrEqual(CHECK_SUMMARY_MAX_CHARS);
+    expect(combined.endsWith(TRUNCATION_NOTE)).toBe(true);
+    // The char immediately before the truncation note must not be a lone
+    // high surrogate (the split pair's first half).
+    const beforeNote = combined.slice(0, combined.length - TRUNCATION_NOTE.length);
+    expect(/[\uD800-\uDBFF]$/.test(beforeNote)).toBe(false);
   });
 
   it("keeps a within-limit summary verbatim (no truncation note)", () => {
