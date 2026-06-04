@@ -143,7 +143,7 @@ flare-dispatch/
 ├── runs/
 │   └── offload-test.ts                         # the V0 run (see 03-dsl § Top-level shape)
 ├── infra/
-│   ├── d1-schema.sql                           # executions + steps tables verbatim from 05-byoc § D1 schema
+│   ├── migrations/                             # wrangler-tracked D1 migrations (executions + steps in 0001)
 │   └── github-app-manifest.json                # GitHub App manifest (see 05-byoc § GitHub App setup)
 ├── actions/
 │   └── flare-dispatch-action/
@@ -209,7 +209,7 @@ pnpm test                            # all unit tests across packages
 # 1. Provision CF resources
 wrangler r2 bucket create flare-dispatch-v0
 wrangler d1 create flare-dispatch-v0
-wrangler d1 execute flare-dispatch-v0 --remote --file infra/d1-schema.sql
+wrangler d1 migrations apply RUNS_METADATA --remote
 # wrangler writes IDs back into wrangler.jsonc
 
 # 2. Set secrets

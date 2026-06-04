@@ -117,7 +117,14 @@
     {
       "binding": "RUNS_METADATA",
       "database_name": "flare-dispatch-v0",
-      "database_id": "9bebd4f1-8036-4461-9031-efb880d6259f"
+      "database_id": "9bebd4f1-8036-4461-9031-efb880d6259f",
+      // Wrangler-tracked migrations (applied state lives in the database's
+      // d1_migrations table). Schema changes are numbered files here —
+      // applied in CI by deploy-dispatcher.yml BEFORE `wrangler deploy`, or
+      // manually: `wrangler d1 migrations apply RUNS_METADATA --remote`.
+      // Self-hosted operator configs (wrangler.<name>.jsonc) must carry the
+      // same migrations_dir so their deploy recipe can run the same command.
+      "migrations_dir": "infra/migrations"
     }
   ],
 

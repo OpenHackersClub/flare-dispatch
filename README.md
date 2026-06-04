@@ -48,7 +48,7 @@ pnpm typecheck && pnpm test
 # Provision CF resources — wrangler writes the IDs back into wrangler.jsonc
 wrangler r2 bucket create flare-dispatch-v0
 wrangler d1 create flare-dispatch-v0
-wrangler d1 execute flare-dispatch-v0 --remote --file infra/d1-schema.sql
+wrangler d1 migrations apply RUNS_METADATA --remote
 
 # Set secrets
 wrangler secret put HMAC_SECRET                          # openssl rand -base64 32
