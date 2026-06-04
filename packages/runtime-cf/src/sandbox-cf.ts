@@ -57,6 +57,7 @@ import {
   type ExposeResult,
   ExposePortFailed,
   PortNeverOpened,
+  ReadFileFailed,
   Sandbox as SandboxTag,
   type SandboxService,
 } from "@flare-dispatch/core";
@@ -343,6 +344,28 @@ export const makeSandboxCloudflareLive = (
         },
       });
     },
+
+    // Full-content file read — the companion to `exec` for outputs larger
+    // than the inlined stdout tail (see `inlineTail`). The SDK's `readFile`
+    // streams the file over HTTP from the container, so multi-hundred-KB
+    // text (a big `git diff --output`) arrives intact. The result is NOT
+    // checkpointed here — bounding what flows into a Workflow checkpoint is
+    // the CALLER's job (e.g. pr-review caps the diff inside its step).
+    readFile: ({ path }) =>
+      Effect.tryPromise({
+        try: async () => {
+          const result = await box.readFile(path);
+          if (!result.success) {
+            throw new Error(`readFile ${path} reported success=false`);
+          }
+          return result.content;
+        },
+        catch: (cause) =>
+          new ReadFileFailed({
+            path,
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+      }),
 
     // Detached execution (PR9) — `bootApp`'s "start the app, return at once"
     // path. `startProcess` launches a long-running process; the run later

@@ -25,6 +25,16 @@ export class ExecTimeout extends Schema.TaggedError<ExecTimeout>()(
 ) {}
 
 /**
+ * A container file read failed (missing path, binary content, transport
+ * error). Raised by `sandbox.readFile` — the path runs use to move command
+ * output larger than the inlined `ExecResult.stdout` tail out of a container.
+ */
+export class ReadFileFailed extends Schema.TaggedError<ReadFileFailed>()(
+  "ReadFileFailed",
+  { path: Schema.String, message: Schema.String },
+) {}
+
+/**
  * A run's command/suite ran to completion but exited non-zero (a real test
  * failure). A run raises this to fail itself so the dispatcher reports a
  * `failure` check-run — distinct from `ExecFailed` (the process could not run

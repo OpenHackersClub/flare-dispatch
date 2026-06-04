@@ -14,6 +14,7 @@ import type {
   ExecTimeout,
   ExposePortFailed,
   PortNeverOpened,
+  ReadFileFailed,
 } from "../errors";
 
 /** A handle to an acquired container; auto-released at run end. */
@@ -70,6 +71,17 @@ export interface SandboxService {
   readonly exec: (
     opts: ExecOpts,
   ) => Effect.Effect<ExecResult, ExecFailed | ExecTimeout>;
+  /**
+   * Read a container file's full text content into the Worker. The companion
+   * to `exec` for large outputs: `ExecResult.stdout` inlines only a bounded
+   * tail (the rest streams to R2), so a run that needs a command's COMPLETE
+   * output writes it to a file and reads it back here — e.g. `pr-review`'s
+   * `git diff --output=<file>`.
+   */
+  readonly readFile: (opts: {
+    path: string;
+    container?: Container;
+  }) => Effect.Effect<string, ReadFileFailed>;
   readonly runDetached: (
     opts: ExecOpts,
   ) => Effect.Effect<DetachedHandle, ContainerLaunchFailed>;
@@ -114,6 +126,8 @@ export const sandbox = {
       Effect.flatMap(Sandbox, (s) => s.gitClone(opts)),
   },
   exec: (opts: ExecOpts) => Effect.flatMap(Sandbox, (s) => s.exec(opts)),
+  readFile: (opts: { path: string; container?: Container }) =>
+    Effect.flatMap(Sandbox, (s) => s.readFile(opts)),
   runDetached: (opts: ExecOpts) =>
     Effect.flatMap(Sandbox, (s) => s.runDetached(opts)),
   waitForExit: (opts: { handle: DetachedHandle; pollEvery?: Duration.Duration }) =>

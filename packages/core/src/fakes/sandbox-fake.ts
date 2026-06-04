@@ -8,7 +8,7 @@
 // Spec: specs/pm/plan.md § 3 (fakes/), specs/03-dsl.md § sandbox.
 
 import { Effect, Layer } from "effect";
-import { ExecFailed, ExecTimeout } from "../errors";
+import { ExecFailed, ExecTimeout, ReadFileFailed } from "../errors";
 import {
   type Container,
   type DetachedHandle,
@@ -39,6 +39,8 @@ export type SandboxFakeState = {
   }[];
   /** every `exposePort` call, in order — lets tests assert the port was exposed. */
   readonly exposed: { port: number; name?: string }[];
+  /** every `readFile` call, in order. */
+  readonly reads: { path: string }[];
 };
 
 const normalizeCommand = (command: string | readonly string[]): string =>
@@ -68,12 +70,15 @@ const fullResult = (partial: Partial<ExecResult> & { exitCode: number }): ExecRe
  */
 export const makeSandboxFake = (
   program: CannedProgram = {},
+  /** path→content map answering `readFile`; an unseeded path fails. */
+  files: Record<string, string> = {},
 ): { layer: Layer.Layer<Sandbox>; state: SandboxFakeState } => {
   const state: SandboxFakeState = {
     acquired: [],
     clones: [],
     execs: [],
     exposed: [],
+    reads: [],
   };
   let containerSeq = 0;
   const detachedCommands = new Map<string, string>();
@@ -117,6 +122,19 @@ export const makeSandboxFake = (
             );
       }
       return Effect.succeed(fullResult(canned ?? { exitCode: 0 }));
+    },
+
+    // Mirrors the live layer: a seeded path returns its content, anything
+    // else fails — so a run that forgets to write the file before reading it
+    // fails the same way in tests as in prod.
+    readFile: ({ path }) => {
+      state.reads.push({ path });
+      const content = files[path];
+      return content === undefined
+        ? Effect.fail(
+            new ReadFileFailed({ path, message: "no such file in fake" }),
+          )
+        : Effect.succeed(content);
     },
 
     runDetached: (opts: ExecOpts) =>
