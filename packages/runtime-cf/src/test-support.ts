@@ -5,13 +5,13 @@
 // pinned to Vitest 2 — so the tests instead boot a Miniflare instance directly
 // (Miniflare is the same local Workers runtime `vitest-pool-workers` uses under
 // the hood). `makeTestBindings` spins up Miniflare with D1 + R2 + KV bindings,
-// applies infra/d1-schema.sql, and hands back the live `D1Database` /
+// applies every migration under infra/migrations/ in order, and hands back the live `D1Database` /
 // `R2Bucket` / `KVNamespace` objects. Plain Node + Vitest, no Workers pool —
 // the "or an equivalent" path the PR4 acceptance allows.
 //
 // Spec: specs/pm/plan.md § PR4 acceptance.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 
@@ -24,15 +24,25 @@ export type TestBindings = {
   readonly dispose: () => Promise<void>;
 };
 
-/** The V0 D1 schema, read once — applied to each fresh test database. */
-const D1_SCHEMA = readFileSync(
-  fileURLToPath(new URL("../../../infra/d1-schema.sql", import.meta.url)),
-  "utf8",
+/**
+ * The D1 schema, read once — every migration under infra/migrations/,
+ * concatenated in filename order. Tests apply EXACTLY what
+ * `wrangler d1 migrations apply` runs in production, so the two can never
+ * drift (the old single d1-schema.sql had no applied-state tracking and is
+ * gone).
+ */
+const MIGRATIONS_DIR = fileURLToPath(
+  new URL("../../../infra/migrations/", import.meta.url),
 );
+const D1_SCHEMA = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .map((f) => readFileSync(new URL(f, `file://${MIGRATIONS_DIR}`), "utf8"))
+  .join("\n");
 
 /**
  * Boot a Miniflare instance with a D1 database + R2 bucket + KV namespace,
- * apply the V0 D1 schema, and return the live bindings. The worker script is a
+ * apply every D1 migration in order, and return the live bindings. The worker script is a
  * no-op `fetch` handler — the tests drive the bindings directly, never the
  * Worker.
  */
@@ -54,16 +64,16 @@ export const makeTestBindings = async (): Promise<TestBindings> => {
     "CONFIG_KV",
   )) as unknown as KVNamespace;
 
-  // Apply the schema. D1's `exec` runs one statement per line, so the
-  // multi-line `CREATE TABLE`s are collapsed to single lines first.
-  const statements = D1_SCHEMA.split(";")
-    .map((s) =>
-      s
-        .split("\n")
-        .map((line) => line.replace(/--.*$/, "").trim())
-        .filter(Boolean)
-        .join(" "),
-    )
+  // Apply the migrations. D1's `exec` runs one statement per line, so the
+  // multi-line `CREATE TABLE`s are collapsed to single lines. Comments are
+  // stripped BEFORE splitting on ";" — splitting first turned a semicolon
+  // inside a comment into a corrupted next statement.
+  const statements = D1_SCHEMA.split("\n")
+    .map((line) => line.replace(/--.*$/, "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .split(";")
+    .map((s) => s.trim())
     .filter(Boolean);
   for (const statement of statements) {
     await db.exec(statement);

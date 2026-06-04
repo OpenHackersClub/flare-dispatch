@@ -77,7 +77,7 @@ flare-dispatch/                                    your fork of the template
 ├── actions/
 │   └── flare-dispatch-action/                 GHA composite Action (bundled JS)
 ├── infra/
-│   ├── d1-schema.sql
+│   ├── migrations/                  # wrangler-tracked D1 migrations (numbered .sql)
 │   ├── Dockerfile.sandbox                     container image baked from @cloudflare/sandbox
 │   └── github-app-manifest.json
 └── specs/                                     these docs
@@ -198,7 +198,7 @@ These entries land with the features that consume them — keep them out of `wra
 
 ## D1 schema
 
-The D1 database holds execution and step metadata (the conceptual data model is in [01-architecture § Data model](01-architecture.md#data-model)). The literal schema ships as `infra/d1-schema.sql` and is applied with `wrangler d1 execute` during the deploy walkthrough below.
+The D1 database holds execution and step metadata (the conceptual data model is in [01-architecture § Data model](01-architecture.md#data-model)). The literal schema ships as numbered files under `infra/migrations/` and is applied with `wrangler d1 migrations apply` during the deploy walkthrough below (applied state is tracked in the database's own `d1_migrations` table, so re-applying is a no-op).
 
 ```sql
 CREATE TABLE executions (
@@ -354,7 +354,7 @@ wrangler kv namespace create CONFIG_KV
 # Wrangler writes the IDs back into wrangler.jsonc.
 
 # 3. Apply the D1 schema
-wrangler d1 execute flare-dispatch-v0 --file infra/d1-schema.sql
+wrangler d1 migrations apply RUNS_METADATA --remote
 
 # 4. Set secrets
 wrangler secret put HMAC_SECRET

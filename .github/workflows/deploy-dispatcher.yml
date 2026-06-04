@@ -29,7 +29,7 @@ on:
       - runs/**
       - wrangler.jsonc
       - infra/Dockerfile.sandbox
-      - infra/d1-schema.sql
+      - infra/migrations/**
       - pnpm-lock.yaml
       - .github/workflows/deploy-dispatcher.yml
   workflow_dispatch:
@@ -38,8 +38,8 @@ permissions:
   contents: read
 
 # Serialize deploys on the same ref; do NOT cancel an in-flight deploy — a
-# partially-applied `wrangler deploy` (Workflows + Container + D1 migrations)
-# is worse than queueing the next one.
+# partially-applied deploy (D1 migrations + Workflows + Container) is worse
+# than queueing the next one.
 concurrency:
   group: deploy-dispatcher-${{ github.ref }}
   cancel-in-progress: false
@@ -74,6 +74,19 @@ jobs:
       # deployed via workflow_dispatch from a non-CI state.
       - name: Typecheck dispatcher
         run: pnpm --filter @flare-dispatch/dispatcher typecheck
+
+      # D1 migrations BEFORE the Worker deploy: new code that expects a new
+      # table/column must never reach production ahead of its schema. Wrangler
+      # tracks applied state in the database's own d1_migrations table, so
+      # re-running on an unchanged schema is a fast no-op. 0001 is written
+      # IF-NOT-EXISTS so databases provisioned before this framework (one-shot
+      # `wrangler d1 execute` era) adopt cleanly on first apply.
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply RUNS_METADATA --remote
 
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
