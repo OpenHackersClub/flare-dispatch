@@ -28,10 +28,11 @@ describe("parseBackend", () => {
   it("passes through known backends", () => {
     expect(parseBackend("opencode")).toBe("opencode");
     expect(parseBackend("reasonix")).toBe("reasonix");
+    expect(parseBackend("anthropic")).toBe("anthropic");
   });
   it("falls back to the default for unknown / unset", () => {
     expect(parseBackend(undefined)).toBe(DEFAULT_BACKEND);
-    expect(parseBackend("anthropic")).toBe(DEFAULT_BACKEND);
+    expect(parseBackend("openai")).toBe(DEFAULT_BACKEND);
   });
 });
 
@@ -72,6 +73,18 @@ describe("resolveBackend", () => {
     );
     // reasonix defaults to json mode (DeepSeek doesn't honour tool-calls).
     expect(resolved.mode).toBe("json");
+  });
+
+  it("resolves the anthropic backend (BYOK via AI Gateway)", async () => {
+    const store = {
+      "pr-review.backend": "anthropic",
+      [BACKEND_KEYS.anthropic.modelKey]: "anthropic/claude-sonnet-4-6",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.backend).toBe("anthropic");
+    expect(resolved.model).toBe("anthropic/claude-sonnet-4-6");
+    // Claude honours forced tool use — default to the tool-calling path.
+    expect(resolved.mode).toBe("tools");
   });
 
   it("honours an explicit per-backend mode override", async () => {

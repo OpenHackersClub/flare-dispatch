@@ -20,7 +20,7 @@
 // `<namespace>.backend`, `<namespace>.<backend>.model|mode`, `<namespace>.prompt`.
 //
 // The active backend is `config.get("<namespace>.backend")` →
-//   "opencode" | "reasonix"   (default "opencode").
+//   "opencode" | "reasonix" | "anthropic"   (default "opencode").
 //
 // Each backend is a profile of (model id, output mode), for namespace `pr-review`:
 //
@@ -34,8 +34,17 @@
 //                                            e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b
 //     CONFIG_KV  pr-review.reasonix.mode    "tools" | "json"  (default "json")
 //
-// NOTE: model ids are bare `@cf/...` (the Workers AI binding's own naming) —
+//   backend "anthropic" (Claude via the AI Gateway universal endpoint — BYOK)
+//     CONFIG_KV  pr-review.anthropic.model  `anthropic/`-prefixed model id
+//                                            e.g. anthropic/claude-sonnet-4-6
+//     CONFIG_KV  pr-review.anthropic.mode   "tools" | "json"  (default "tools")
+//     Requires AI_GATEWAY_ID on the deploy + an Anthropic key stored in that
+//     gateway (BYOK). Still no key in config — the gateway injects it.
+//
+// NOTE: Workers AI model ids are bare `@cf/...` (the binding's own naming) —
 // NOT the AI-Gateway-compat `workers-ai/@cf/...` prefix the old HTTP path used.
+// Anthropic model ids carry the `anthropic/` prefix; the runtime routes them
+// via `env.AI.gateway(id).run(...)` (see runtime-cf's model-gateway-cf.ts).
 //
 // --- Output mode: "tools" vs "json" -----------------------------------------
 //
@@ -54,7 +63,7 @@ import { Effect, Match } from "effect";
 import { BackendUnconfigured } from "./errors.js";
 
 /** The selectable backends. Default is the first. */
-export const BACKENDS = ["opencode", "reasonix"] as const;
+export const BACKENDS = ["opencode", "reasonix", "anthropic"] as const;
 export type Backend = (typeof BACKENDS)[number];
 
 export const DEFAULT_BACKEND: Backend = "opencode";
@@ -98,6 +107,13 @@ export const namespacedKeys = (
     // DeepSeek-class reasoning models don't honour tool-calls — default them
     // to json mode (validated against the live Workers AI binding).
     defaultMode: "json",
+  },
+  anthropic: {
+    modelKey: `${namespace}.anthropic.model`,
+    modeKey: `${namespace}.anthropic.mode`,
+    // Claude honours forced tool use (`tool_choice: any`) reliably; tool
+    // arguments come back as a parsed object the engine already tolerates.
+    defaultMode: "tools",
   },
 });
 

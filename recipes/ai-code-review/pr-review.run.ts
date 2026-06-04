@@ -23,12 +23,14 @@
 //
 // --- CONFIG the operator sets (out of band) ---------------------------------
 //
-//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix"  (default opencode)
+//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix" | "anthropic"  (default opencode)
 //   CONFIG_KV  pr-review.prompt          (optional) override the per-domain reviewer system prompt
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.reasonix.model  bare Workers AI model id (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b)
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
+//   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
+//   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
