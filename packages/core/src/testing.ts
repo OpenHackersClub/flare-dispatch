@@ -212,6 +212,8 @@ export type CFRuntimeTestHandles = {
 export type CFRuntimeTestOptions = {
   /** canned command→result program for the sandbox fake. */
   readonly sandboxProgram?: Parameters<typeof makeSandboxFake>[0];
+  /** path→content map answering `sandbox.readFile`; an unseeded path fails. */
+  readonly sandboxFiles?: Parameters<typeof makeSandboxFake>[1];
   /** Browser fake options — e.g. the canned CDP `wsEndpoint`. */
   readonly browser?: Parameters<typeof makeBrowserFake>[0];
   /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
@@ -248,7 +250,7 @@ export type CFRuntimeTestOptions = {
 export const makeCFRuntimeTest = (
   opts: CFRuntimeTestOptions = {},
 ): { layer: Layer.Layer<RunContext>; handles: CFRuntimeTestHandles } => {
-  const sandbox = makeSandboxFake(opts.sandboxProgram);
+  const sandbox = makeSandboxFake(opts.sandboxProgram, opts.sandboxFiles);
   const browser = makeBrowserFake(opts.browser);
   const artifact = makeArtifactFake();
   const io = makeIOFake(opts.io);

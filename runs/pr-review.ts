@@ -43,6 +43,7 @@ import {
   config,
   io,
   github,
+  type ReadFileFailed,
   StepFailed,
   type Container,
   type WebhookPayload,
@@ -91,6 +92,13 @@ const ReviewOutput = ReviewOutputSchema;
 
 /** Footer marker on every PR comment this run posts — for idempotent updates. */
 const COMMENT_MARKER = "<!-- flare-dispatch: pr-review -->";
+
+/**
+ * Where `prepare-diff` writes the unified diff inside the container. Read back
+ * in full via `sandbox.readFile` — `ExecResult.stdout` inlines only a 16KB
+ * tail, which silently reviewed a sliver of any sizeable PR.
+ */
+const DIFF_FILE = "/tmp/pr-review.diff";
 
 export const prReview = defineRun({
   name: "pr-review",
@@ -172,37 +180,54 @@ export const prReview = defineRun({
 
 const reviewBody = (input: RunInput) =>
   Effect.gen(function* () {
-    // 1. Check out the PR head. `git` is in the image; no dependency install.
-    const { container, dir: repoDir } = yield* step("checkout", () =>
-      workspace({ repo: input.repo, sha: input.sha }),
-    );
-
-    // 2. Build the reviewable diff with plain `git` (no `review-agent` CLI).
-    //    A non-zero exit FAILS the step (honest red check) — see `execOrFail`.
-    //    Noise (lockfiles / minified / generated) is stripped in-Worker.
-    const rawDiff = yield* step("prepare-diff", () =>
-      execOrFail({
-        container,
-        cwd: repoDir,
-        command: ["git", "diff", "--unified=3", input.baseSha, input.sha],
-      }).pipe(Effect.map((r) => r.stdout)),
-    );
-    // Strip noise (lockfiles / generated) before sizing decisions.
-    const stripped = stripDiffNoise(rawDiff);
-
-    // 3. Resolve the configurable backend (model id + output mode + diff cap)
-    //    from CONFIG_KV. No API key — the model is called through the
-    //    `modelGateway` capability (Workers AI binding via an AI Gateway), which
-    //    the runtime provides ambiently. A misconfigured backend fails here →
-    //    the error boundary posts a PR comment naming the missing key.
+    // 1. Resolve the configurable backend (model id + output mode + diff cap)
+    //    from CONFIG_KV — FIRST, before paying for a container, so a
+    //    misconfigured backend fails fast → the error boundary posts a PR
+    //    comment naming the missing key. No API key — the model is called
+    //    through the `modelGateway` capability (Workers AI binding via an AI
+    //    Gateway), which the runtime provides ambiently.
     const resolved = yield* step("resolve-backend", () =>
       resolveBackend((key) => config.get(key)),
     );
 
-    // Cap the diff to the RESOLVED backend's context budget — one global cap
-    // sized for a frontier model would overflow a catalog model's context
-    // invisibly (the model goes needle-blind and "finds nothing").
-    const diff = capDiff(stripped, resolved.maxDiffChars);
+    // 2. Check out the PR head. `git` is in the image; no dependency install.
+    const { container, dir: repoDir } = yield* step("checkout", () =>
+      workspace({ repo: input.repo, sha: input.sha }),
+    );
+
+    // 3. Build the reviewable diff with plain `git` (no `review-agent` CLI).
+    //    A non-zero exit FAILS the step (honest red check) — see `execOrFail`.
+    //
+    //    The diff is written to a FILE and read back with `sandbox.readFile`
+    //    — NOT taken from `ExecResult.stdout`, which inlines only a bounded
+    //    16KB tail (the rest streams to R2). Reading stdout silently reviewed
+    //    just the last sliver of any sizeable PR: the risk tier under-counted
+    //    (a huge PR classified `lite`/`trivial`), sensitive paths escaped the
+    //    `full` escalation, and the reviewers "found nothing" because they
+    //    never saw the change.
+    //
+    //    Noise-strip + backend-sized cap happen INSIDE the step so the value
+    //    the Workflow checkpoints is bounded by `maxDiffChars`, never the raw
+    //    multi-MB diff. One global cap sized for a frontier model would
+    //    overflow a catalog model's context invisibly (the model goes
+    //    needle-blind and "finds nothing") — hence the RESOLVED backend's cap.
+    const diff = yield* step("prepare-diff", () =>
+      execOrFail({
+        container,
+        cwd: repoDir,
+        command: [
+          "git",
+          "diff",
+          "--unified=3",
+          `--output=${DIFF_FILE}`,
+          input.baseSha,
+          input.sha,
+        ],
+      }).pipe(
+        Effect.andThen(sandbox.readFile({ container, path: DIFF_FILE })),
+        Effect.map((raw) => capDiff(stripDiffNoise(raw), resolved.maxDiffChars)),
+      ),
+    );
 
     // 4. Risk tier — a pure heuristic on diff size + touched paths (no model
     //    call). The tier IS the plan: which agents run + the coordinator model.
@@ -345,7 +370,8 @@ type DescribableError =
   | BackendUnconfigured
   | ModelCallFailed
   | StructuredOutputInvalid
-  | ExecNonZero;
+  | ExecNonZero
+  | ReadFileFailed;
 
 /** Human-readable one-liner for any error the boundary catches. */
 const describeError = (err: unknown): string =>
@@ -366,6 +392,10 @@ const describeError = (err: unknown): string =>
     Match.tag(
       "ExecNonZero",
       (e) => `\`${e.command}\` exited ${e.exitCode}`,
+    ),
+    Match.tag(
+      "ReadFileFailed",
+      (e) => `reading the diff file \`${e.path}\` failed: ${e.message}`,
     ),
     Match.orElse(() =>
       err instanceof Error ? err.message : JSON.stringify(err),
