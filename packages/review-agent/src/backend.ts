@@ -20,7 +20,7 @@
 // `<namespace>.backend`, `<namespace>.<backend>.model|mode`, `<namespace>.prompt`.
 //
 // The active backend is `config.get("<namespace>.backend")` →
-//   "opencode" | "reasonix"   (default "opencode").
+//   "opencode" | "reasonix" | "anthropic"   (default "opencode").
 //
 // Each backend is a profile of (model id, output mode), for namespace `pr-review`:
 //
@@ -34,8 +34,17 @@
 //                                            e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b
 //     CONFIG_KV  pr-review.reasonix.mode    "tools" | "json"  (default "json")
 //
-// NOTE: model ids are bare `@cf/...` (the Workers AI binding's own naming) —
+//   backend "anthropic" (Claude via the AI Gateway universal endpoint — BYOK)
+//     CONFIG_KV  pr-review.anthropic.model  `anthropic/`-prefixed model id
+//                                            e.g. anthropic/claude-sonnet-4-6
+//     CONFIG_KV  pr-review.anthropic.mode   "tools" | "json"  (default "tools")
+//     Requires AI_GATEWAY_ID on the deploy + an Anthropic key stored in that
+//     gateway (BYOK). Still no key in config — the gateway injects it.
+//
+// NOTE: Workers AI model ids are bare `@cf/...` (the binding's own naming) —
 // NOT the AI-Gateway-compat `workers-ai/@cf/...` prefix the old HTTP path used.
+// Anthropic model ids carry the `anthropic/` prefix; the runtime routes them
+// via `env.AI.gateway(id).run(...)` (see runtime-cf's model-gateway-cf.ts).
 //
 // --- Output mode: "tools" vs "json" -----------------------------------------
 //
@@ -54,7 +63,7 @@ import { Effect, Match } from "effect";
 import { BackendUnconfigured } from "./errors.js";
 
 /** The selectable backends. Default is the first. */
-export const BACKENDS = ["opencode", "reasonix"] as const;
+export const BACKENDS = ["opencode", "reasonix", "anthropic"] as const;
 export type Backend = (typeof BACKENDS)[number];
 
 export const DEFAULT_BACKEND: Backend = "opencode";
@@ -77,7 +86,29 @@ export type BackendKeyDescriptor = {
   readonly modeKey: string;
   /** Mode used when `modeKey` is unset/unrecognized. */
   readonly defaultMode: ReviewMode;
+  /**
+   * Max chars of (noise-stripped) diff a reviewer call may carry — aligned with
+   * the backend's context window, NOT one global constant. A cap above the
+   * model's context doesn't truncate visibly; it overflows invisibly (the
+   * provider clips or the model goes needle-blind), which reads as "reviewed
+   * everything, found nothing".
+   */
+  readonly defaultMaxDiffChars: number;
 };
+
+/**
+ * Workers AI catalog models top out around 24k–32k context tokens. ~60 KB of
+ * diff ≈ 15k tokens leaves room for the system prompt + per-mode framing +
+ * the response budget.
+ */
+const CATALOG_MAX_DIFF_CHARS = 60_000;
+
+/**
+ * Claude's context is 200k tokens; ~240 KB ≈ 60k tokens covers all but
+ * pathological PRs while bounding the per-review token spend (every domain
+ * reviewer embeds the whole diff).
+ */
+const ANTHROPIC_MAX_DIFF_CHARS = 240_000;
 
 /**
  * Build the per-backend config key names for a given namespace — the operator
@@ -91,6 +122,7 @@ export const namespacedKeys = (
     modelKey: `${namespace}.opencode.model`,
     modeKey: `${namespace}.opencode.mode`,
     defaultMode: "tools",
+    defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
   },
   reasonix: {
     modelKey: `${namespace}.reasonix.model`,
@@ -98,6 +130,15 @@ export const namespacedKeys = (
     // DeepSeek-class reasoning models don't honour tool-calls — default them
     // to json mode (validated against the live Workers AI binding).
     defaultMode: "json",
+    defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
+  },
+  anthropic: {
+    modelKey: `${namespace}.anthropic.model`,
+    modeKey: `${namespace}.anthropic.mode`,
+    // Claude honours forced tool use (`tool_choice: any`) reliably; tool
+    // arguments come back as a parsed object the engine already tolerates.
+    defaultMode: "tools",
+    defaultMaxDiffChars: ANTHROPIC_MAX_DIFF_CHARS,
   },
 });
 
@@ -133,6 +174,8 @@ export type ResolvedBackend = {
   readonly model: string;
   /** Output mode the engine drives this backend with. */
   readonly mode: ReviewMode;
+  /** Diff cap (chars) sized to this backend's context window — see `capDiff`. */
+  readonly maxDiffChars: number;
 };
 
 /** Narrow an arbitrary config string to a known `Backend`, or the default. */
@@ -173,7 +216,7 @@ export const resolveBackend = <R>(
 
     const mode = parseMode(yield* getConfig(keys.modeKey), keys.defaultMode);
 
-    return { backend, model, mode };
+    return { backend, model, mode, maxDiffChars: keys.defaultMaxDiffChars };
   });
 
 /** Map a `Match`-classified provider error to a `ModelCallFailed.reason`. */

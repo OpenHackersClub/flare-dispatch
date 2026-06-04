@@ -19,12 +19,14 @@
 //
 // --- CONFIG the operator sets (out of band) ---------------------------------
 //
-//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix"  (default opencode)
+//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix" | "anthropic"  (default opencode)
 //   CONFIG_KV  pr-review.prompt          (optional) override the per-domain reviewer system prompt
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.reasonix.model  bare Workers AI model id (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b)
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
+//   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
+//   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
@@ -185,23 +187,27 @@ const reviewBody = (input: RunInput) =>
         command: ["git", "diff", "--unified=3", input.baseSha, input.sha],
       }).pipe(Effect.map((r) => r.stdout)),
     );
-    // Strip noise (lockfiles / generated), then cap the size so a huge PR can't
-    // blow the provider context window across the fanned-out domain reviewers.
-    const diff = capDiff(stripDiffNoise(rawDiff));
+    // Strip noise (lockfiles / generated) before sizing decisions.
+    const stripped = stripDiffNoise(rawDiff);
 
-    // 3. Risk tier — a pure heuristic on diff size + touched paths (no model
-    //    call). The tier IS the plan: which agents run + the coordinator model.
-    const tier = yield* step("classify-risk", () => riskTier({ diff }));
-    const plan = planForTier(tier);
-
-    // 4. Resolve the configurable backend (model id + output mode) from
-    //    CONFIG_KV. No API key — the model is called through the `modelGateway`
-    //    capability (Workers AI binding via an AI Gateway), which the runtime
-    //    provides ambiently. A misconfigured backend fails here → the error
-    //    boundary posts a PR comment naming the missing key.
+    // 3. Resolve the configurable backend (model id + output mode + diff cap)
+    //    from CONFIG_KV. No API key — the model is called through the
+    //    `modelGateway` capability (Workers AI binding via an AI Gateway), which
+    //    the runtime provides ambiently. A misconfigured backend fails here →
+    //    the error boundary posts a PR comment naming the missing key.
     const resolved = yield* step("resolve-backend", () =>
       resolveBackend((key) => config.get(key)),
     );
+
+    // Cap the diff to the RESOLVED backend's context budget — one global cap
+    // sized for a frontier model would overflow a catalog model's context
+    // invisibly (the model goes needle-blind and "finds nothing").
+    const diff = capDiff(stripped, resolved.maxDiffChars);
+
+    // 4. Risk tier — a pure heuristic on diff size + touched paths (no model
+    //    call). The tier IS the plan: which agents run + the coordinator model.
+    const tier = yield* step("classify-risk", () => riskTier({ diff }));
+    const plan = planForTier(tier);
 
     // 5. The per-domain reviewer system prompt — operator override or the
     //    engine's generic default (never a project-specific rubric here).
@@ -230,6 +236,12 @@ const reviewBody = (input: RunInput) =>
       ),
     );
     const allFindings: ReadonlyArray<Finding> = fanned.flat();
+    // Per-domain finding counts — rendered in the comment so an all-domains-
+    // empty review is visibly "7 reviewers each reported 0", not a bare
+    // "No findings" indistinguishable from the reviewers never engaging.
+    const domainCounts: ReadonlyArray<DomainCount> = plan.agents.map(
+      (agent, i) => ({ agent, count: fanned[i]?.length ?? 0 }),
+    );
 
     // 7. Coordinate — PURE deterministic assembly (dedup + counts + verdict) over
     //    THIS run's findings. No model call; the current run is authoritative, so
@@ -243,7 +255,7 @@ const reviewBody = (input: RunInput) =>
     //    land as check-run annotations via the run output). Best-effort — a
     //    comment failure must not turn a green review red.
     yield* step("post-comment", () =>
-      postComment(input, renderReviewComment(output)).pipe(
+      postComment(input, renderReviewComment(output, domainCounts)).pipe(
         Effect.catchAll((e) =>
           io.log("warn", `pr-review: posting PR comment failed — ${describeError(e)}`),
         ),
@@ -381,9 +393,13 @@ const sanitizeModelText = (s: string): string =>
     .replace(/@(?=[\w-])/g, `@${ZWSP}`)
     .slice(0, SANITIZE_MAX);
 
+/** One domain reviewer's engagement — how many findings it reported. */
+type DomainCount = { readonly agent: string; readonly count: number };
+
 /** Render the consolidated review as a markdown PR comment. */
 const renderReviewComment = (
   output: Schema.Schema.Type<typeof ReviewOutput>,
+  domainCounts: ReadonlyArray<DomainCount>,
 ): string => {
   const verdictBadge = Match.value(output.verdict).pipe(
     Match.when("approve", () => "✅ Approve"),
@@ -396,6 +412,10 @@ const renderReviewComment = (
     `### AI code review — ${verdictBadge}`,
     "",
     `Risk tier: \`${output.tier}\` · ${output.critical} critical · ${output.warnings} warnings · ${output.suggestions} suggestions`,
+    "",
+    // Engagement line: every domain that ran, with its finding count — the
+    // counts may exceed the deduped totals above.
+    `Reviewers: ${domainCounts.map((d) => `${d.agent} ${d.count}`).join(" · ")}`,
   ];
 
   const findingsBlock =

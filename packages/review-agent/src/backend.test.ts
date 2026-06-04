@@ -28,10 +28,11 @@ describe("parseBackend", () => {
   it("passes through known backends", () => {
     expect(parseBackend("opencode")).toBe("opencode");
     expect(parseBackend("reasonix")).toBe("reasonix");
+    expect(parseBackend("anthropic")).toBe("anthropic");
   });
   it("falls back to the default for unknown / unset", () => {
     expect(parseBackend(undefined)).toBe(DEFAULT_BACKEND);
-    expect(parseBackend("anthropic")).toBe(DEFAULT_BACKEND);
+    expect(parseBackend("openai")).toBe(DEFAULT_BACKEND);
   });
 });
 
@@ -57,6 +58,8 @@ describe("resolveBackend", () => {
     expect(resolved.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
     // opencode defaults to the tool-calling path.
     expect(resolved.mode).toBe("tools");
+    // Catalog models get a catalog-context-sized diff cap.
+    expect(resolved.maxDiffChars).toBe(60_000);
   });
 
   it("resolves the reasonix backend", async () => {
@@ -72,6 +75,20 @@ describe("resolveBackend", () => {
     );
     // reasonix defaults to json mode (DeepSeek doesn't honour tool-calls).
     expect(resolved.mode).toBe("json");
+  });
+
+  it("resolves the anthropic backend (BYOK via AI Gateway)", async () => {
+    const store = {
+      "pr-review.backend": "anthropic",
+      [BACKEND_KEYS.anthropic.modelKey]: "anthropic/claude-sonnet-4-6",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.backend).toBe("anthropic");
+    expect(resolved.model).toBe("anthropic/claude-sonnet-4-6");
+    // Claude honours forced tool use — default to the tool-calling path.
+    expect(resolved.mode).toBe("tools");
+    // Frontier context window → a far larger diff cap than the catalog's.
+    expect(resolved.maxDiffChars).toBe(240_000);
   });
 
   it("honours an explicit per-backend mode override", async () => {
