@@ -270,6 +270,38 @@ describe("reviewDomain", () => {
     expect(exit._tag).toBe("Failure");
   });
 
+  it("json mode — fails StructuredOutputInvalid (not throw) on a non-string `text`", async () => {
+    // Some ModelGateway adapters deliver `text === undefined` (or an array of
+    // content blocks) when the provider produced tool calls without a free-form
+    // text body. Without an entry guard, `extractJsonText(undefined)` throws
+    // `TypeError: text.replace is not a function` — bypasses the run's error
+    // boundary and surfaces as a raw stack trace in the failure-comment.
+    const { layer } = withGateway([
+      // `text: undefined` simulates the adapter dropping the field; the engine
+      // must coerce this into a structured failure instead of throwing.
+      { toolCalls: [], text: undefined as unknown as string },
+    ]);
+    const exit = await Effect.runPromiseExit(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        backend: "opencode",
+        mode: "json",
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const cause = exit.cause.toString();
+      // The cause names the structured-output failure family — proves we hit
+      // the engine's error path, not a generic TypeError.
+      expect(cause).toContain("StructuredOutputInvalid");
+      expect(cause).not.toMatch(/TypeError/);
+    }
+  });
+
   it("tools mode — auto-falls-back to json when tool_calls come back empty", async () => {
     // First call (tools) → empty tool_calls (DeepSeek pathology); the engine
     // retries once in json mode, which returns parseable <think>-wrapped text.
