@@ -7,10 +7,15 @@
 
 import { Cause, Exit, FiberId } from "effect";
 import { describe, expect, it } from "vitest";
-import { AcceptanceFailed, ExecFailed } from "@flare-dispatch/core";
+import {
+  AcceptanceFailed,
+  AdmissionTimedOut,
+  ExecFailed,
+} from "@flare-dispatch/core";
 import {
   CHECK_SUMMARY_MAX_CHARS,
   TRUNCATION_NOTE,
+  admissionTimedOutMd,
   appendFailureSummary,
   failureSummaryMd,
 } from "./failure-summary";
@@ -32,6 +37,32 @@ describe("failureSummaryMd", () => {
     expect(
       failureSummaryMd(Exit.fail(new AcceptanceFailed({ exitCode: 1 }))),
     ).toBeUndefined();
+  });
+
+  it("renders an AdmissionTimedOut as an infra-wait explanation (issue #109)", () => {
+    const exit = Exit.fail(
+      new AdmissionTimedOut({
+        queuedForMs: 1_200_000,
+        position: 3,
+        poolBusy: 16,
+      }),
+    );
+    const md = failureSummaryMd(exit);
+    expect(md).toBe(
+      admissionTimedOutMd(
+        new AdmissionTimedOut({
+          queuedForMs: 1_200_000,
+          position: 3,
+          poolBusy: 16,
+        }),
+      ),
+    );
+    // The summary must read as capacity back-pressure, never a test failure.
+    expect(md).toContain("Timed out waiting for a sandbox slot");
+    expect(md).toContain("queued for 20 min behind 3 run(s)");
+    expect(md).toContain("16 sandbox slot(s) in use");
+    expect(md).toContain("never started");
+    expect(md).toContain("not a test failure");
   });
 
   it("is undefined for other typed run errors", () => {

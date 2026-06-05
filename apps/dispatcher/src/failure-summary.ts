@@ -10,7 +10,7 @@
 // unit-testable without simulating a Workflow.
 
 import { Cause, Exit, Match, Option } from "effect";
-import type { RunError } from "@flare-dispatch/core";
+import type { AdmissionTimedOut, RunError } from "@flare-dispatch/core";
 
 /**
  * GitHub caps a check-run's `output.summary` at 65535 characters — a longer
@@ -25,11 +25,26 @@ export const TRUNCATION_NOTE =
   "\n\n_… summary truncated to fit the check-run limit._";
 
 /**
+ * Render an `AdmissionTimedOut` for the check-run summary. The run never
+ * started — no container booted, no test ran — so the red check must read as
+ * capacity back-pressure (infra wait), unmistakably NOT a test failure
+ * (issue #109).
+ */
+export const admissionTimedOutMd = (e: AdmissionTimedOut): string =>
+  `⏳ **Timed out waiting for a sandbox slot** — queued for ` +
+  `${Math.round(e.queuedForMs / 60_000)} min behind ${e.position} run(s) ` +
+  `(${e.poolBusy} sandbox slot(s) in use).\n\n` +
+  `The execution **never started**: the container pool stayed saturated for ` +
+  `the whole wait, so this is capacity back-pressure — **not a test ` +
+  `failure**. Re-run once in-flight runs drain.`;
+
+/**
  * Extract the run-authored failure markdown from a run's `Exit`, when one is
  * present. `undefined` on success, on a defect/interrupt (`Cause.failureOption`
  * is none — there is no typed failure to read), and on any typed failure that
- * carries no presentation. Only `AcceptanceFailed` carries one today; new
- * error variants opt in by growing a branch here.
+ * carries no presentation. `AcceptanceFailed` carries its own
+ * (run-authored) markdown; `AdmissionTimedOut` renders the infra-wait
+ * explanation above; new error variants opt in by growing a branch here.
  *
  * `Cause.failureOption` picks the LEFTMOST failure, so a multi-error Cause
  * (parallel/sequential composition) surfaces at most one summary — and
@@ -47,6 +62,7 @@ export const failureSummaryMd = (
         onSome: (failure) =>
           Match.value(failure).pipe(
             Match.tag("AcceptanceFailed", (e) => e.summaryMd),
+            Match.tag("AdmissionTimedOut", (e) => admissionTimedOutMd(e)),
             Match.orElse(() => undefined),
           ),
       }),

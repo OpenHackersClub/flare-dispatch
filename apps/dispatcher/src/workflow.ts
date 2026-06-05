@@ -47,23 +47,32 @@ import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { Duration, Effect, Exit, Schedule, Schema } from "effect";
 import {
+  admissionAcquireAttempts,
+  type AdmissionPool,
+  AdmissionTimedOut,
   Checks,
+  decideAdmission,
   Email,
   Executions,
   type RunContext,
   type RunError,
 } from "@flare-dispatch/core";
 import {
+  ADMISSION_CAP,
+  ADMISSION_MAX_QUEUE_AGE_MS,
+  ADMISSION_POLL_EVERY_MS,
   type BrowserRenderingConfig,
   type ChecksGithubConfig,
   type EmailCloudflareConfig,
   LEASE_HEARTBEAT_EVERY_MS,
   makeCFRuntimeLive,
   makeContainerLeaseD1,
+  makeRunAdmissionD1,
   previewSafeSandboxId,
 } from "@flare-dispatch/runtime-cf";
 import { lookupRun } from "./registry";
 import { selectSandboxNs } from "./sandbox-routing";
+import { queuedSummary } from "./admission-summary";
 import { appendFailureSummary, failureSummaryMd } from "./failure-summary";
 import { renderResultEmail } from "./notify";
 import { workflowDashboardUrl } from "./dashboard-url";
@@ -259,6 +268,16 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       browser: this.env.RUNS_SANDBOX_BROWSER,
     });
 
+    // The admission-semaphore pool key — the SAME routing rule as the binding
+    // selection above (browser image without a bound browser container
+    // degrades to lean), so a run is always metered against the pool whose
+    // container it will actually consume.
+    const admissionPool = selectSandboxNs<AdmissionPool>(run.sandboxImage, {
+      lean: "lean",
+      browser:
+        this.env.RUNS_SANDBOX_BROWSER !== undefined ? "browser" : undefined,
+    });
+
     // Build the per-execution live runtime: D1 + R2 + Containers + Checks, with
     // `StepRunner` bound to *this* Workflow's `step` so each `step(...)` in the
     // run body is a real durable `WorkflowStep.do(...)` checkpoint.
@@ -378,6 +397,162 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         Effect.orDie,
       );
 
+      // --- Global run admission (the per-pool semaphore, issue #109) -------
+      //
+      // A merge burst can create more concurrent RunWorkflow instances than
+      // the container pool has instances (`max_instances: 16` per class); the
+      // excess runs boot anyway, fail `ContainerLaunchFailed` /
+      // `PortNeverOpened`, and post red checks indistinguishable from test
+      // failures. So before the run body — and before the per-container-id
+      // lease below — every run passes a global, per-pool admission semaphore
+      // in D1: enqueue FIFO, poll a bounded atomic-claim loop through durable
+      // steps (a queued run hibernates for free in `step.sleep`), surface the
+      // queue position on the in-progress check-run, and fail
+      // `AdmissionTimedOut` once the dispatch-age ceiling lapses. The slot is
+      // heartbeated for the whole run and released on every exit path.
+      //
+      // Nesting order: admission (outer, global) → container lease (inner,
+      // per-container-id) → run body. A lease waiter holds an admission slot
+      // while it waits — by design; there is no circular wait.
+      //
+      // Matrix-children hazard (ADR #109 note 2): a fan-out parent holds its
+      // slot while `waitForChildren` blocks on children who would otherwise
+      // queue behind OTHER parents — a starvation shape. Mitigated in
+      // `enqueue`: a child (`parentExecutionId` set) inherits its parent's
+      // `enqueued_at` as the FIFO key, jumping to the parent's place in line;
+      // the dispatch-age timeout bounds the worst case loud, never a hang.
+      const admissions = makeRunAdmissionD1(db);
+      // Wrap a raw CF durable step as an Effect. The gate runs its I/O in
+      // `step.do` / `step.sleep` (NOT the run DSL's StepRunner — these steps
+      // precede the run body) so every clock read + claim is checkpointed and
+      // a replay re-reads the recorded result. A rejected step promise is
+      // platform/infra breakage → defect (`orDie`), keeping the gate's typed
+      // error channel a clean `AdmissionTimedOut`.
+      // CF types `step.do<T extends Rpc.Serializable<T>>`; the admission step
+      // results are plain JSON records, so bridge through the simple
+      // `(name, callback)` view — the same narrowing `step-runner-cf.ts` uses
+      // for its `WorkflowStepLike`.
+      const stepDo = <T>(
+        name: string,
+        body: () => Promise<T>,
+      ): Effect.Effect<T> =>
+        Effect.tryPromise(() =>
+          (
+            step.do as unknown as (
+              n: string,
+              cb: () => Promise<T>,
+            ) => Promise<T>
+          )(name, body),
+        ).pipe(Effect.orDie);
+
+      const admissionGate: Effect.Effect<void, AdmissionTimedOut> = Effect.gen(
+        function* () {
+          // Enqueue — the row's `enqueued_at` (FIFO key + dispatch-age basis)
+          // is read inside the step, so a replay sees the SAME timestamp.
+          const { enqueuedAt } = yield* stepDo("admission-enqueue", () =>
+            Effect.runPromise(
+              admissions.enqueue(
+                payload.executionId,
+                admissionPool,
+                payload.parentExecutionId,
+              ),
+            ),
+          );
+
+          // Bounded claim/sleep loop — a COUNT (≤60 claims + 60 sleeps at the
+          // defaults), not a wall-clock read, so the bound is replay-stable
+          // and trivial against the Workflows step cap (#83 precedent).
+          const maxAttempts = admissionAcquireAttempts(
+            ADMISSION_MAX_QUEUE_AGE_MS,
+            ADMISSION_POLL_EVERY_MS,
+          );
+          let lastReportedPosition: number | undefined;
+
+          for (let i = 0; i < maxAttempts; i++) {
+            const observed = yield* stepDo(`admission-claim-${i}`, () =>
+              Effect.runPromise(
+                admissions.attempt(
+                  payload.executionId,
+                  admissionPool,
+                  enqueuedAt,
+                ),
+              ),
+            );
+            const decision = decideAdmission(
+              observed,
+              enqueuedAt,
+              observed.now,
+              ADMISSION_MAX_QUEUE_AGE_MS,
+            );
+
+            if (decision._kind === "admit") return;
+            if (decision._kind === "timeout") {
+              return yield* Effect.fail(
+                new AdmissionTimedOut({
+                  queuedForMs: decision.queuedForMs,
+                  position: decision.position,
+                  poolBusy: decision.poolBusy,
+                }),
+              );
+            }
+
+            // `wait`: surface the queue position on the in-progress check-run
+            // — only when it CHANGED, bounding GitHub API writes to at most
+            // one per drained peer. Best-effort: a GitHub blip while queued
+            // must never kill the run.
+            if (decision.position !== lastReportedPosition) {
+              lastReportedPosition = decision.position;
+              yield* checks
+                .progress({
+                  repo: payload.github.repo,
+                  checkRunId,
+                  ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+                  output: {
+                    title: checkRunName,
+                    summary: queuedSummary(
+                      decision.position,
+                      decision.poolBusy,
+                      ADMISSION_CAP,
+                      enqueuedAt + ADMISSION_MAX_QUEUE_AGE_MS,
+                    ),
+                  },
+                })
+                .pipe(
+                  Effect.catchAllCause((cause) =>
+                    Effect.logWarning(
+                      `admission: queue-position update failed — ${cause}`,
+                    ),
+                  ),
+                );
+            }
+
+            // Durable, free hibernation between polls. Don't sleep after the
+            // final attempt — fall straight through to timeout.
+            if (i < maxAttempts - 1) {
+              yield* Effect.tryPromise(() =>
+                step.sleep(`admission-wait-${i}`, ADMISSION_POLL_EVERY_MS),
+              ).pipe(Effect.orDie);
+            } else {
+              return yield* Effect.fail(
+                new AdmissionTimedOut({
+                  queuedForMs: Math.max(0, observed.now - enqueuedAt),
+                  position: decision.position,
+                  poolBusy: decision.poolBusy,
+                }),
+              );
+            }
+          }
+          // Unreachable — the final attempt returns or fails above.
+          return yield* Effect.fail(
+            new AdmissionTimedOut({
+              queuedForMs: ADMISSION_MAX_QUEUE_AGE_MS,
+              position: 0,
+              poolBusy: 0,
+            }),
+          );
+        },
+      );
+
       // --- Per-container-id serialization (the lease) ----------------------
       //
       // Two runs whose execution ids normalise to the SAME sandbox container id
@@ -402,15 +577,21 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
             containerId,
             payload.executionId,
           );
-          // Keep the heartbeat fresh in the background so a long run (a 25-min
-          // matrix) is never reclaimed as stale mid-flight. Each beat swallows
-          // its own error so a transient D1 blip never propagates; forked into
-          // the scope, interrupted when the scope closes; the lease is released
-          // on EVERY exit path via `ensuring`.
+          // Keep the heartbeats fresh in the background so a long run (a
+          // 25-min matrix) is never reclaimed as stale mid-flight. ONE fiber,
+          // TWO beats per tick: the container lease AND the admission slot
+          // share the TTL by design, so one cadence keeps both live. Each
+          // beat swallows its own error so a transient D1 blip never
+          // propagates; forked into the scope, interrupted when the scope
+          // closes; lease + slot are released on EVERY exit path via
+          // `ensuring`.
           const heartbeatLoop: Effect.Effect<void, never> = lease
             .heartbeat()
             .pipe(
               Effect.ignore,
+              Effect.zipRight(
+                admissions.heartbeat(payload.executionId).pipe(Effect.ignore),
+              ),
               Effect.repeat(
                 Schedule.spaced(Duration.millis(LEASE_HEARTBEAT_EVERY_MS)),
               ),
@@ -422,7 +603,21 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
             .pipe(Effect.ensuring(lease.release().pipe(Effect.ignore)));
         },
       ).pipe(Effect.scoped);
-      const exit = yield* Effect.exit(leased);
+
+      // Admission gate FIRST, then the leased run body; the admission slot is
+      // released on every exit path (success / run failure / AdmissionTimedOut
+      // / defect / interrupt) — the release also opportunistically GCs stale
+      // peer rows. An `AdmissionTimedOut` flows into `exit` as a normal
+      // `failure`: recorded + reported through the same check-run path, with
+      // failure-summary.ts rendering it unmistakably as an infra-wait timeout.
+      const gated: Effect.Effect<unknown, RunError, RunContext> =
+        admissionGate.pipe(
+          Effect.andThen(leased),
+          Effect.ensuring(
+            admissions.release(payload.executionId).pipe(Effect.ignore),
+          ),
+        );
+      const exit = yield* Effect.exit(gated);
       const completedAt = yield* Effect.sync(() => Date.now());
 
       const status = Exit.match(exit, {
