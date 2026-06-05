@@ -54,6 +54,35 @@ describe("R2ArtifactLive", () => {
   // bucket in `r2-put-stream.test.ts`, and the real R2 multipart behavior is a
   // `wrangler dev` smoke (same gate as the container-tar path).
 
+  it("returns an absolute URL when a public origin is wired in", async () => {
+    const logKey = `logs/${EXECUTION_ID}/exec.ndjson`;
+    await bindings.bucket.put(logKey, "log");
+
+    // Trailing slash on the origin must not produce a `//v1/...` double-slash.
+    const layer = makeR2ArtifactLive(
+      bindings.bucket,
+      EXECUTION_ID,
+      undefined,
+      "https://dispatcher.example.com/",
+    );
+
+    const { url, listed } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const artifact = yield* Artifact;
+        const url = yield* artifact.upload({ name: "step.log", path: logKey });
+        const listed = yield* artifact.list({ executionId: EXECUTION_ID });
+        return { url, listed };
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(url).toBe(
+      `https://dispatcher.example.com/v1/artifacts/${EXECUTION_ID}/step.log`,
+    );
+    expect(listed[0]?.url).toBe(
+      `https://dispatcher.example.com/v1/artifacts/${EXECUTION_ID}/step.log`,
+    );
+  });
+
   it("lists uploaded artifacts for an execution", async () => {
     await bindings.bucket.put(`logs/${EXECUTION_ID}/exec.ndjson`, "log");
     const layer = makeR2ArtifactLive(bindings.bucket, EXECUTION_ID);

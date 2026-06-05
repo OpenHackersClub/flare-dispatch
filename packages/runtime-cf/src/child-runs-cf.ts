@@ -69,6 +69,12 @@ export type ChildRunsLiveConfig = {
   readonly parentExecutionId: string;
   /** The github context children inherit (repo/ref/sha/installation). */
   readonly github: ChildGithubContext;
+  /**
+   * The dispatcher's public origin children inherit — rides the child's
+   * `DispatchPayload` so the child's artifact URLs are absolute (the child
+   * Workflow has no request to infer it from). Absent → relative paths.
+   */
+  readonly origin?: string;
 };
 
 /** Map a raw `executions.status` cell to the capability's `ChildRunStatus`. */
@@ -165,6 +171,7 @@ export const makeChildRunsLive = (
         },
         inputs: input,
         parentExecutionId: cfg.parentExecutionId,
+        ...(cfg.origin !== undefined ? { origin: cfg.origin } : {}),
       };
       return Effect.tryPromise({
         try: async () => {

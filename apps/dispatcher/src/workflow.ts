@@ -107,6 +107,16 @@ const DispatchPayload = Schema.Struct({
   notify: Schema.optional(
     Schema.Struct({ emails: Schema.Array(Schema.String) }),
   ),
+  /**
+   * The dispatcher's public origin (e.g. `https://<worker>.workers.dev`) —
+   * prefixed onto the `/v1/artifacts/...` URLs the run uploads so the links
+   * embedded in check-run summaries are absolute (GitHub resolves relative
+   * markdown links against `github.com`, breaking them). The dispatch route
+   * captures it from `PUBLIC_ORIGIN` or the request URL; the scheduled path
+   * and `RunWorkflow` itself fall back to `PUBLIC_ORIGIN`. Absent everywhere →
+   * relative paths, as before.
+   */
+  origin: Schema.optional(Schema.String),
 });
 type DispatchPayload = Schema.Schema.Type<typeof DispatchPayload>;
 
@@ -253,6 +263,10 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       this.env.CLOUDFLARE_ACCOUNT_ID,
       payload.executionId,
     );
+    // The public origin absolutizing artifact URLs: the dispatch request's
+    // origin (captured by the route) wins; `PUBLIC_ORIGIN` covers payloads
+    // that predate the field or came from the cron path.
+    const publicOrigin = payload.origin ?? this.env.PUBLIC_ORIGIN;
     const runtime = makeCFRuntimeLive({
       db,
       bucket: this.env.RUNS_STORAGE,
@@ -286,6 +300,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         ? { aiGatewayId: this.env.AI_GATEWAY_ID }
         : {}),
       sandboxPreviewHostname: this.env.SANDBOX_PREVIEW_HOSTNAME,
+      ...(publicOrigin !== undefined ? { publicOrigin } : {}),
       // Wire the live OIDC signing Layer when both the JWK + issuer URL are
       // configured. Subject defaults to `<run>:<execution-id>` so an IAM
       // trust policy can scope a role to a single run+execution.

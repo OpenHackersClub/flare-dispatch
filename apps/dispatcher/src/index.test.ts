@@ -375,6 +375,31 @@ describe("POST /v1/dispatch/:run — success", () => {
     expect(params.notify).toEqual({ emails: ["alice@x.com", "bob@y.com"] });
   });
 
+  it("captures the request origin into the Workflow params", async () => {
+    const { env, workflow } = fixture();
+    const req = await dispatchRequest("offload-test", JSON.stringify(validBody));
+    const res = await handleRequest(req, env);
+    expect(res.status).toBe(202);
+
+    // Absolutizes the run's `/v1/artifacts/...` URLs — a relative link in a
+    // check-run summary resolves against github.com and 404s.
+    const params = workflow.calls[0]!.params as { origin?: string };
+    expect(params.origin).toBe("https://dispatcher.example");
+  });
+
+  it("prefers PUBLIC_ORIGIN over the request origin when set", async () => {
+    const { env, workflow } = fixture();
+    const req = await dispatchRequest("offload-test", JSON.stringify(validBody));
+    const res = await handleRequest(req, {
+      ...env,
+      PUBLIC_ORIGIN: "https://fd.example.org",
+    });
+    expect(res.status).toBe(202);
+
+    const params = workflow.calls[0]!.params as { origin?: string };
+    expect(params.origin).toBe("https://fd.example.org");
+  });
+
   it("drops an empty notify.emails (no notify in params)", async () => {
     const { env, workflow } = fixture();
     const bodyText = JSON.stringify({ ...validBody, notify: { emails: [] } });

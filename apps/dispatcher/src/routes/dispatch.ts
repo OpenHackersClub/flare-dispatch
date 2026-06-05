@@ -296,6 +296,11 @@ export const handleDispatch = async (
     ...(body.notify !== undefined && body.notify.emails.length > 0
       ? { notify: { emails: body.notify.emails } }
       : {}),
+    // The dispatcher's public origin, so the run's artifact URLs come back
+    // absolute (GitHub resolves a relative check-run link against github.com,
+    // breaking it). `PUBLIC_ORIGIN` wins when set (a custom domain in front
+    // of the Worker); otherwise the origin the caller actually dialed.
+    origin: env.PUBLIC_ORIGIN ?? new URL(request.url).origin,
   };
 
   // CF Workflows rejects a `create({id})` whose id has been seen before with

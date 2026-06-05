@@ -144,6 +144,17 @@ export type CFRuntimeLiveOptions = {
    */
   readonly sandboxPreviewHostname?: string;
   /**
+   * The dispatcher's own public origin (e.g.
+   * `https://<worker>.<account>.workers.dev`) — prefixed onto the
+   * `/v1/artifacts/...` URLs the `artifact` capability returns so the links
+   * embedded in GitHub check-run summaries are absolute (GitHub resolves
+   * relative markdown links against `github.com`, breaking them). Resolved by
+   * the Workflow from the dispatch payload's request origin or the
+   * `PUBLIC_ORIGIN` var; `undefined` keeps the historical relative paths.
+   * Children inherit it via the `childRuns` dispatch payload.
+   */
+  readonly publicOrigin?: string;
+  /**
    * OIDC signing config for the `oidc` capability — the ES256 private JWK
    * (`OIDC_SIGNING_JWK` secret) + the issuer URL the IdP's trust policy
    * pins. `undefined` selects `OidcDeferred`: a run that calls `oidc.sign`
@@ -193,6 +204,7 @@ export const makeCFRuntimeLive = (
     opts.bucket,
     opts.executionId,
     opts.sandboxNs,
+    opts.publicOrigin,
   );
   const sandbox = makeSandboxCloudflareLive(
     opts.sandboxNs,
@@ -280,6 +292,11 @@ export const makeCFRuntimeLive = (
           workflow: opts.runsWorkflow,
           db: opts.db,
           parentExecutionId: opts.executionId,
+          // Children inherit the parent's public origin so their artifact
+          // links are absolute too (a child posts its own check-run).
+          ...(opts.publicOrigin !== undefined
+            ? { origin: opts.publicOrigin }
+            : {}),
           github: {
             repo: opts.execution.repo,
             ref: opts.execution.ref,
