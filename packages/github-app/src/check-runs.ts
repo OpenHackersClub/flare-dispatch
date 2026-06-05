@@ -5,6 +5,8 @@
 //
 //   * `createCheckRun` — `POST /repos/{owner}/{repo}/check-runs` with
 //     `status: in_progress`; returns the GitHub-assigned check-run id.
+//   * `progressCheckRun` — `PATCH /repos/{owner}/{repo}/check-runs/{id}` with
+//     `status: in_progress` + a fresh output (queue-position updates, #109).
 //   * `updateCheckRun` — `PATCH /repos/{owner}/{repo}/check-runs/{id}` with
 //     `status: completed` + a `conclusion`.
 //
@@ -105,6 +107,48 @@ export type UpdateCheckRunOptions = ClientOptions & {
   readonly output?: CheckRunOutput;
   /** Optional `details_url` — preserved on completion so the link persists. */
   readonly detailsUrl?: string;
+};
+
+/** Options for {@link progressCheckRun}. */
+export type ProgressCheckRunOptions = ClientOptions & {
+  /** `"owner/repo"`. */
+  readonly repo: string;
+  /** The check-run id returned by {@link createCheckRun}. */
+  readonly checkRunId: string;
+  /** The output block to render — e.g. a queue-position update. */
+  readonly output: CheckRunOutput;
+  /** Optional `details_url` — preserved so the link persists. */
+  readonly detailsUrl?: string;
+};
+
+/**
+ * Refresh a still-running check-run's output WITHOUT concluding it:
+ * `status: in_progress` + a new output block. Used by the run-admission gate
+ * to surface "Queued — waiting for a sandbox slot behind N runs" while the
+ * execution waits for pool capacity (issue #109).
+ *
+ * @throws {GithubApiError} when the API returns non-2xx.
+ */
+export const progressCheckRun = async (
+  opts: ProgressCheckRunOptions,
+): Promise<void> => {
+  const { owner, name: repoName } = splitRepo(opts.repo);
+  const { apiBase, doFetch } = resolveClient(opts);
+
+  const res = await doFetch(
+    `${apiBase}/repos/${owner}/${repoName}/check-runs/${opts.checkRunId}`,
+    {
+      method: "PATCH",
+      headers: ghHeaders(opts.token, { json: true }),
+      body: JSON.stringify({
+        status: "in_progress",
+        ...(opts.detailsUrl ? { details_url: opts.detailsUrl } : {}),
+        output: opts.output,
+      }),
+    },
+  );
+
+  await assertOk(res, "check-run progress update failed");
 };
 
 /**

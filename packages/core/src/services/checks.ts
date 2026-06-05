@@ -40,6 +40,19 @@ export interface ChecksService {
     detailsUrl?: string;
   }) => Effect.Effect<string>;
 
+  /**
+   * Refresh a still-running check-run's output WITHOUT concluding it
+   * (`status: in_progress`) — e.g. the run-admission gate's
+   * "Queued — waiting for a sandbox slot behind N runs" position updates.
+   */
+  readonly progress: (opts: {
+    repo: string;
+    checkRunId: string;
+    output: CheckOutput;
+    /** Optional "Details" link, preserved across the update. */
+    detailsUrl?: string;
+  }) => Effect.Effect<void>;
+
   /** Complete a check-run with a conclusion. */
   readonly update: (opts: {
     repo: string;
@@ -70,6 +83,12 @@ export const checks = {
     output?: CheckOutput;
     detailsUrl?: string;
   }) => Effect.flatMap(Checks, (c) => c.create(opts)),
+  progress: (opts: {
+    repo: string;
+    checkRunId: string;
+    output: CheckOutput;
+    detailsUrl?: string;
+  }) => Effect.flatMap(Checks, (c) => c.progress(opts)),
   update: (opts: {
     repo: string;
     checkRunId: string;
