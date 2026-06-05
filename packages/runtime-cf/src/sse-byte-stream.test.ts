@@ -72,6 +72,35 @@ describe("decodeSseByteStream", () => {
     expect(out).toEqual(text);
   });
 
+  it("decodes TEXT-file frames — raw (non-base64) chunk data after isBinary:false metadata", async () => {
+    // The SDK base64-encodes chunks only for binary files; a text file's
+    // chunks carry the raw text (#106 — every product-demo replay-N.json
+    // upload died on atob() of JSON content).
+    const json = `{"sessionId":"abc","events":[{"type":2,"data":{"a":1}}]}`;
+    const framed = encoder.encode(
+      `data: {"type":"metadata","mimeType":"application/json","size":${json.length},"isBinary":false,"encoding":"utf-8"}\n` +
+        `data: {"type":"chunk","data":${JSON.stringify(json.slice(0, 20))}}\n` +
+        `data: {"type":"chunk","data":${JSON.stringify(json.slice(20))}}\n` +
+        `data: {"type":"complete"}\n`,
+    );
+    const out = await drain(decodeSseByteStream(streamOf([framed])));
+    expect(new TextDecoder().decode(out)).toBe(json);
+  });
+
+  it("decodes text frames split across arbitrary transport boundaries", async () => {
+    const json = `{"k":"v with spaces and unicode ✓","n":[1,2,3]}`;
+    const framed = encoder.encode(
+      `data: {"type":"metadata","mimeType":"text/plain","size":0,"isBinary":false}\n` +
+        `data: {"type":"chunk","data":${JSON.stringify(json)}}\n`,
+    );
+    const slivers: Uint8Array[] = [];
+    for (let i = 0; i < framed.length; i += 7) {
+      slivers.push(framed.subarray(i, i + 7));
+    }
+    const out = await drain(decodeSseByteStream(streamOf(slivers)));
+    expect(new TextDecoder().decode(out)).toBe(json);
+  });
+
   it("ignores non-JSON SSE lines (comments/keepalives)", async () => {
     const framed = encoder.encode(
       `data: {"type":"metadata","size":${payload.length}}\n` +

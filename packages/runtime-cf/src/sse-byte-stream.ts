@@ -12,8 +12,19 @@
 // Uploading that body verbatim is issue #90: every container-tar artifact and
 // cache archive stored the SSE TEXT, so downloads were not valid gzip and the
 // browse expansion (#96) failed at the gunzip step. This module turns the
-// framed stream back into the file's bytes by base64-decoding the `chunk`
-// frames in order.
+// framed stream back into the file's bytes by decoding the `chunk` frames in
+// order.
+//
+// --- Chunk encoding follows the metadata frame (issue #106) ------------------
+//
+// The SDK base64-encodes chunks ONLY for binary files; a TEXT file's chunks
+// (e.g. `application/json` — product-demo's rrweb `replay-N.json`) carry the
+// raw text in `data`. Blindly `atob()`ing every chunk threw
+// `InvalidCharacterError` on every text-file upload while binary uploads
+// (PNG, gzip) passed — the metadata frame's `isBinary` field is the
+// discriminator (mirroring the SDK's own `streamFile` helper). Text chunks
+// re-encode as UTF-8; the caller's `stat` size remains the loud-failure
+// backstop if the byte count ever drifts.
 //
 // --- Defensive sniffing -------------------------------------------------------
 //
@@ -49,7 +60,12 @@ const base64ToBytes = (b64: string): Uint8Array => {
 /** Decode complete `data: {...}` lines, enqueueing each chunk frame's bytes. */
 const makeFrameParser = () => {
   const textDecoder = new TextDecoder();
+  const textEncoder = new TextEncoder();
   let lineBuffer = "";
+  // Chunks are base64 ONLY for binary files (the SDK's `streamFile` gate);
+  // a text file's chunks carry raw text. Default true: when no metadata
+  // frame precedes the first chunk, the historical base64 behaviour applies.
+  let binaryChunks = true;
   return {
     push(
       bytes: Uint8Array,
@@ -62,14 +78,25 @@ const makeFrameParser = () => {
         const line = lineBuffer.slice(0, nl).trimEnd();
         lineBuffer = lineBuffer.slice(nl + 1);
         if (!line.startsWith("data: ")) continue;
-        let frame: { type?: string; data?: string };
+        let frame: { type?: string; data?: string; isBinary?: boolean };
         try {
-          frame = JSON.parse(line.slice(6)) as { type?: string; data?: string };
+          frame = JSON.parse(line.slice(6)) as {
+            type?: string;
+            data?: string;
+            isBinary?: boolean;
+          };
         } catch {
           continue; // not a JSON frame — ignore (e.g. SSE comments/keepalives)
         }
+        if (frame.type === "metadata" && frame.isBinary === false) {
+          binaryChunks = false;
+        }
         if (frame.type === "chunk" && typeof frame.data === "string") {
-          controller.enqueue(base64ToBytes(frame.data));
+          controller.enqueue(
+            binaryChunks
+              ? base64ToBytes(frame.data)
+              : textEncoder.encode(frame.data),
+          );
         }
       }
     },
