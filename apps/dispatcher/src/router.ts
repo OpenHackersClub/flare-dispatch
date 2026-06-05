@@ -139,19 +139,29 @@ export const handleRequest = async (
     return handleBrowserCdp(request, env, requestId);
   }
 
-  // GET /v1/artifacts/:execution/:name
+  // GET /v1/artifacts/:execution/:name[/...path]
+  // Bare name = the artifact object (tarball/log download). A nested path
+  // serves one file out of the bundle's upload-time browse expansion; a
+  // trailing slash after the name is the browse entrypoint (index.html or a
+  // generated listing) — see routes/artifacts.ts.
   if (
-    segments.length === 4 &&
+    segments.length >= 4 &&
     segments[0] === "v1" &&
     segments[1] === "artifacts"
   ) {
     if (request.method !== "GET") {
       return json({ error: "method_not_allowed" }, 405);
     }
+    const subPath = segments
+      .slice(4)
+      .map((s) => decodeURIComponent(s))
+      .join("/");
     return handleArtifact(
       env,
       decodeURIComponent(segments[2]!),
       decodeURIComponent(segments[3]!),
+      subPath,
+      url.pathname.endsWith("/"),
     );
   }
 

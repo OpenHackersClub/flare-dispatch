@@ -336,11 +336,18 @@ export const cdpAcceptance = defineRun({
             exitCode,
             summaryMd: [
               `Test suite exited \`${exitCode}\`.`,
+              // `<uri>/` is the browse entrypoint (the report's own
+              // index.html / a generated listing); the bare uri stays the
+              // .tar.gz download.
               ...(reportUri !== ""
-                ? [`- [Playwright report](${reportUri})`]
+                ? [
+                    `- [Playwright report](${reportUri}/) ([download](${reportUri}))`,
+                  ]
                 : []),
               ...(screenshotsUri !== ""
-                ? [`- [Screenshots](${screenshotsUri})`]
+                ? [
+                    `- [Screenshots](${screenshotsUri}/) ([download](${screenshotsUri}))`,
+                  ]
                 : []),
             ].join("\n"),
           }),

@@ -110,6 +110,13 @@ export const makeFakeR2 = (): FakeR2 => {
           ),
       };
     },
+    // Prefix listing — what the artifacts route's directory index uses.
+    list: async ({ prefix = "" }: { prefix?: string } = {}) => ({
+      objects: Array.from(store.entries())
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, obj]) => ({ key, size: obj.body.byteLength })),
+      truncated: false,
+    }),
   } as unknown as Env["RUNS_STORAGE"];
 
   return {
