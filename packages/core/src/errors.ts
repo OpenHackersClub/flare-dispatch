@@ -61,6 +61,29 @@ export class ContainerLaunchFailed extends Schema.TaggedError<ContainerLaunchFai
   { image: Schema.String, cause: Schema.Unknown },
 ) {}
 
+/**
+ * A run could not acquire its container's lease within the wait ceiling — the
+ * container id is held by another execution that never released it in time.
+ *
+ * Two runs that share a sandbox container id (e.g. `playwright-demo` and
+ * `product-demo` for the same repo+sha, whose ids both normalise to
+ * `demo-<owner>-<repo>-<sha12>`) are serialized: the second waits for the first
+ * to finish. This fires only when that wait exceeds `waitedMs` with the lease
+ * still held — a genuinely wedged peer, not normal back-pressure — so the queued
+ * run fails fast and loud instead of hanging until the Workflow's wall-clock cap.
+ */
+export class ContainerBusy extends Schema.TaggedError<ContainerBusy>()(
+  "ContainerBusy",
+  {
+    /** The shared container id the lease serializes. */
+    containerId: Schema.String,
+    /** The execution id still holding the lease when the wait gave up. */
+    holder: Schema.String,
+    /** Total time waited before giving up, ms. */
+    waitedMs: Schema.Number,
+  },
+) {}
+
 export class PortNeverOpened extends Schema.TaggedError<PortNeverOpened>()(
   "PortNeverOpened",
   {
@@ -237,6 +260,7 @@ export type RunError =
   | ExecTimeout
   | AcceptanceFailed
   | ContainerLaunchFailed
+  | ContainerBusy
   | PortNeverOpened
   | ExposePortFailed
   | BrowserUnavailable

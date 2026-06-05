@@ -25,6 +25,15 @@ export {
 export { step, runEffect, type StepOpts } from "./step";
 export { type RunContext } from "./context";
 
+// --- Container lease (pure decision logic) -----------------------------------
+export {
+  decideLease,
+  isLeaseStale,
+  leaseAcquireAttempts,
+  type LeaseRecord,
+  type LeaseDecision,
+} from "./container-lease";
+
 // --- Capabilities ------------------------------------------------------------
 export {
   sandbox,

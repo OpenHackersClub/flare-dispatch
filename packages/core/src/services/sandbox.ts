@@ -9,6 +9,7 @@
 import { Context, type Duration, Effect } from "effect";
 import type {
   CheckoutFailed,
+  ContainerBusy,
   ContainerLaunchFailed,
   ExecFailed,
   ExecTimeout,
@@ -58,11 +59,21 @@ export type ExposeResult = {
 
 /** The service contract a runtime Layer implements. */
 export interface SandboxService {
+  /**
+   * Acquire the execution's container handle. Beyond the SDK's lazy
+   * provisioning, the live layer takes a per-container-id LEASE here: two runs
+   * whose ids normalise to the same sandbox id (e.g. `playwright-demo` +
+   * `product-demo` for one repo+sha) are serialized so they never execute
+   * concurrently in one container and contend (interleaved exec sessions,
+   * Browser Rendering pool contention). A run waits for a busy peer up to the
+   * layer's ceiling, then fails `ContainerBusy`. In-memory / inline fakes that
+   * give each execution its own state take the lease as a no-op.
+   */
   readonly acquire: (opts: {
     image?: string;
     memMB?: number;
     vCPU?: number;
-  }) => Effect.Effect<Container, ContainerLaunchFailed>;
+  }) => Effect.Effect<Container, ContainerLaunchFailed | ContainerBusy>;
   readonly gitClone: (opts: {
     repo: string;
     sha: string;
