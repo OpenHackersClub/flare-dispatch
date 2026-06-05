@@ -37,7 +37,7 @@
 // DSL: uses `browser.newCDPSession`, `sandbox.exec`, `artifact.upload`,
 //      `config.get`, and `io.priorExecution` — specs/03-dsl.md § Capabilities.
 
-import { Effect, Schema, Option } from "effect";
+import { Cause, Effect, Schema, Option } from "effect";
 import {
   defineRun,
   step,
@@ -793,7 +793,18 @@ export const productDemo = defineRun({
                 // The upload reads from the container FS — bound it like every
                 // other container interaction (a hung read = a capped step).
                 Effect.timeout("90 seconds"),
-                Effect.catchAll(() => Effect.succeed("")),
+                // Best-effort, but NEVER silent: a bare `catchAll(() => "")`
+                // here swallowed every replay-upload failure — the step
+                // "succeeded" with "" and nothing recorded why. Log the cause
+                // so a broken upload is diagnosable from the run's io.log.
+                Effect.catchAllCause((cause) =>
+                  io
+                    .log(
+                      "warn",
+                      `story '${story.name}': replay-${i}.json upload failed — ${Cause.pretty(cause).slice(0, 400)}`,
+                    )
+                    .pipe(Effect.as("")),
+                ),
               ),
           );
           const keyScreenshotUri =
@@ -810,7 +821,14 @@ export const productDemo = defineRun({
                     })
                     .pipe(
                       Effect.timeout("90 seconds"),
-                      Effect.catchAll(() => Effect.succeed("")),
+                      Effect.catchAllCause((cause) =>
+                        io
+                          .log(
+                            "warn",
+                            `story '${story.name}': screenshot upload failed — ${Cause.pretty(cause).slice(0, 400)}`,
+                          )
+                          .pipe(Effect.as("")),
+                      ),
                     ),
                 );
 

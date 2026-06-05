@@ -37,6 +37,53 @@ describe("renderResultEmail", () => {
     expect(text).toContain("Step logs: https://dash.cloudflare.com");
   });
 
+  it("renders an array-of-objects output (product-demo stories) as per-item clickable links", () => {
+    const { html, text } = renderResultEmail({
+      ...base,
+      run: "product-demo",
+      status: "success",
+      output: {
+        replayUri: "https://dispatcher.example/replay/run-level",
+        stories: [
+          {
+            name: "sign-in-and-home",
+            status: "passed",
+            replayUri: "https://dispatcher.example/replay/chapter-0",
+            keyScreenshotUri:
+              "https://dispatcher.example/v1/artifacts/x/sign-in-and-home.png",
+            replayJsonUri: "", // empty fields are noise — must be skipped
+          },
+          {
+            name: "add-a-game",
+            status: "failed",
+            replayUri: "https://dispatcher.example/replay/chapter-1",
+            keyScreenshotUri: "",
+            replayJsonUri: "",
+          },
+        ],
+      },
+    });
+
+    // Each story renders as its own block with CLICKABLE links — not one
+    // escaped JSON blob.
+    expect(html).toContain("sign-in-and-home");
+    expect(html).toContain(
+      '<a href="https://dispatcher.example/replay/chapter-0">',
+    );
+    expect(html).toContain(
+      '<a href="https://dispatcher.example/replay/chapter-1">',
+    );
+    expect(html).toContain("Key Screenshot"); // keyScreenshotUri → humanized label
+    expect(html).not.toContain("replayJsonUri"); // no JSON-blob fallback, empty skipped
+    // Plain-text alternative lists per-story lines with the URLs.
+    expect(text).toContain("sign-in-and-home");
+    expect(text).toContain(
+      "Replay: https://dispatcher.example/replay/chapter-0",
+    );
+    // Empty fields skipped in text too.
+    expect(text).not.toContain("Replay Json:");
+  });
+
   it("renders a failure without output", () => {
     const { subject, html, text } = renderResultEmail({
       ...base,

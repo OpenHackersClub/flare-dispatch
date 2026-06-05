@@ -114,7 +114,10 @@ const recordStart = Command.make(
   },
   ({ cdpWs, viewport, sessionIdOut, url, sessionId: sessionIdOpt }) =>
     Effect.gen(function* () {
-      const { session, page } = yield* attachCdp(cdpWs);
+      const { session, page } = yield* attachCdp(
+        cdpWs,
+        Option.getOrUndefined(url),
+      );
       yield* applyViewport(page, viewport as ViewportPreset);
       // Navigate the PERSISTENT Browser Rendering session to the app under test
       // before any story plays — `newCDPSession({targetUrl})` does not navigate,
@@ -244,7 +247,7 @@ const playCommand = Command.make(
       if (typeof killer.unref === "function") killer.unref();
 
       const attachedAtMs = Date.now();
-      const attached = yield* attachCdp(cdpWs);
+      const attached = yield* attachCdp(cdpWs, Option.getOrUndefined(url));
       const result = yield* runPlayLoop(
         {
           name,
