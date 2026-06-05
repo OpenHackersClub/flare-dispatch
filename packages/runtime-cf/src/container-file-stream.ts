@@ -16,6 +16,7 @@
 // part, unit-tested in `container-file-stream.test.ts`.
 
 import type { Sandbox } from "@cloudflare/sandbox";
+import { decodeSseByteStream } from "./sse-byte-stream";
 
 /**
  * Parse `stat -c %s` output into a byte count. Throws on anything that isn't
@@ -45,6 +46,8 @@ export const readContainerFile = async (
     );
   }
   const size = parseStatSize(stat.stdout);
-  const content = await box.readFileStream(path);
+  // The SDK streams the SSE endpoint body, not the file bytes (#90) — decode
+  // the chunk frames back to raw bytes (pass-through when already raw).
+  const content = decodeSseByteStream(await box.readFileStream(path));
   return { content, size };
 };
