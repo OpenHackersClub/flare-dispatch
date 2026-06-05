@@ -27,6 +27,7 @@
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
 //   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
 //   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
+//   CONFIG_KV  pr-review.style           "default" (verbose verdict-table) | "compact" (LGTM-header + 3-col emoji table)
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
@@ -247,6 +248,13 @@ const reviewBody = (input: RunInput) =>
       config.get("pr-review.prompt"),
     );
 
+    // 5b. Comment style preset — operator picks the comment layout. Both
+    //     presets are hard-coded server-side (so model-authored text can't
+    //     inject layout). See `parseStyle` + `renderReviewComment`.
+    const style = parseStyle(
+      yield* step("resolve-style", () => config.get("pr-review.style")),
+    );
+
     // 6. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
     //    agents this tier calls for. Each calls the model via the `modelGateway`
     //    capability (provided by the runtime, like `config`/`sandbox`); findings
@@ -287,7 +295,7 @@ const reviewBody = (input: RunInput) =>
     //    land as check-run annotations via the run output). Best-effort — a
     //    comment failure must not turn a green review red.
     yield* step("post-comment", () =>
-      postComment(input, renderReviewComment(input, output, domainCounts)).pipe(
+      postComment(input, renderReviewComment(input, output, domainCounts, style)).pipe(
         Effect.catchAll((e) =>
           io.log("warn", `pr-review: posting PR comment failed — ${describeError(e)}`),
         ),
@@ -482,10 +490,40 @@ const findingLoc = (f: Finding): string => {
  *  split the row. */
 const tableCell = (s: string): string => sanitizeModelText(s).replace(/\|/g, "\\|");
 
-/** Render the consolidated review as a markdown PR comment: a summary table of
- *  every required change up front, then one heading per finding. Locations are
- *  blob links into the codebase at the reviewed SHA, not quoted paths. */
+/** Comment style preset — operator selects the layout via `pr-review.style`
+ *  CONFIG_KV. Hard-coded presets only; never an arbitrary template (model-
+ *  authored text would otherwise be able to inject layout). */
+const STYLES = ["default", "compact"] as const;
+type Style = (typeof STYLES)[number];
+const DEFAULT_STYLE: Style = "default";
+
+/** Narrow an arbitrary config string to a known style, or fall back to default. */
+const parseStyle = (raw: string | undefined): Style =>
+  STYLES.includes(raw as Style) ? (raw as Style) : DEFAULT_STYLE;
+
+/** How many findings the `compact` style lists (mirrors typical "leaderboard"
+ *  PR-review bots — 7 most-critical first). The full set is still emitted as
+ *  check-run annotations regardless of style. */
+const COMPACT_MAX_LISTED = 7;
+
+/** Render the consolidated review as a markdown PR comment. `style` picks the
+ *  layout: `default` is the verbose verdict-table for power users; `compact` is
+ *  the lean leaderboard-bot format ("`## ✅ LGTM`" + 3-col emoji table). */
 const renderReviewComment = (
+  input: Pick<RunInput, "repo" | "sha">,
+  output: Schema.Schema.Type<typeof ReviewOutput>,
+  domainCounts: ReadonlyArray<DomainCount>,
+  style: Style = DEFAULT_STYLE,
+): string =>
+  Match.value(style).pipe(
+    Match.when("compact", () => renderCompact(input, output)),
+    Match.when("default", () => renderDefault(input, output, domainCounts)),
+    Match.exhaustive,
+  );
+
+/** Verbose verdict-table layout: summary table + per-finding details + per-domain
+ *  engagement line. Full reviewer transparency — the historical default. */
+const renderDefault = (
   input: Pick<RunInput, "repo" | "sha">,
   output: Schema.Schema.Type<typeof ReviewOutput>,
   domainCounts: ReadonlyArray<DomainCount>,
@@ -543,4 +581,51 @@ const renderReviewComment = (
         ];
 
   return [...header, ...findingsBlock, "", COMMENT_MARKER].join("\n");
+};
+
+/** Compact "leaderboard-bot" layout — verdict header (`## ✅ LGTM` /
+ *  `⚠️ Minor Issues` / `🚫 Changes Requested`) + 3-col emoji table, max 7 rows.
+ *  Built to match the format teams already get from in-house reviewers like
+ *  opencode-agent so a FlareDispatch comment lands without a layout cliff. */
+const renderCompact = (
+  input: Pick<RunInput, "repo" | "sha">,
+  output: Schema.Schema.Type<typeof ReviewOutput>,
+): string => {
+  const verdictHeader = Match.value(output.verdict).pipe(
+    Match.when("approve", () => "## ✅ LGTM"),
+    Match.when("comment", () => "## ⚠️ Minor Issues"),
+    Match.when("request-changes", () => "## 🚫 Changes Requested"),
+    Match.exhaustive,
+  );
+
+  if (output.findings.length === 0) {
+    return [verdictHeader, "", "No issues found.", "", COMMENT_MARKER].join("\n");
+  }
+
+  const compactSeverity = (level: Finding["level"]): string =>
+    Match.value(level).pipe(
+      Match.when("failure", () => "🔴"),
+      Match.when("warning", () => "🟡"),
+      Match.when("notice", () => "🔵"),
+      Match.exhaustive,
+    );
+
+  const rendered = output.findings.slice(0, COMPACT_MAX_LISTED);
+  const overflow = output.findings.length - rendered.length;
+
+  return [
+    verdictHeader,
+    "",
+    "| Severity | Location | Issue |",
+    "| --- | --- | --- |",
+    ...rendered.map(
+      (f) =>
+        `| ${compactSeverity(f.level)} | [${tableCell(findingLoc(f))}](${findingUrl(input.repo, input.sha, f)}) | ${tableCell(f.message)} |`,
+    ),
+    ...(overflow > 0
+      ? ["", `_…and ${overflow} more (see check annotations)._`]
+      : []),
+    "",
+    COMMENT_MARKER,
+  ].join("\n");
 };
