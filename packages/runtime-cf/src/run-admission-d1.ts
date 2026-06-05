@@ -30,12 +30,29 @@ import type { AdmissionObservation, AdmissionPool } from "@flare-dispatch/core";
 import { LEASE_TTL_MS } from "./container-lease-d1";
 
 /**
- * Admission slots per pool — matches each container class's
+ * Default admission slots per pool — matches each container class's
  * `max_instances: 16` in wrangler.jsonc, so admitted runs never exceed the
- * containers that can serve them. Configurable later via CONFIG_KV if pools
- * are resized.
+ * containers that can serve them. The live cap comes from the plain
+ * `ADMISSION_CAP` wrangler var (see {@link resolveAdmissionCap}); this is
+ * the fallback when the var is unset.
  */
-export const ADMISSION_CAP = 16;
+export const ADMISSION_CAP_DEFAULT = 16;
+
+/**
+ * Parse the `ADMISSION_CAP` wrangler var (vars are always strings) into the
+ * per-pool slot cap. Operators tune it alongside `max_instances` in
+ * wrangler.jsonc — possibly slightly below it for slot-turnover headroom.
+ * Absent / unparsable / non-positive → {@link ADMISSION_CAP_DEFAULT}: a typo
+ * must degrade to the safe default, never to an unmetered (or zero-slot,
+ * everything-times-out) pool.
+ */
+export const resolveAdmissionCap = (raw: string | undefined): number => {
+  if (raw === undefined) return ADMISSION_CAP_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : ADMISSION_CAP_DEFAULT;
+};
 
 /**
  * Delay between claim attempts while the pool is full. Each wait is a
@@ -133,11 +150,14 @@ export interface RunAdmissionStore {
 /**
  * Build a D1-backed run admission store. `now` is injectable so tests can
  * drive the clock; production passes `Date.now` (always read inside the
- * caller's `step.do`, so replays see the checkpointed value).
+ * caller's `step.do`, so replays see the checkpointed value). `cap` is the
+ * per-pool slot ceiling — the dispatcher resolves it from the
+ * `ADMISSION_CAP` wrangler var via {@link resolveAdmissionCap}.
  */
 export const makeRunAdmissionD1 = (
   db: D1Database,
   now: () => number = Date.now,
+  cap: number = ADMISSION_CAP_DEFAULT,
 ): RunAdmissionStore => {
   const insertQueued = (
     executionId: string,
@@ -230,7 +250,7 @@ export const makeRunAdmissionD1 = (
           ts,
           pool,
           ts - ADMISSION_TTL_MS,
-          ADMISSION_CAP,
+          cap,
           ts - ADMISSION_WAITER_TTL_MS,
           enqueuedAt,
         )

@@ -47,7 +47,8 @@ export {
 } from "./container-lease-d1";
 export {
   makeRunAdmissionD1,
-  ADMISSION_CAP,
+  resolveAdmissionCap,
+  ADMISSION_CAP_DEFAULT,
   ADMISSION_POLL_EVERY_MS,
   ADMISSION_MAX_QUEUE_AGE_MS,
   ADMISSION_TTL_MS,

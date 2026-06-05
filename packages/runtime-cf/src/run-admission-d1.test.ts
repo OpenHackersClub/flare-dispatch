@@ -17,10 +17,11 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdmissionPool } from "@flare-dispatch/core";
 import {
-  ADMISSION_CAP,
+  ADMISSION_CAP_DEFAULT,
   ADMISSION_TTL_MS,
   ADMISSION_WAITER_TTL_MS,
   makeRunAdmissionD1,
+  resolveAdmissionCap,
 } from "./run-admission-d1";
 import { makeTestBindings, type TestBindings } from "./test-support";
 
@@ -77,7 +78,7 @@ describe("makeRunAdmissionD1 — atomic admission against real D1", () => {
 
   /** Fill a pool to the cap with live admitted peers. */
   const fillPool = async (pool: AdmissionPool, heartbeatAt: number) => {
-    for (let i = 0; i < ADMISSION_CAP; i++) {
+    for (let i = 0; i < ADMISSION_CAP_DEFAULT; i++) {
       await seed(`peer-${pool}-${String(i).padStart(2, "0")}`, pool, "admitted", T0 - 1_000, heartbeatAt);
     }
   };
@@ -165,14 +166,14 @@ describe("makeRunAdmissionD1 — atomic admission against real D1", () => {
     expect(observed).toMatchObject({
       admitted: false,
       position: 0,
-      poolBusy: ADMISSION_CAP,
+      poolBusy: ADMISSION_CAP_DEFAULT,
     });
     expect((await row(A))?.state).toBe("queued");
   });
 
   it("FIFO no-barge: a later waiter cannot take a freed slot past a live earlier one", async () => {
     // Pool one slot short of the cap; A queued before B.
-    for (let i = 0; i < ADMISSION_CAP - 1; i++) {
+    for (let i = 0; i < ADMISSION_CAP_DEFAULT - 1; i++) {
       await seed(`peer-${i}`, "lean", "admitted", T0 - 1_000, T0);
     }
     let clock = T0;
@@ -277,5 +278,42 @@ describe("makeRunAdmissionD1 — atomic admission against real D1", () => {
     await Effect.runPromise(store.heartbeat(A));
     expect((await row(A))?.heartbeat_at).toBe(T0 + 150_000);
     expect((await row(B))?.heartbeat_at).toBe(T0);
+  });
+
+  it("honours an operator-tuned cap below the default (ADMISSION_CAP var)", async () => {
+    // Cap = 2 with two live admitted peers — full despite the default of 16.
+    await seed("peer-0", "lean", "admitted", T0 - 1_000, T0);
+    await seed("peer-1", "lean", "admitted", T0 - 1_000, T0);
+    const store = makeRunAdmissionD1(bindings.db, () => T0, 2);
+    const { enqueuedAt } = await Effect.runPromise(store.enqueue(A, "lean"));
+
+    const observed = await Effect.runPromise(
+      store.attempt(A, "lean", enqueuedAt),
+    );
+    expect(observed).toMatchObject({ admitted: false, poolBusy: 2 });
+
+    // The same state under the DEFAULT cap admits — only the cap differs.
+    const defaultStore = makeRunAdmissionD1(bindings.db, () => T0);
+    const admitted = await Effect.runPromise(
+      defaultStore.attempt(A, "lean", enqueuedAt),
+    );
+    expect(admitted.admitted).toBe(true);
+  });
+});
+
+describe("resolveAdmissionCap — the ADMISSION_CAP wrangler var", () => {
+  it("parses a numeric var", () => {
+    expect(resolveAdmissionCap("14")).toBe(14);
+  });
+
+  it("defaults when unset", () => {
+    expect(resolveAdmissionCap(undefined)).toBe(ADMISSION_CAP_DEFAULT);
+  });
+
+  it("degrades garbage / non-positive values to the default, never zero slots", () => {
+    expect(resolveAdmissionCap("sixteen")).toBe(ADMISSION_CAP_DEFAULT);
+    expect(resolveAdmissionCap("")).toBe(ADMISSION_CAP_DEFAULT);
+    expect(resolveAdmissionCap("0")).toBe(ADMISSION_CAP_DEFAULT);
+    expect(resolveAdmissionCap("-3")).toBe(ADMISSION_CAP_DEFAULT);
   });
 });

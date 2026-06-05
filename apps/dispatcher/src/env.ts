@@ -233,6 +233,18 @@ export interface Env {
   readonly AI_GATEWAY_ID?: string;
 
   /**
+   * Admission-semaphore slots per container pool (issue #109) — a var, not a
+   * secret, carried as a string like every wrangler var. At most this many
+   * runs are in flight per pool (lean / browser); the rest queue FIFO in D1.
+   * Keep it ≤ each container's `max_instances` (16 today; see the paired
+   * comments in wrangler.jsonc) — operators may set it slightly below for
+   * slot-turnover headroom. Absent / unparsable → defaults to 16
+   * (`ADMISSION_CAP_DEFAULT`), same degrade pattern as
+   * `CLOUDFLARE_ACCOUNT_ID` below.
+   */
+  readonly ADMISSION_CAP?: string;
+
+  /**
    * Cloudflare account id (the 32-hex id in the dashboard URL) — a var, not a
    * secret. When set, `RunWorkflow` builds a `details_url` on the GitHub
    * check-run pointing at the Cloudflare Workflows instance page

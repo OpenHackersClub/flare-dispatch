@@ -58,7 +58,6 @@ import {
   type RunError,
 } from "@flare-dispatch/core";
 import {
-  ADMISSION_CAP,
   ADMISSION_MAX_QUEUE_AGE_MS,
   ADMISSION_POLL_EVERY_MS,
   type BrowserRenderingConfig,
@@ -69,6 +68,7 @@ import {
   makeContainerLeaseD1,
   makeRunAdmissionD1,
   previewSafeSandboxId,
+  resolveAdmissionCap,
 } from "@flare-dispatch/runtime-cf";
 import { lookupRun } from "./registry";
 import { selectSandboxNs } from "./sandbox-routing";
@@ -277,6 +277,10 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       browser:
         this.env.RUNS_SANDBOX_BROWSER !== undefined ? "browser" : undefined,
     });
+    // The per-pool slot cap, from the plain `ADMISSION_CAP` wrangler var
+    // (one var for both pools; keep it ≤ each container's `max_instances` —
+    // see the paired comments in wrangler.jsonc). Unset/unparsable → 16.
+    const admissionCap = resolveAdmissionCap(this.env.ADMISSION_CAP);
 
     // Build the per-execution live runtime: D1 + R2 + Containers + Checks, with
     // `StepRunner` bound to *this* Workflow's `step` so each `step(...)` in the
@@ -421,7 +425,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       // `enqueue`: a child (`parentExecutionId` set) inherits its parent's
       // `enqueued_at` as the FIFO key, jumping to the parent's place in line;
       // the dispatch-age timeout bounds the worst case loud, never a hang.
-      const admissions = makeRunAdmissionD1(db);
+      const admissions = makeRunAdmissionD1(db, Date.now, admissionCap);
       // Wrap a raw CF durable step as an Effect. The gate runs its I/O in
       // `step.do` / `step.sleep` (NOT the run DSL's StepRunner — these steps
       // precede the run body) so every clock read + claim is checkpointed and
@@ -512,7 +516,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
                     summary: queuedSummary(
                       decision.position,
                       decision.poolBusy,
-                      ADMISSION_CAP,
+                      admissionCap,
                       enqueuedAt + ADMISSION_MAX_QUEUE_AGE_MS,
                     ),
                   },
