@@ -30,6 +30,18 @@ export const splitTarPath = (
 };
 
 /**
+ * Decide the container upload shape from `stat -c %F` output. A regular
+ * file streams to R2 un-tarred (so `GET /v1/artifacts/<exec>/<name>` serves
+ * the file itself, honouring the caller's `contentType`); anything else —
+ * directory, symlink, device — takes the tar branch. GNU coreutils prints
+ * `regular empty file` for zero-byte files, so both spellings count.
+ */
+export const isRegularFileStat = (stdout: string): boolean => {
+  const fileType = stdout.trim();
+  return fileType === "regular file" || fileType === "regular empty file";
+};
+
+/**
  * Compose a unique scratch path inside the container for a tar archive. The
  * artifact `name` is sanitised (path-segments / spaces collapsed to `-`) and
  * a per-invocation suffix avoids collisions between concurrent uploads of
