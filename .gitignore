@@ -17,6 +17,10 @@ build/
 .env
 .env.local
 .env.*.local
+# Deployment-specific wrangler configs are operator-local: keep the canonical
+# copy wherever your deployment is managed and copy it to the repo root as
+# wrangler.<env>.local.jsonc (paths inside resolve relative to the repo root).
+wrangler.*.local.jsonc
 
 # Logs
 *.log
