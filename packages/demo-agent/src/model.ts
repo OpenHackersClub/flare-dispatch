@@ -649,6 +649,16 @@ Rules:
   common cause of "never signalled done".
 - If the page is broken (500 error, locked-out account, unreachable element),
   call \`done\` with status=failed and a narrative explaining why.
+- CREDENTIALS ARE LITERAL. When the story prose spells out an email, password,
+  or verification code, type it EXACTLY as written — these are dedicated test
+  credentials for this environment. NEVER substitute a placeholder
+  ("test@example.com", "testuser@…"): the placeholder has no account, the
+  sign-in fails, and the story dead-ends.
+- NEVER use third-party / social sign-in ("Continue with Google", "Sign in
+  with Apple", …) unless the story explicitly instructs it. OAuth providers
+  block automated browsers ("This browser or app may not be secure"), so that
+  path can only dead-end. Use the email/password (or email-code) form the
+  story describes, even when a social button is the most prominent element.
 - Respect the time budget; if \`secsRemaining < 30\`, wrap up.`;
 
 const renderActionPrompt = (input: PickActionInput): string => {
