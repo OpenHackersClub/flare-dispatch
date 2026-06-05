@@ -71,8 +71,13 @@ describe("pr-review", () => {
           e.command.startsWith("git diff"),
         );
         expect(diffExec).toBeDefined();
-        expect(diffExec?.command).toContain(baseInput.baseSha);
-        expect(diffExec?.command).toContain(baseInput.sha);
+        // THREE-dot range (merge-base → head), never two-dot endpoints:
+        // `baseSha` is the base branch tip at event time, so a two-dot diff
+        // on a PR behind its base reviews the base's own newer commits as
+        // phantom deletions.
+        expect(diffExec?.command).toContain(
+          `${baseInput.baseSha}...${baseInput.sha}`,
+        );
         expect(diffExec?.command).toContain(`--output=${DIFF_FILE}`);
         // The diff is read back in full from the file.
         expect(handles.sandbox.reads).toContainEqual({ path: DIFF_FILE });
