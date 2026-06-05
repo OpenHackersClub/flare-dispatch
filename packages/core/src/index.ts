@@ -34,6 +34,15 @@ export {
   type LeaseDecision,
 } from "./container-lease";
 
+// --- Run admission (pure decision logic) --------------------------------------
+export {
+  decideAdmission,
+  admissionAcquireAttempts,
+  type AdmissionPool,
+  type AdmissionObservation,
+  type AdmissionDecision,
+} from "./run-admission";
+
 // --- Capabilities ------------------------------------------------------------
 export {
   sandbox,
