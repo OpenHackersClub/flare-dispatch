@@ -278,7 +278,7 @@ A manifest ships in `infra/github-app-manifest.json`:
     "contents": "read",
     "deployments": "read",
     "metadata": "read",
-    "pull_requests": "read"
+    "pull_requests": "write"
   },
   "default_events": ["check_run", "check_suite", "deployment_status", "pull_request"]
 }
