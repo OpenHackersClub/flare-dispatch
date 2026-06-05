@@ -280,7 +280,7 @@ const reviewBody = (input: RunInput) =>
     //    land as check-run annotations via the run output). Best-effort — a
     //    comment failure must not turn a green review red.
     yield* step("post-comment", () =>
-      postComment(input, renderReviewComment(output, domainCounts)).pipe(
+      postComment(input, renderReviewComment(input, output, domainCounts)).pipe(
         Effect.catchAll((e) =>
           io.log("warn", `pr-review: posting PR comment failed — ${describeError(e)}`),
         ),
@@ -426,8 +426,60 @@ const sanitizeModelText = (s: string): string =>
 /** One domain reviewer's engagement — how many findings it reported. */
 type DomainCount = { readonly agent: string; readonly count: number };
 
-/** Render the consolidated review as a markdown PR comment. */
+/** How many findings render in the comment; the rest land as check annotations. */
+const MAX_RENDERED_FINDINGS = 25;
+
+/** Severity → icon + label, shared by the summary table and per-finding headings.
+ *  Labels mirror the header's count names (critical / warnings / suggestions). */
+const severityBadge = (level: Finding["level"]): string =>
+  Match.value(level).pipe(
+    Match.when("failure", () => "🛑 Critical"),
+    Match.when("warning", () => "⚠️ Warning"),
+    Match.when("notice", () => "💡 Suggestion"),
+    Match.exhaustive,
+  );
+
+/**
+ * GitHub blob URL for a finding — `https://github.com/<repo>/blob/<sha>/<path>#L<n>`.
+ * `repo`/`sha` come from the trusted webhook input; `path` is model-authored, so
+ * each segment is sanitized then URL-encoded (plus manual paren-encoding —
+ * `encodeURIComponent` leaves `()` alone, and a bare `)` would terminate the
+ * markdown link). The line fragment is dropped when the model's line numbers
+ * are nonsense (≤ 0), leaving a plain file link.
+ */
+const findingUrl = (repo: string, sha: string, f: Finding): string => {
+  const encodedPath = sanitizeModelText(f.path)
+    .replace(/^\/+/, "")
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")
+    .replace(/\(/g, "%28")
+    .replace(/\)/g, "%29");
+  const start = Math.floor(f.startLine);
+  const end = Math.floor(f.endLine);
+  const fragment = start > 0 ? (end > start ? `#L${start}-L${end}` : `#L${start}`) : "";
+  return `https://github.com/${repo}/blob/${sha}/${encodedPath}${fragment}`;
+};
+
+/** `path:line` display text for a finding's location. Square brackets are
+ *  stripped on top of `sanitizeModelText` — the text renders inside `[…](url)`
+ *  link syntax, where a `]` would break out of the link. */
+const findingLoc = (f: Finding): string => {
+  const path = sanitizeModelText(f.path).replace(/[[\]]/g, "");
+  return f.startLine === f.endLine
+    ? `${path}:${f.startLine}`
+    : `${path}:${f.startLine}-${f.endLine}`;
+};
+
+/** Sanitized text safe inside a markdown table cell — an unescaped `|` would
+ *  split the row. */
+const tableCell = (s: string): string => sanitizeModelText(s).replace(/\|/g, "\\|");
+
+/** Render the consolidated review as a markdown PR comment: a summary table of
+ *  every required change up front, then one heading per finding. Locations are
+ *  blob links into the codebase at the reviewed SHA, not quoted paths. */
 const renderReviewComment = (
+  input: Pick<RunInput, "repo" | "sha">,
   output: Schema.Schema.Type<typeof ReviewOutput>,
   domainCounts: ReadonlyArray<DomainCount>,
 ): string => {
@@ -448,27 +500,38 @@ const renderReviewComment = (
     `Reviewers: ${domainCounts.map((d) => `${d.agent} ${d.count}`).join(" · ")}`,
   ];
 
+  const rendered = output.findings.slice(0, MAX_RENDERED_FINDINGS);
+
+  const summaryTable = [
+    "",
+    "| # | Severity | Change required | Location |",
+    "| --- | --- | --- | --- |",
+    ...rendered.map(
+      (f, i) =>
+        `| ${i + 1} | ${severityBadge(f.level)} | ${tableCell(f.title)} | [${tableCell(findingLoc(f))}](${findingUrl(input.repo, input.sha, f)}) |`,
+    ),
+  ];
+
+  const details = rendered.flatMap((f, i) => [
+    "",
+    `#### ${i + 1}. ${severityBadge(f.level)} — ${sanitizeModelText(f.title)}`,
+    "",
+    `📍 [${findingLoc(f)}](${findingUrl(input.repo, input.sha, f)})`,
+    "",
+    sanitizeModelText(f.message),
+  ]);
+
   const findingsBlock =
     output.findings.length === 0
       ? ["", "_No findings._"]
       : [
-          "",
-          ...output.findings.slice(0, 25).map((f) => {
-            const icon = Match.value(f.level).pipe(
-              Match.when("failure", () => "🛑"),
-              Match.when("warning", () => "⚠️"),
-              Match.when("notice", () => "💡"),
-              Match.exhaustive,
-            );
-            const path = sanitizeModelText(f.path);
-            const loc =
-              f.startLine === f.endLine
-                ? `${path}:${f.startLine}`
-                : `${path}:${f.startLine}-${f.endLine}`;
-            return `- ${icon} **${sanitizeModelText(f.title)}** — \`${loc}\`\n  ${sanitizeModelText(f.message)}`;
-          }),
-          ...(output.findings.length > 25
-            ? ["", `_…and ${output.findings.length - 25} more (see check annotations)._`]
+          ...summaryTable,
+          ...details,
+          ...(output.findings.length > MAX_RENDERED_FINDINGS
+            ? [
+                "",
+                `_…and ${output.findings.length - MAX_RENDERED_FINDINGS} more (see check annotations)._`,
+              ]
             : []),
         ];
 
