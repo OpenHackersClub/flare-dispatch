@@ -17,6 +17,10 @@
   // worker, with a proxied wildcard DNS record in the numu.gg zone.
   "vars": {
     "SANDBOX_PREVIEW_HOSTNAME": "fd-sandbox.numu.gg",
+    // The dispatcher's own public origin — absolutizes the `/v1/artifacts/...`
+    // links embedded in check-run summaries (#94). HTTP dispatches infer it
+    // from the request; this var covers the CRON path, which has no request.
+    "PUBLIC_ORIGIN": "https://flare-dispatch-v0.numu.workers.dev",
     "CLOUDFLARE_ACCOUNT_ID": "5c9c9e6f153b3aa62c715a6d4af3c9ef",
     // EMAIL_FROM — verified Email Routing sender for the completion-notify
     // email. numu.gg has Email Routing enabled (status: unlocked).
