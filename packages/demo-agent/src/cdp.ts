@@ -14,7 +14,10 @@
 
 import { Effect } from "effect";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
-import { accessHeaderHostAllow } from "./access-scope.js";
+import {
+  accessHosts,
+  cfAuthorizationFromSetCookie,
+} from "./access-scope.js";
 import { CdpAttachFailed, CdpCommandFailed } from "./errors.js";
 import { VIEWPORTS, type ViewportPreset } from "./schemas.js";
 
@@ -116,8 +119,9 @@ export const applyViewport = (
  * for the underlying puppeteer `Browser` so tests + the live recorder can
  * extract the session id.
  *
- * `appUrl` (the play/record `--url`) scopes CF Access header injection to the
- * app-under-test's host — see the header note in `access-scope.ts`.
+ * `appUrl` (the play/record `--url`) names the Access-gated host the agent
+ * exchanges its service token against — see the header note in
+ * `access-scope.ts`.
  */
 export const attachCdp = (
   wsEndpoint: string,
@@ -180,20 +184,23 @@ export const attachCdp = (
         }),
     });
 
-    // When CF Access service-token creds are in the env, inject them so the
-    // browser can reach a Cloudflare-Access-gated target (the gated Pages site
-    // 302s every request to the Access login otherwise, so the agent would
-    // only ever see the login wall).
+    // When CF Access service-token creds are in the env, authenticate the
+    // browser against the Access-gated target (the gated Pages site 302s
+    // every request to the Access login otherwise, so the agent would only
+    // ever see the login wall).
     //
-    // SCOPED to the app-under-test's host (+ `CF_ACCESS_HOSTS`), not set
-    // globally: `setExtraHTTPHeaders` rides on EVERY request, and on numu
-    // staging that broke each cross-origin load — `clerk.browser.js` failed
-    // with `net::ERR_INVALID_REDIRECT` + a CORS block (reproduced 2026-06-05),
-    // the SPA body never rendered, and every story burned its full action
-    // budget against a blank page. It also leaked the service-token secret to
-    // every third-party origin. Request interception injects the headers only
-    // where they belong; the legacy global path remains the fallback when the
-    // caller passed no `--url` (nothing to scope by).
+    // COOKIE EXCHANGE, not header injection — see access-scope.ts for the
+    // full post-mortem of the two header approaches this replaces (global
+    // `setExtraHTTPHeaders` broke every cross-origin load + leaked the
+    // secret; per-request interception orphans paused fetches across the
+    // record/play process hand-offs and froze the page just as blank). The
+    // agent process fetches the gated origin once with the service-token
+    // pair, receives `Set-Cookie: CF_Authorization=…` (24h), and sets that
+    // cookie on the browser — domain-scoped by the browser itself, riding on
+    // every same-host request, surviving process hand-offs. Best-effort per
+    // host: a host that returns no cookie (not Access-gated) just gets none.
+    // The legacy global-header path remains only when the caller passed no
+    // `--url` (nothing to exchange against).
     const cfAccessId = process.env["CF_ACCESS_CLIENT_ID"];
     const cfAccessSecret = process.env["CF_ACCESS_CLIENT_SECRET"];
     if (cfAccessId !== undefined && cfAccessSecret !== undefined) {
@@ -201,30 +208,43 @@ export const attachCdp = (
         "CF-Access-Client-Id": cfAccessId,
         "CF-Access-Client-Secret": cfAccessSecret,
       };
-      const allowHost = accessHeaderHostAllow(
-        appUrl,
-        process.env["CF_ACCESS_HOSTS"],
-      );
+      const hosts = accessHosts(appUrl, process.env["CF_ACCESS_HOSTS"]);
       yield* Effect.tryPromise({
         try: async () => {
-          if (allowHost === null) {
+          if (hosts.length === 0) {
             await page.setExtraHTTPHeaders(accessHeaders);
             return;
           }
-          await page.setRequestInterception(true);
-          page.on("request", (req) => {
-            const headers = req.headers();
-            try {
-              if (allowHost(new URL(req.url()).host)) {
-                Object.assign(headers, accessHeaders);
-              }
-            } catch {
-              // unparseable request url (data:, about:) — pass through as-is.
+          for (const host of hosts) {
+            // `redirect: "manual"` — Access sets the cookie on the FIRST
+            // authenticated response; following a redirect would drop its
+            // Set-Cookie header on the floor.
+            const res = await fetch(`https://${host}/`, {
+              headers: accessHeaders,
+              redirect: "manual",
+            });
+            const setCookies =
+              typeof res.headers.getSetCookie === "function"
+                ? res.headers.getSetCookie()
+                : [res.headers.get("set-cookie") ?? ""].filter(
+                    (s) => s !== "",
+                  );
+            const token = cfAuthorizationFromSetCookie(setCookies);
+            if (token === null) {
+              console.error(
+                `cf-access: no CF_Authorization cookie from https://${host}/ (status ${res.status}) — host may not be Access-gated`,
+              );
+              continue;
             }
-            // Every intercepted request MUST be continued or the page hangs;
-            // `continue` can reject if another handler already settled it.
-            void req.continue({ headers }).catch(() => {});
-          });
+            await page.setCookie({
+              name: "CF_Authorization",
+              value: token,
+              domain: host,
+              path: "/",
+              secure: true,
+              sameSite: "None",
+            });
+          }
         },
         catch: (e) =>
           new CdpAttachFailed({
