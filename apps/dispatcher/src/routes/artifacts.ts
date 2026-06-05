@@ -55,29 +55,13 @@ const jsonError = (
     headers: { "content-type": "application/json" },
   });
 
-/**
- * Handle `GET /v1/artifacts/:execution/:name` — stream the stored R2 object.
- *
- * @param env        binding env (`RUNS_STORAGE`).
- * @param execution  the execution ULID path segment.
- * @param name       the artifact name path segment.
- * @returns `200` streaming the body, or `404` if no such object.
- */
-export const handleArtifact = async (
+/** Stream one stored R2 object with its metadata, or `null` if absent. */
+const streamObject = async (
   env: Env,
-  execution: string,
-  name: string,
-): Promise<Response> => {
-  const key = artifactKey(execution, name);
+  key: string,
+): Promise<Response | null> => {
   const object = await env.RUNS_STORAGE.get(key);
-
-  if (object === null) {
-    return jsonError(
-      "artifact_not_found",
-      `no artifact at "${key}"`,
-      404,
-    );
-  }
+  if (object === null) return null;
 
   // R2 writes the object's stored metadata onto a `Headers` for us; layer the
   // content-type on top (defaulting when the upload didn't set one).
@@ -88,8 +72,98 @@ export const handleArtifact = async (
     object.httpMetadata?.contentType ?? "application/octet-stream",
   );
   headers.set("etag", object.httpEtag);
-  // Logs are immutable per execution+name — safe to cache hard.
+  // Artifacts are immutable per execution+name — safe to cache hard.
   headers.set("cache-control", "private, max-age=31536000, immutable");
 
   return new Response(object.body, { status: 200, headers });
+};
+
+const escapeHtml = (s: string): string =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+/**
+ * Render a minimal HTML listing of the expanded files under an artifact —
+ * the fallback browse surface when the bundle has no `index.html` of its own
+ * (e.g. a screenshots tree), mirroring an object-store directory index.
+ */
+const directoryIndex = async (
+  env: Env,
+  execution: string,
+  name: string,
+): Promise<Response | null> => {
+  const prefix = `${artifactKey(execution, name)}/`;
+  const listed = await env.RUNS_STORAGE.list({ prefix, limit: 1000 });
+  if (listed.objects.length === 0) return null;
+
+  const rows = listed.objects
+    .map((o) => {
+      const rel = o.key.slice(prefix.length);
+      const href = rel.split("/").map(encodeURIComponent).join("/");
+      const kb = (o.size / 1024).toFixed(1);
+      return `<li><a href="${href}">${escapeHtml(rel)}</a> <small>${kb} KB</small></li>`;
+    })
+    .join("\n");
+  const html = `<!doctype html><meta charset="utf-8"><title>${escapeHtml(
+    name,
+  )} — ${escapeHtml(execution)}</title><h1>${escapeHtml(name)}</h1><p><a href="../${encodeURIComponent(
+    name,
+  )}">download .tar.gz</a></p><ul>\n${rows}\n</ul>`;
+  return new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+};
+
+/**
+ * Handle `GET /v1/artifacts/:execution/:name[/...path]`.
+ *
+ * - Bare `:name` — stream the artifact object itself (a step log, or a
+ *   container-tar bundle's `.tar.gz`): the stable download URL.
+ * - `:name/<path>` — stream one file the upload-time browse expansion stored
+ *   under the bundle (`tar-extract.ts` in runtime-cf), so an HTML report is
+ *   served as a working static site.
+ * - `:name/` (trailing slash) — the browse entrypoint: the bundle's own
+ *   `index.html` when it has one, else a generated directory listing.
+ *
+ * @param env        binding env (`RUNS_STORAGE`).
+ * @param execution  the execution ULID path segment.
+ * @param name       the artifact name path segment.
+ * @param subPath    path inside the expanded bundle; `""` with
+ *                   `wantsIndex: true` for the trailing-slash entrypoint.
+ * @returns `200` streaming the body, or `404` if no such object.
+ */
+export const handleArtifact = async (
+  env: Env,
+  execution: string,
+  name: string,
+  subPath = "",
+  wantsIndex = false,
+): Promise<Response> => {
+  if (wantsIndex && subPath === "") {
+    const index = await streamObject(
+      env,
+      `${artifactKey(execution, name)}/index.html`,
+    );
+    if (index !== null) return index;
+    const listing = await directoryIndex(env, execution, name);
+    if (listing !== null) return listing;
+    return jsonError(
+      "artifact_not_browsable",
+      `artifact "${name}" has no expanded contents to browse — fetch the bundle at its bare URL instead`,
+      404,
+    );
+  }
+
+  const key =
+    subPath === ""
+      ? artifactKey(execution, name)
+      : `${artifactKey(execution, name)}/${subPath}`;
+  const response = await streamObject(env, key);
+  return (
+    response ?? jsonError("artifact_not_found", `no artifact at "${key}"`, 404)
+  );
 };

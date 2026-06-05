@@ -471,6 +471,93 @@ describe("GET /v1/artifacts/:execution/:name", () => {
   });
 });
 
+describe("GET /v1/artifacts/:execution/:name/... — browse expansion", () => {
+  const execution = "01JABCDEF0123456789ABCDEFG";
+  const base = `https://dispatcher.example/v1/artifacts/${execution}/acceptance-report`;
+
+  const seeded = () => {
+    const f = fixture();
+    f.storage.put(
+      `artifacts/${execution}/acceptance-report`,
+      "tarball-bytes",
+      "application/gzip",
+    );
+    f.storage.put(
+      `artifacts/${execution}/acceptance-report/index.html`,
+      "<html>report</html>",
+      "text/html; charset=utf-8",
+    );
+    f.storage.put(
+      `artifacts/${execution}/acceptance-report/data/shot.png`,
+      "PNG",
+      "image/png",
+    );
+    return f;
+  };
+
+  it("bare name still streams the tarball (download contract unchanged)", async () => {
+    const { env } = seeded();
+    const res = await handleRequest(new Request(base), env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/gzip");
+    expect(await res.text()).toBe("tarball-bytes");
+  });
+
+  it("serves a nested expanded file with its stored content-type", async () => {
+    const { env } = seeded();
+    const res = await handleRequest(new Request(`${base}/data/shot.png`), env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(await res.text()).toBe("PNG");
+  });
+
+  it("trailing slash serves the bundle's own index.html", async () => {
+    const { env } = seeded();
+    const res = await handleRequest(new Request(`${base}/`), env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toBe("<html>report</html>");
+  });
+
+  it("trailing slash falls back to a directory listing without index.html", async () => {
+    const { env, storage } = fixture();
+    storage.put(
+      `artifacts/${execution}/screenshots/sub/error-context.md`,
+      "# ctx",
+      "text/plain; charset=utf-8",
+    );
+    const res = await handleRequest(
+      new Request(
+        `https://dispatcher.example/v1/artifacts/${execution}/screenshots/`,
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("sub/error-context.md");
+    expect(html).toContain("download .tar.gz");
+  });
+
+  it("404s a browse on an unexpanded artifact with a helpful error", async () => {
+    const { env, storage } = fixture();
+    storage.put(`artifacts/${execution}/legacy`, "tar", "application/gzip");
+    const res = await handleRequest(
+      new Request(`https://dispatcher.example/v1/artifacts/${execution}/legacy/`),
+      env,
+    );
+    expect(res.status).toBe(404);
+    expect(await errorOf(res)).toBe("artifact_not_browsable");
+  });
+
+  it("404s a missing nested path", async () => {
+    const { env } = seeded();
+    const res = await handleRequest(new Request(`${base}/data/nope.png`), env);
+    expect(res.status).toBe(404);
+    expect(await errorOf(res)).toBe("artifact_not_found");
+  });
+});
+
 describe("POST /v1/dispatch/:run — dedup", () => {
   it("explicit Idempotency-Key header → executionId equals the header value", async () => {
     const { env, workflow } = fixture();

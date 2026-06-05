@@ -57,6 +57,7 @@ import {
 import { containerTarballPath, splitTarPath } from "./artifact-tar-path";
 import { readContainerFile } from "./container-file-stream";
 import { putStream } from "./r2-put-stream";
+import { expandTarGzToR2 } from "./tar-extract";
 
 /** R2 key prefix for per-execution artifacts. */
 const artifactKey = (executionId: string, name: string): string =>
@@ -145,6 +146,19 @@ export const makeR2ArtifactLive = (
             await putStream(bucket, key, content, size, {
               contentType: contentType ?? "application/gzip",
             });
+            // Browse expansion — also store each archived file as its own
+            // object under `<key>/…` so the dispatcher can serve the
+            // artifact's CONTENTS (a Playwright report is a static site)
+            // instead of only the archive. Best-effort decoration: a
+            // malformed/oversized archive must never fail the upload — the
+            // tarball above is already the artifact of record.
+            try {
+              await expandTarGzToR2(bucket, key, `${key}/`, `${basename}/`);
+            } catch (cause) {
+              console.warn(
+                `artifact "${name}": browse expansion skipped — ${String(cause)}`,
+              );
+            }
             return artifactUrl(executionId, name, publicOrigin);
           }
 
