@@ -581,21 +581,17 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
             containerId,
             payload.executionId,
           );
-          // Keep the heartbeats fresh in the background so a long run (a
-          // 25-min matrix) is never reclaimed as stale mid-flight. ONE fiber,
-          // TWO beats per tick: the container lease AND the admission slot
-          // share the TTL by design, so one cadence keeps both live. Each
-          // beat swallows its own error so a transient D1 blip never
-          // propagates; forked into the scope, interrupted when the scope
-          // closes; lease + slot are released on EVERY exit path via
-          // `ensuring`.
+          // Keep the heartbeat fresh in the background so a long run (a 25-min
+          // matrix) is never reclaimed as stale mid-flight. Each beat swallows
+          // its own error so a transient D1 blip never propagates; forked into
+          // the scope, interrupted when the scope closes; the lease is released
+          // on EVERY exit path via `ensuring`. (The admission slot has its own
+          // beat fiber one scope OUT — see `admissionHeld` below — because it
+          // must stay fresh through the lease-acquire WAIT, too.)
           const heartbeatLoop: Effect.Effect<void, never> = lease
             .heartbeat()
             .pipe(
               Effect.ignore,
-              Effect.zipRight(
-                admissions.heartbeat(payload.executionId).pipe(Effect.ignore),
-              ),
               Effect.repeat(
                 Schedule.spaced(Duration.millis(LEASE_HEARTBEAT_EVERY_MS)),
               ),
@@ -608,6 +604,28 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         },
       ).pipe(Effect.scoped);
 
+      // The admitted slot, held live for the WHOLE post-gate window. The beat
+      // fiber forks OUTSIDE `leased` on purpose: the lease-acquire wait can
+      // itself last up to `LEASE_WAIT_TIMEOUT_MS` — exactly the admission TTL
+      // — so a fiber forked only after `acquire` returns (the lease's own
+      // heartbeat) would let the slot stale mid-wait, a peer's claim COUNT
+      // would stop seeing it, and the pool would overcommit by the runs stuck
+      // in that window. Same cadence + swallow-errors shape as the lease beat.
+      const admissionHeld: Effect.Effect<unknown, RunError, RunContext> =
+        Effect.gen(function* () {
+          const admissionBeat: Effect.Effect<void, never> = admissions
+            .heartbeat(payload.executionId)
+            .pipe(
+              Effect.ignore,
+              Effect.repeat(
+                Schedule.spaced(Duration.millis(LEASE_HEARTBEAT_EVERY_MS)),
+              ),
+              Effect.asVoid,
+            );
+          yield* Effect.forkScoped(admissionBeat);
+          return yield* leased;
+        }).pipe(Effect.scoped);
+
       // Admission gate FIRST, then the leased run body; the admission slot is
       // released on every exit path (success / run failure / AdmissionTimedOut
       // / defect / interrupt) — the release also opportunistically GCs stale
@@ -616,7 +634,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       // failure-summary.ts rendering it unmistakably as an infra-wait timeout.
       const gated: Effect.Effect<unknown, RunError, RunContext> =
         admissionGate.pipe(
-          Effect.andThen(leased),
+          Effect.andThen(admissionHeld),
           Effect.ensuring(
             admissions.release(payload.executionId).pipe(Effect.ignore),
           ),
