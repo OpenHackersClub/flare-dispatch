@@ -5,9 +5,10 @@
 // report. No app boot — the site is already live; the test connects out
 // over HTTPS (the spec is responsible for any auth header injection,
 // e.g. Cloudflare Access service-token pairs read out of the env). After
-// the test finishes, the run uploads the configured artifacts directory
-// as a single signed R2 URL so a reviewer can pull video.webm directly
-// without scrubbing through the step log.
+// the test finishes, the run uploads the recorded video.webm as its own
+// streamable artifact (the headline `videoUri` — plays in the browser)
+// plus the whole artifacts directory as one tarball (`bundleUri`), so a
+// reviewer clicks straight to the video without extracting an archive.
 //
 // Sits between `offload-test` (clone-and-run; no artifact upload beyond
 // the step log) and `product-demo` (AI-driven, rrweb-recorded, requires
@@ -39,13 +40,16 @@
 //    chose). Plaintext must not land in the Workflow checkpoint, so the
 //    primitive is invoked inline.
 //
-// 3. `artifactPath` is a directory, not a glob.
-//    `artifact.upload` tars directories to .tar.zst and hands back one
-//    signed URL. Globbing for `**/video.webm` adds plumbing for no gain:
-//    reviewers want the whole `playwright-report/` or `.tmp/demo-runs/`
-//    tree (video + trace + JSON report + screenshots) in one bundle, not
-//    just the .webm. The caller points `artifactPath` at the spec's
-//    `outputDir`; the run uploads the whole tree.
+// 3. `artifactPath` is a directory, not a glob — plus one located video.
+//    `artifact.upload` tars directories and hands back one signed URL;
+//    reviewers get the whole `playwright-report/` or `.tmp/demo-runs/`
+//    tree (video + JSON report + screenshots) as `bundleUri`. On top of
+//    that the run `find`s the spec's recorded `video.webm` and uploads it
+//    as its own single-file artifact: the headline `videoUri` then streams
+//    in the browser (`video/webm`) instead of forcing an archive download
+//    — stakeholders click the email link to WATCH the demo. When no video
+//    exists (spec crashed before recording), `videoUri` falls back to the
+//    bundle so the link never dangles.
 //
 // Spec: specs/02-runs.md § 1 (input/output framing), specs/03-dsl.md §
 //       Top-level shape + § sandbox + § artifact + § Primitives.
@@ -98,12 +102,16 @@ const PlaywrightDemoInput = Schema.Struct({
   timeoutSec: Schema.optional(Schema.Number),
 });
 
-/** Output contract. `videoUri` is the directory tarball; the caller's
- * spec is what produced the video.webm inside it. */
+/** Output contract. `videoUri` points at the video FILE itself (streams
+ * in-browser as `video/webm`) when the spec produced one — a stakeholder
+ * clicking the email/check-run link should watch the demo, not download an
+ * archive. `bundleUri` is the whole-`artifactPath` tarball (video + report +
+ * screenshots); `videoUri` falls back to it when no video was found. */
 const PlaywrightDemoOutput = Schema.Struct({
   exitCode: Schema.Number,
   durationMs: Schema.Number,
-  videoUri: Schema.String, // signed R2 URL to the `artifactPath` tarball
+  videoUri: Schema.String, // signed R2 URL to the video file (or the tarball fallback)
+  bundleUri: Schema.String, // signed R2 URL to the `artifactPath` tarball
   logUri: Schema.String, // signed R2 URL to the captured stdout/stderr
 });
 
@@ -207,11 +215,29 @@ export const playwrightDemo = defineRun({
         { timeoutSec: stepTimeoutSec, retries: 0 },
       );
 
-      // upload-video — promote the artifact directory (video.webm +
-      // trace.zip + report.json + any screenshots) to a signed R2 URL.
-      // The `artifact` capability tars directories; the resulting URL
-      // is the headline link reviewers click to fetch the bundle.
-      const videoUri = yield* step("upload-video", () =>
+      // locate-video — find the video file the spec recorded, so it can be
+      // uploaded as its OWN artifact below. Playwright writes one
+      // `video.webm` per test-result directory under `outputDir`; `sort`
+      // makes the pick deterministic when a multi-test spec produced
+      // several. A non-zero exit or empty stdout (no video — e.g. the spec
+      // crashed before recording) is NOT a failure: `videoUri` falls back
+      // to the bundle tarball.
+      const locate = yield* step("locate-video", () =>
+        sandbox.exec({
+          cwd: dir,
+          container,
+          command: `find ${input.artifactPath} -type f -name video.webm | sort | head -n 1`,
+          timeoutSec: 60,
+        }),
+      );
+      const videoRelPath =
+        locate.exitCode === 0 ? locate.stdout.trim() : "";
+
+      // upload-bundle — promote the whole artifact directory (video.webm +
+      // report.json + any screenshots) to a signed R2 URL. The `artifact`
+      // capability tars directories — and expands the archive into per-file
+      // R2 objects, so `<bundleUri>/` browses the tree.
+      const bundleUri = yield* step("upload-bundle", () =>
         artifact.upload({
           name: "demo-bundle",
           path: `${dir}/${input.artifactPath}/`,
@@ -220,6 +246,23 @@ export const playwrightDemo = defineRun({
           signedUrlTTL: "30 days",
         }),
       );
+
+      // upload-video — the video file as its own single-file artifact
+      // (`artifact.upload` streams regular files un-tarred), so the headline
+      // `videoUri` link plays in the browser instead of downloading an
+      // archive the reviewer has to extract.
+      const videoUri =
+        videoRelPath === ""
+          ? bundleUri
+          : yield* step("upload-video", () =>
+              artifact.upload({
+                name: "video.webm",
+                path: `${dir}/${videoRelPath}`,
+                container,
+                contentType: "video/webm",
+                signedUrlTTL: "30 days",
+              }),
+            );
 
       // upload-log — push the captured stdout/stderr to R2. Reviewers
       // open this when the demo failed and they need to see what
@@ -241,6 +284,7 @@ export const playwrightDemo = defineRun({
         exitCode: exec.exitCode,
         durationMs: exec.durationMs,
         videoUri,
+        bundleUri,
         logUri,
       };
     }),

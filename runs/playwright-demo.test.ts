@@ -5,9 +5,13 @@
 // `offload-test` + `cdp-acceptance` shape, adapted to the run's
 // "checkout → loadSecrets → exec → upload-video → upload-log" body:
 //
-//   (a) green   — fake spec exits 0 → output `.exitCode === 0`, four
-//                  step records (loadSecrets is inline, not a step), the
-//                  artifact bundle + log both uploaded.
+//   (a) green   — fake spec exits 0 → output `.exitCode === 0`, the
+//                  step records in order (loadSecrets is inline, not a
+//                  step), the artifact bundle + log uploaded; with no
+//                  video found, `videoUri` falls back to the bundle.
+//   (a') video  — the locate-video `find` returns a path → the video is
+//                  uploaded as its own artifact and `videoUri` diverges
+//                  from `bundleUri`.
 //   (b) red     — fake spec exits 1 → the run Effect *succeeds*
 //                  (non-zero exit is a normal ExecResult), `.exitCode
 //                  === 1`.
@@ -38,7 +42,7 @@ const baseInput = {
 
 describe("playwright-demo", () => {
   it.effect(
-    "green path — spec exits 0, four steps, bundle + log uploaded",
+    "green path — spec exits 0, bundle + log uploaded, videoUri falls back to bundle",
     () => {
       const { layer, handles } = makeCFRuntimeTest({
         sandboxProgram: { [PLAYWRIGHT_COMMAND]: { exitCode: 0 } },
@@ -48,15 +52,20 @@ describe("playwright-demo", () => {
         const result = yield* playwrightDemo.run(baseInput);
 
         expect(result.exitCode).toBe(0);
-        expect(result.videoUri.length).toBeGreaterThan(0);
         expect(result.logUri.length).toBeGreaterThan(0);
+        // The fake's locate-video `find` returns empty stdout (no video on
+        // disk) → the headline link degrades to the bundle, never dangles.
+        expect(result.bundleUri.length).toBeGreaterThan(0);
+        expect(result.videoUri).toBe(result.bundleUri);
 
-        // checkout → run-playwright → upload-video → upload-log. Four
-        // entries — loadSecrets is inline, no checkpoint.
+        // checkout → run-playwright → locate-video → upload-bundle →
+        // upload-log — loadSecrets is inline (no checkpoint), and with no
+        // video found there is no upload-video step.
         expect(handles.executions.steps.map((s) => s.name)).toEqual([
           "checkout",
           "run-playwright",
-          "upload-video",
+          "locate-video",
+          "upload-bundle",
           "upload-log",
         ]);
         expect(
@@ -65,6 +74,52 @@ describe("playwright-demo", () => {
 
         // Two artifact uploads — the bundle directory and the captured log.
         expect(handles.artifact.uploads).toHaveLength(2);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "video found — uploaded as its own artifact, videoUri diverges from bundleUri",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: {
+          [PLAYWRIGHT_COMMAND]: { exitCode: 0 },
+          // The locate-video `find` resolves the spec's recording.
+          "find .tmp/demo-runs": {
+            exitCode: 0,
+            stdout:
+              ".tmp/demo-runs/ci-123/demo-spec-chromium/video.webm\n",
+          },
+        },
+      });
+
+      return Effect.gen(function* () {
+        const result = yield* playwrightDemo.run(baseInput);
+
+        expect(result.exitCode).toBe(0);
+        expect(result.videoUri.length).toBeGreaterThan(0);
+        expect(result.videoUri).not.toBe(result.bundleUri);
+
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "run-playwright",
+          "locate-video",
+          "upload-bundle",
+          "upload-video",
+          "upload-log",
+        ]);
+
+        // Three uploads — bundle, the video file, and the captured log. The
+        // video upload carries the streamable content type and the located
+        // container path.
+        expect(handles.artifact.uploads).toHaveLength(3);
+        const video = handles.artifact.uploads.find(
+          (u) => u.name === "video.webm",
+        );
+        expect(video?.contentType).toBe("video/webm");
+        expect(video?.path).toContain(
+          ".tmp/demo-runs/ci-123/demo-spec-chromium/video.webm",
+        );
       }).pipe(Effect.provide(layer));
     },
   );
@@ -141,8 +196,11 @@ describe("playwright-demo", () => {
 
         // The exec recorded the merged env — resolved secrets surfaced
         // as bare env-var names (prefix stripped), plus the caller's
-        // non-credential knob.
-        const execCall = handles.sandbox.execs.at(-1);
+        // non-credential knob. Target the playwright exec by command:
+        // the run also execs a locate-video `find` (no env injected).
+        const execCall = handles.sandbox.execs.find((e) =>
+          e.command.includes("playwright test"),
+        );
         expect(execCall?.env?.CF_ACCESS_CLIENT_ID).toBe("id-123");
         expect(execCall?.env?.CF_ACCESS_CLIENT_SECRET).toBe("sk-456");
         expect(execCall?.env?.STAGING_WEB_BASE).toBe(
