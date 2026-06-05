@@ -4,7 +4,11 @@
 // `vitest-pool-workers` environment — same split as `sandbox-clone-url.ts`.
 
 import { describe, expect, it } from "vitest";
-import { containerTarballPath, splitTarPath } from "./artifact-tar-path";
+import {
+  containerTarballPath,
+  isRegularFileStat,
+  splitTarPath,
+} from "./artifact-tar-path";
 
 describe("splitTarPath", () => {
   it("splits an absolute directory path into parent + basename", () => {
@@ -41,6 +45,27 @@ describe("splitTarPath", () => {
   it("normalises an empty input — caller should reject upstream", () => {
     expect(splitTarPath("")).toEqual({ parent: ".", basename: "" });
     expect(splitTarPath("/")).toEqual({ parent: ".", basename: "" });
+  });
+});
+
+describe("isRegularFileStat", () => {
+  it("recognises a regular file (with stray whitespace)", () => {
+    expect(isRegularFileStat("regular file\n")).toBe(true);
+    expect(isRegularFileStat("  regular file  ")).toBe(true);
+  });
+
+  it("recognises GNU coreutils' zero-byte spelling", () => {
+    // `stat -c %F` on an empty file prints "regular empty file" — it must
+    // still stream un-tarred (an empty screenshot is a caller bug, but a
+    // gzip archive of it would be a worse one).
+    expect(isRegularFileStat("regular empty file")).toBe(true);
+  });
+
+  it("routes directories and everything else to the tar branch", () => {
+    expect(isRegularFileStat("directory")).toBe(false);
+    expect(isRegularFileStat("symbolic link")).toBe(false);
+    expect(isRegularFileStat("")).toBe(false);
+    expect(isRegularFileStat("stat: cannot statx")).toBe(false);
   });
 });
 

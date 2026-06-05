@@ -8,13 +8,16 @@
 //      streamed). The object is copied to the stable `artifacts/<execId>/<name>`
 //      key. This is the path `offload-test` rides on.
 //
-//   2. **Container-tar mode** — `artifact.upload({ name, path, container })`.
-//      `path` is a filesystem path inside the sandbox container (typically a
-//      directory: a Playwright `outputDir`, a built site, a coverage tree).
-//      The path is tarred + gzipped inside the container and the resulting
-//      bytes are streamed to R2 under the same stable key. This is the path
-//      `playwright-demo` and any run that wants to ship a directory of files
-//      from the sandbox rides on.
+//   2. **Container mode** — `artifact.upload({ name, path, container })`.
+//      `path` is a filesystem path inside the sandbox container. A DIRECTORY
+//      (a Playwright `outputDir`, a built site, a coverage tree) is tarred +
+//      gzipped inside the container and the archive streamed to R2 under the
+//      stable key, plus a best-effort browse expansion. A single regular
+//      FILE streams to R2 as-is with the caller's `contentType` — tarring it
+//      stamped that content type onto a gzip archive, so a `.png` artifact
+//      rendered as a broken image in every browser (the bytes weren't a
+//      PNG). `playwright-demo` (directory bundle) and `product-demo` (story
+//      screenshots) ride on this mode.
 //
 // Either way, the returned URL is `/v1/artifacts/<execId>/<name>` — a stable
 // path served by the Dispatcher's `GET /v1/artifacts/:execution/:name` route.
@@ -31,12 +34,13 @@
 //
 // --- Verification scope -------------------------------------------------------
 //
-// The container branch (`box.exec` for tar + `readFileStream` for upload)
-// cannot run in `vitest-pool-workers` — Miniflare has no container runtime,
-// same constraint as `sandbox-cf.ts` and `cache-r2.ts`. Pure helpers
-// (`splitTarPath`, `containerTarballPath`) live in `artifact-tar-path.ts`
-// with their own unit tests; the orchestration here is verified by typecheck
-// + `wrangler deploy --dry-run` + a `wrangler dev` acceptance.
+// The container branch (`box.exec` for stat/tar + `readFileStream` for
+// upload) cannot run in `vitest-pool-workers` — Miniflare has no container
+// runtime, same constraint as `sandbox-cf.ts` and `cache-r2.ts`. Pure helpers
+// (`splitTarPath`, `containerTarballPath`, `isRegularFileStat`) live in
+// `artifact-tar-path.ts` with their own unit tests; the orchestration here is
+// verified by typecheck + `wrangler deploy --dry-run` + a `wrangler dev`
+// acceptance.
 //
 // Spec: specs/03-dsl.md § artifact, specs/05-byoc.md § R2 layout, plan § PR4.
 
@@ -54,7 +58,11 @@ import {
   ArtifactUploadFailed,
   type ArtifactService,
 } from "@flare-dispatch/core";
-import { containerTarballPath, splitTarPath } from "./artifact-tar-path";
+import {
+  containerTarballPath,
+  isRegularFileStat,
+  splitTarPath,
+} from "./artifact-tar-path";
 import { readContainerFile } from "./container-file-stream";
 import { putStream } from "./r2-put-stream";
 import { expandTarGzToR2 } from "./tar-extract";
@@ -109,9 +117,9 @@ export const makeR2ArtifactLive = (
           const key = artifactKey(executionId, name);
 
           if (container !== undefined) {
-            // Container-tar mode — tar the on-disk `path` inside the sandbox
-            // and STREAM the archive into R2 (never buffer it whole). Mirrors
-            // the cache-r2.ts pattern (`tar czf` + `readFile` + `putStream`).
+            // Container mode — stream the on-disk `path` out of the sandbox
+            // into R2 (never buffer it whole): single files as-is, directories
+            // as a tar.gz. Mirrors the cache-r2.ts pattern for the archive leg.
             if (ns === undefined) {
               throw new Error(
                 "artifact.upload({ container }) called but no Sandbox namespace was wired into R2ArtifactLive — see makeR2ArtifactLive's `ns` argument",
@@ -119,6 +127,21 @@ export const makeR2ArtifactLive = (
             }
             const { getSandbox } = await import("@cloudflare/sandbox");
             const box = getSandbox(ns, container.id);
+
+            // Single-file vs directory decides the upload shape. A regular
+            // file streams un-tarred so the stable URL serves the file itself
+            // under the caller's content type. A failed stat (path missing)
+            // falls through to the tar branch, whose own loud error is the
+            // established "path must exist" surface.
+            const statType = await box.exec(`stat -c %F ${path}`);
+            if (statType.exitCode === 0 && isRegularFileStat(statType.stdout)) {
+              const { content, size } = await readContainerFile(box, path);
+              await putStream(bucket, key, content, size, {
+                contentType: contentType ?? "application/octet-stream",
+              });
+              return artifactUrl(executionId, name, publicOrigin);
+            }
+
             const { parent, basename } = splitTarPath(path);
             if (basename === "") {
               throw new Error(

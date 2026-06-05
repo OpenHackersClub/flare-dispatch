@@ -17,8 +17,9 @@ import {
 export type ArtifactFakeState = {
   /** uploaded artifact name → its fake signed URL. */
   readonly urls: Map<string, string>;
-  /** every `upload` call, in order. */
-  readonly uploads: { name: string; path: string }[];
+  /** every `upload` call, in order — `contentType` lets tests assert the
+   * served type (a video artifact must say `video/webm` to stream). */
+  readonly uploads: { name: string; path: string; contentType?: string }[];
 };
 
 /** Build an Artifact fake plus an inspectable handle. */
@@ -29,9 +30,13 @@ export const makeArtifactFake = (): {
   const state: ArtifactFakeState = { urls: new Map(), uploads: [] };
 
   const service: ArtifactService = {
-    upload: ({ name, path }) =>
+    upload: ({ name, path, contentType }) =>
       Effect.sync(() => {
-        state.uploads.push({ name, path });
+        state.uploads.push({
+          name,
+          path,
+          ...(contentType !== undefined ? { contentType } : {}),
+        });
         const url = `https://fake-r2.local/${encodeURIComponent(name)}`;
         state.urls.set(name, url);
         return url;
