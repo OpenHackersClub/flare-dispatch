@@ -205,4 +205,122 @@ describe("pr-review", () => {
       return Effect.void;
     },
   );
+
+  // ---- pr-review.style: comment layout preset --------------------------------
+  // The default verdict-table is great for transparency but doesn't match
+  // teams who already get a "leaderboard-bot" `## ✅ LGTM` + 3-col emoji table
+  // from in-house reviewers. `compact` is the parity layout — same content,
+  // different rendering — selected via CONFIG_KV without a redeploy.
+
+  it.effect(
+    "default style → verdict-table header (`### AI code review — ✅ Approve`)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: backendConfig,
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+        modelGateway: { responses: [emptyReport] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).toContain("### AI code review — ✅ Approve");
+        expect(body).not.toContain("## ✅ LGTM");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "compact style + zero findings → `## ✅ LGTM` header (parity with leaderboard bots)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: { ...backendConfig, "pr-review.style": "compact" },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+        modelGateway: { responses: [emptyReport] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).toContain("## ✅ LGTM");
+        expect(body).toContain("No issues found.");
+        // The compact layout is the leaderboard-bot output: skip the verbose
+        // verdict-table header + per-domain reviewer engagement line.
+        expect(body).not.toContain("### AI code review");
+        expect(body).not.toContain("Reviewers:");
+        expect(body).not.toContain("| # |");
+        expect(body).toContain("<!-- flare-dispatch: pr-review -->");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "compact style + findings → 3-col emoji table (`Severity | Location | Issue`)",
+    () => {
+      const reportWithFindings = {
+        toolCalls: [
+          {
+            name: "report",
+            arguments: {
+              findings: [
+                {
+                  path: "src/foo.ts",
+                  startLine: 10,
+                  endLine: 12,
+                  level: "warning",
+                  title: "Missing null check",
+                  message: "`foo.bar` may be undefined",
+                },
+              ],
+            },
+          },
+        ],
+        text: "",
+      } as const;
+
+      const { layer, handles } = makeCFRuntimeTest({
+        config: { ...backendConfig, "pr-review.style": "compact" },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/src/foo.ts b/src/foo.ts\n+++ b/src/foo.ts\n+x\n" },
+        // One response per domain reviewer the lite tier runs (4 agents).
+        modelGateway: { responses: Array(4).fill(reportWithFindings) },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        // Verdict header chosen by deduped-findings count > 0 → not approve.
+        expect(body).toMatch(/## (⚠️ Minor Issues|🚫 Changes Requested)/);
+        expect(body).toContain("| Severity | Location | Issue |");
+        // Severity emoji from the compact preset.
+        expect(body).toMatch(/\| 🟡 \|/);
+        // Location renders as a markdown link to a github blob URL with line.
+        expect(body).toContain("src/foo.ts:10-12");
+        expect(body).toContain(
+          `https://github.com/${baseInput.repo}/blob/${baseInput.sha}/src/foo.ts#L10-L12`,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "unknown style value → falls back to default (forward-compat)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: { ...backendConfig, "pr-review.style": "future-format" },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+        modelGateway: { responses: [emptyReport] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        // Unknown style → silently parse as default; never fails the review.
+        expect(body).toContain("### AI code review");
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
