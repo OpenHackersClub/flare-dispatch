@@ -120,6 +120,15 @@ const decodeAgainst = <A>(
  * then Schema-decode. Each failure stage maps to a precise
  * `StructuredOutputInvalid.reason` so the run's PR comment can name the cause.
  * The json-mode path (the model's free `text`).
+ *
+ * Defensive entry guard: `text` is typed `string` but ModelGateway-shaped
+ * adapters across providers can deliver `text === undefined` or a non-string
+ * value (Workers AI sometimes omits `text` when it produced tool calls; some
+ * gateways forward an array of content blocks). A bare `text.replace(...)`
+ * inside `extractJsonText` would throw `TypeError: text.replace is not a
+ * function` and bypass the run's error boundary (the boundary only catches
+ * `StructuredOutputInvalid` / `ModelCallFailed`, not arbitrary thrown errors).
+ * Coerce non-strings to a structured failure so the PR comment names the cause.
  */
 const parseStructured = <A>(
   text: string,
@@ -127,6 +136,18 @@ const parseStructured = <A>(
   ctx: StructuredCtx,
 ): Effect.Effect<A, StructuredOutputInvalid> =>
   Effect.gen(function* () {
+    if (typeof text !== "string") {
+      return yield* Effect.fail(
+        new StructuredOutputInvalid({
+          ...ctx,
+          reason: "not-json",
+          excerpt: excerpt(JSON.stringify(text ?? null) ?? "null"),
+          message: `expected a string \`text\` from the model, got ${
+            text === null ? "null" : typeof text
+          } (the provider may have returned tool calls without a text body)`,
+        }),
+      );
+    }
     const candidate = extractJsonText(text);
     if (candidate === undefined) {
       return yield* Effect.fail(
