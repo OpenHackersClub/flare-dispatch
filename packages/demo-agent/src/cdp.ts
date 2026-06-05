@@ -14,6 +14,7 @@
 
 import { Effect } from "effect";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
+import { accessHeaderHostAllow } from "./access-scope.js";
 import { CdpAttachFailed, CdpCommandFailed } from "./errors.js";
 import { VIEWPORTS, type ViewportPreset } from "./schemas.js";
 
@@ -114,9 +115,13 @@ export const applyViewport = (
  * default page is connected; the returned `CdpSession` carries an `accessor`
  * for the underlying puppeteer `Browser` so tests + the live recorder can
  * extract the session id.
+ *
+ * `appUrl` (the play/record `--url`) scopes CF Access header injection to the
+ * app-under-test's host — see the header note in `access-scope.ts`.
  */
 export const attachCdp = (
   wsEndpoint: string,
+  appUrl?: string,
 ): Effect.Effect<
   { readonly browser: Browser; readonly page: Page; readonly session: CdpSession },
   CdpAttachFailed
@@ -175,19 +180,52 @@ export const attachCdp = (
         }),
     });
 
-    // When CF Access service-token creds are in the env, set them as extra HTTP
-    // headers so the browser can reach a Cloudflare-Access-gated target. The
-    // numu staging Pages site 302s every request to the Access login otherwise,
-    // so the agent would only ever see the login wall. Best-effort.
+    // When CF Access service-token creds are in the env, inject them so the
+    // browser can reach a Cloudflare-Access-gated target (the gated Pages site
+    // 302s every request to the Access login otherwise, so the agent would
+    // only ever see the login wall).
+    //
+    // SCOPED to the app-under-test's host (+ `CF_ACCESS_HOSTS`), not set
+    // globally: `setExtraHTTPHeaders` rides on EVERY request, and on numu
+    // staging that broke each cross-origin load — `clerk.browser.js` failed
+    // with `net::ERR_INVALID_REDIRECT` + a CORS block (reproduced 2026-06-05),
+    // the SPA body never rendered, and every story burned its full action
+    // budget against a blank page. It also leaked the service-token secret to
+    // every third-party origin. Request interception injects the headers only
+    // where they belong; the legacy global path remains the fallback when the
+    // caller passed no `--url` (nothing to scope by).
     const cfAccessId = process.env["CF_ACCESS_CLIENT_ID"];
     const cfAccessSecret = process.env["CF_ACCESS_CLIENT_SECRET"];
     if (cfAccessId !== undefined && cfAccessSecret !== undefined) {
+      const accessHeaders = {
+        "CF-Access-Client-Id": cfAccessId,
+        "CF-Access-Client-Secret": cfAccessSecret,
+      };
+      const allowHost = accessHeaderHostAllow(
+        appUrl,
+        process.env["CF_ACCESS_HOSTS"],
+      );
       yield* Effect.tryPromise({
-        try: () =>
-          page.setExtraHTTPHeaders({
-            "CF-Access-Client-Id": cfAccessId,
-            "CF-Access-Client-Secret": cfAccessSecret,
-          }),
+        try: async () => {
+          if (allowHost === null) {
+            await page.setExtraHTTPHeaders(accessHeaders);
+            return;
+          }
+          await page.setRequestInterception(true);
+          page.on("request", (req) => {
+            const headers = req.headers();
+            try {
+              if (allowHost(new URL(req.url()).host)) {
+                Object.assign(headers, accessHeaders);
+              }
+            } catch {
+              // unparseable request url (data:, about:) — pass through as-is.
+            }
+            // Every intercepted request MUST be continued or the page hangs;
+            // `continue` can reject if another handler already settled it.
+            void req.continue({ headers }).catch(() => {});
+          });
+        },
         catch: (e) =>
           new CdpAttachFailed({
             wsEndpoint,

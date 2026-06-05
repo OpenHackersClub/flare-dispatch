@@ -73,6 +73,20 @@ const humanizeKey = (key: string): string => {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 };
 
+/**
+ * True when a value is a non-empty array of plain objects — a run's per-item
+ * results (e.g. `product-demo`'s `stories`). Rendered as nested per-item
+ * blocks so each item's links (replay, screenshot) arrive CLICKABLE in the
+ * email instead of buried in one escaped JSON blob nobody can click through.
+ */
+const isObjectArray = (v: unknown): v is Record<string, unknown>[] =>
+  Array.isArray(v) &&
+  v.length > 0 &&
+  v.every((x) => x !== null && typeof x === "object" && !Array.isArray(x));
+
+/** Cap on rendered array items — this is an email, not a data export. */
+const MAX_ARRAY_ITEMS = 20;
+
 /** Render a single output value to an HTML cell. */
 const valueCellHtml = (value: unknown): string => {
   if (isHttpUrl(value)) {
@@ -82,8 +96,31 @@ const valueCellHtml = (value: unknown): string => {
   if (typeof value === "number" || typeof value === "boolean") {
     return esc(String(value));
   }
+  if (isObjectArray(value)) return objectArrayHtml(value);
   return `<code>${esc(JSON.stringify(value))}</code>`;
 };
+
+/** Nested per-item blocks for an array-of-objects output value. A `name`
+ * field becomes the item heading; empty-string fields are noise and skipped. */
+const objectArrayHtml = (items: readonly Record<string, unknown>[]): string =>
+  items
+    .slice(0, MAX_ARRAY_ITEMS)
+    .map((item) => {
+      const title = typeof item["name"] === "string" ? item["name"] : "";
+      const rows = Object.entries(item)
+        .filter(([k, v]) => k !== "name" && v !== "")
+        .map(
+          ([k, v]) =>
+            `<tr><td style="padding:2px 10px 2px 0;color:#57606a;vertical-align:top;">${esc(humanizeKey(k))}</td><td style="padding:2px 0;">${valueCellHtml(v)}</td></tr>`,
+        )
+        .join("");
+      return `<div style="margin:0 0 10px;">${
+        title === ""
+          ? ""
+          : `<div style="font-weight:600;margin-bottom:2px;">${esc(title)}</div>`
+      }<table style="border-collapse:collapse;font-size:13px;">${rows}</table></div>`;
+    })
+    .join("");
 
 /** Flatten an output object into ordered `[label, value]` rows. */
 const outputRows = (output: unknown): readonly [string, unknown][] => {
@@ -179,6 +216,22 @@ ${detailsHtml}
   if (rows.length > 0) {
     textLines.push("", "Results:");
     for (const [label, value] of rows) {
+      if (isObjectArray(value)) {
+        // Per-item breakdown — one indented block per item, links on their
+        // own lines so text-mode clients still get clickable URLs.
+        textLines.push(`  ${label}:`);
+        for (const item of value.slice(0, MAX_ARRAY_ITEMS)) {
+          const title = typeof item["name"] === "string" ? item["name"] : "-";
+          textLines.push(`    ${title}`);
+          for (const [k, v] of Object.entries(item)) {
+            if (k === "name" || v === "") continue;
+            textLines.push(
+              `      ${humanizeKey(k)}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}`,
+            );
+          }
+        }
+        continue;
+      }
       textLines.push(
         `  ${label}: ${typeof value === "object" && value !== null ? JSON.stringify(value) : String(value)}`,
       );
