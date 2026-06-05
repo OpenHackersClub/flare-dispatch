@@ -211,6 +211,14 @@ const reviewBody = (input: RunInput) =>
     //    multi-MB diff. One global cap sized for a frontier model would
     //    overflow a catalog model's context invisibly (the model goes
     //    needle-blind and "finds nothing") — hence the RESOLVED backend's cap.
+    //
+    //    THREE-dot diff (`base...head`), never two-dot: `baseSha` is the base
+    //    branch TIP at event time (`pull_request.base.sha`), not the fork
+    //    point. A two-dot endpoint diff on any PR behind its base reviewed
+    //    `base-tip → head`, presenting everything merged to the base since
+    //    the fork as DELETIONS — reviewers flagged phantom removals of files
+    //    the PR never touched. Three-dot diffs from `merge-base(base, head)`,
+    //    matching the PR diff GitHub itself renders.
     const diff = yield* step("prepare-diff", () =>
       execOrFail({
         container,
@@ -220,8 +228,7 @@ const reviewBody = (input: RunInput) =>
           "diff",
           "--unified=3",
           `--output=${DIFF_FILE}`,
-          input.baseSha,
-          input.sha,
+          `${input.baseSha}...${input.sha}`,
         ],
       }).pipe(
         Effect.andThen(sandbox.readFile({ container, path: DIFF_FILE })),
