@@ -171,6 +171,20 @@ export interface Env {
   readonly SANDBOX_PREVIEW_HOSTNAME?: string;
 
   /**
+   * The dispatcher's own public origin (e.g.
+   * `https://flare-dispatch.<account>.workers.dev`, or a custom domain) —
+   * prefixed onto the `/v1/artifacts/...` URLs runs upload so the links a
+   * GitHub check-run summary embeds are absolute (GitHub resolves relative
+   * markdown links against `github.com`, breaking them). A var, not a secret.
+   * Optional: HTTP dispatches fall back to the dispatch request's own origin;
+   * cron-scheduled runs have no request, so artifact links in their summaries
+   * stay relative (GitHub-broken) until this is set. Distinct from
+   * `SANDBOX_PREVIEW_HOSTNAME`, which is the *sandbox preview* domain — they
+   * may differ (e.g. previews on a wildcard subdomain).
+   */
+  readonly PUBLIC_ORIGIN?: string;
+
+  /**
    * Cloudflare Email Routing `send_email` binding — backs the `email`
    * capability + the Workflow's completion-notify (`notify.emails` in the
    * dispatch body). Declared as `"send_email": [{ "name": "SEND_EMAIL" }]` in

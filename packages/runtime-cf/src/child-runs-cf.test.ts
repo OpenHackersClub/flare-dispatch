@@ -95,6 +95,21 @@ describe("makeChildRunsLive", () => {
     });
   });
 
+  it("forwards the parent's public origin into the child payload", async () => {
+    const wf = makeWorkflowStub();
+    await spawn(CFG(wf, { origin: "https://dispatcher.example" }), {
+      run: "shard",
+      input: {},
+      instanceId: "shard-1",
+    });
+    expect(wf.calls[0]!.params).toMatchObject({
+      origin: "https://dispatcher.example",
+    });
+    // And absent origin stays absent (no `origin: undefined` key).
+    await spawn(CFG(wf), { run: "shard", input: {}, instanceId: "shard-2" });
+    expect(wf.calls[1]!.params).not.toHaveProperty("origin");
+  });
+
   it("omits installation_id when the parent has none", async () => {
     const wf = makeWorkflowStub();
     await spawn(CFG(wf, { github: { repo: "o/n", ref: "r", sha: "s" } }), {

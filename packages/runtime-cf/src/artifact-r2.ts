@@ -62,9 +62,23 @@ import { putStream } from "./r2-put-stream";
 const artifactKey = (executionId: string, name: string): string =>
   `artifacts/${executionId}/${name}`;
 
-/** The stable, PR5-signable artifact path embedded in the check-run summary. */
-const artifactUrl = (executionId: string, name: string): string =>
-  `/v1/artifacts/${encodeURIComponent(executionId)}/${encodeURIComponent(name)}`;
+/**
+ * The stable, PR5-signable artifact path embedded in the check-run summary.
+ *
+ * `publicOrigin`, when known, makes the URL absolute. A relative path here is
+ * a trap: the check-run summary is GitHub-rendered markdown, and GitHub
+ * resolves a relative `/v1/artifacts/...` link against `github.com` — so every
+ * artifact link in a check-run 404'd as `https://github.com/v1/artifacts/...`.
+ * Without an origin (a deploy with no `PUBLIC_ORIGIN` var and a cron dispatch
+ * that has no request to infer it from) the path stays relative — correct for
+ * same-origin API consumers, still broken on GitHub until the var is set.
+ */
+const artifactUrl = (
+  executionId: string,
+  name: string,
+  publicOrigin?: string,
+): string =>
+  `${publicOrigin === undefined ? "" : publicOrigin.replace(/\/+$/, "")}/v1/artifacts/${encodeURIComponent(executionId)}/${encodeURIComponent(name)}`;
 
 /**
  * Build the live `Artifact` Layer bound to an R2 bucket and an execution id.
@@ -76,11 +90,16 @@ const artifactUrl = (executionId: string, name: string): string =>
  *                     (every production wire-up). `undefined` in unit tests
  *                     that only exercise R2-source-key mode; a call into the
  *                     container branch without `ns` fails with a clear error.
+ * @param publicOrigin the dispatcher's public origin (e.g.
+ *                     `https://<worker>.<account>.workers.dev`) prefixed onto
+ *                     returned artifact URLs so they survive GitHub's
+ *                     markdown base-URL resolution. `undefined` → relative.
  */
 export const makeR2ArtifactLive = (
   bucket: R2Bucket,
   executionId: string,
   ns?: DurableObjectNamespace<Sandbox>,
+  publicOrigin?: string,
 ): Layer.Layer<Artifact> => {
   const service: ArtifactService = {
     upload: ({ name, path, contentType, container }) =>
@@ -126,7 +145,7 @@ export const makeR2ArtifactLive = (
             await putStream(bucket, key, content, size, {
               contentType: contentType ?? "application/gzip",
             });
-            return artifactUrl(executionId, name);
+            return artifactUrl(executionId, name, publicOrigin);
           }
 
           // R2-source-key mode — `path` is an existing R2 object (a step log
@@ -141,7 +160,7 @@ export const makeR2ArtifactLive = (
             contentType:
               contentType ?? source.httpMetadata?.contentType ?? "application/octet-stream",
           });
-          return artifactUrl(executionId, name);
+          return artifactUrl(executionId, name, publicOrigin);
         },
         catch: (cause) => new ArtifactUploadFailed({ name, cause }),
       }),
@@ -158,7 +177,7 @@ export const makeR2ArtifactLive = (
             size: obj.size,
             contentType:
               obj.httpMetadata?.contentType ?? "application/octet-stream",
-            url: artifactUrl(forExecution, name),
+            url: artifactUrl(forExecution, name, publicOrigin),
           };
         });
       }),
