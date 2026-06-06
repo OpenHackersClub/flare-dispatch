@@ -51,7 +51,7 @@ import {
   AcceptanceFailed,
   type Container,
 } from "@flare-dispatch/core";
-import { loadSecrets } from "@flare-dispatch/core/primitives";
+import { awsAssumeRole, loadSecrets } from "@flare-dispatch/core/primitives";
 
 // Shell single-quote a value so arbitrary story prose (quotes, URLs, `!`, `$`)
 // survives being embedded in the detached `sh -c` command below.
@@ -219,6 +219,16 @@ const Input = Schema.Struct({
   // a per-story cap one stuck story would burn the whole run's
   // `maxDurationSec`.
   maxDurationSecPerStory: Schema.optional(Schema.Number),
+  // AWS Bedrock BYOC trust path — when present, the run mints short-lived
+  // STS creds via `awsAssumeRole` (OIDC trust → Bedrock invoke role) and
+  // threads them into demo-agent through `agentEnv`. Required for any
+  // `product-demo.model.*` value with the `bedrock/` prefix; ignored
+  // otherwise (the agent's compat path doesn't read AWS_*).
+  // Setup: same trust policy / IAM role that #111's `multi-agent-review`
+  // uses, with `sub` widened to also accept `product-demo:*`. See
+  // recipes/multi-agent-review/README.md § AWS federation.
+  bedrockRoleArn: Schema.optional(Schema.String),
+  bedrockRegion: Schema.optional(Schema.String),
 });
 
 // Each story round-trips its own per-chapter record so the summary can
@@ -389,10 +399,36 @@ export const productDemo = defineRun({
         ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
         { prefix: "staging/" },
       );
+
+      // Optional BYOC Bedrock trust path — when the caller hands in
+      // `bedrockRoleArn`, mint short-lived STS creds and pass them to
+      // demo-agent via env. The agent picks up the `bedrock/` model id
+      // (from CONFIG_KV) and uses these to SigV4-sign Bedrock InvokeModel
+      // calls through the AI Gateway forwarder. See packages/demo-agent/
+      // src/bedrock-invoke.ts for the consumer side.
+      const bedrockEnv: Record<string, string> = {};
+      if (input.bedrockRoleArn !== undefined) {
+        const region = input.bedrockRegion ?? "us-east-1";
+        const creds = yield* step("assume-bedrock-role", () =>
+          awsAssumeRole({
+            roleArn: input.bedrockRoleArn!,
+            region,
+            // Audience is the same `sts.amazonaws.com` that #111's
+            // multi-agent-review uses; the trust policy keys off `sub`
+            // (run name + execution id) — adjust the trust policy to
+            // also accept `product-demo:*`.
+          }),
+        );
+        bedrockEnv.AWS_ACCESS_KEY_ID = creds.accessKeyId;
+        bedrockEnv.AWS_SECRET_ACCESS_KEY = creds.secretAccessKey;
+        bedrockEnv.AWS_SESSION_TOKEN = creds.sessionToken;
+        bedrockEnv.AWS_REGION = region;
+      }
       const agentEnv = {
         ...requiredAgentEnv,
         ...optionalAgentEnv,
         ...cfAccessEnv,
+        ...bedrockEnv,
       };
 
       // 0. Acquire ONE explicit container and thread its handle through every

@@ -39,11 +39,26 @@ import {
   Schema,
   Stream,
 } from "effect";
+import {
+  type AnthropicContentBlock,
+  type AnthropicMessage,
+  type AnthropicTool,
+  type AnthropicToolChoice,
+  invokeBedrockViaAiGateway,
+} from "./bedrock-invoke.js";
 import { MissingEnv, ModelCallFailed } from "./errors.js";
 import {
   type ModelAction,
   type StorySummaryInput,
 } from "./schemas.js";
+
+// `bedrock/<modelId>` model names route through the AI Gateway's Bedrock
+// forwarder (provider-specific endpoint, NOT the OpenAI-compat one). The
+// signed AWS creds come in via env: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+// / `AWS_SESSION_TOKEN` / `AWS_REGION` — minted by the run with `awsAssumeRole`
+// and threaded through `agentEnv` on `sandbox.exec`. See `runs/product-demo.ts`
+// § "assume-bedrock-role" for the producer side.
+const BEDROCK_PREFIX = "bedrock/";
 
 // ---------------------------------------------------------------------------
 // One Tool per ModelAction variant.
@@ -363,6 +378,175 @@ const chatResponseToParts = (response: {
   return parts as unknown as Array<Response.PartEncoded>;
 };
 
+// ── Anthropic Messages (Bedrock dialect) mapping ────────────────────────────
+// `@effect/ai`'s `ProviderOptions` ⇄ Bedrock's Anthropic Messages body, and
+// the response's content blocks ⇄ `@effect/ai` response parts. Used only on
+// the `bedrock/<modelId>` path; the OpenAI-compat path keeps its own mapping
+// above.
+
+const promptToBedrockMessages = (prompt: {
+  readonly content: ReadonlyArray<{ role: string; content: unknown }>;
+}): {
+  system?: string;
+  messages: ReadonlyArray<AnthropicMessage>;
+} => {
+  let system: string | undefined;
+  const messages: Array<AnthropicMessage> = [];
+  for (const message of prompt.content) {
+    switch (message.role) {
+      case "system": {
+        const text = contentText(message.content);
+        // Anthropic concatenates multiple system blocks into one prompt-level
+        // field; mirror that behaviour for prompts that emit several systems.
+        system = system === undefined ? text : `${system}\n\n${text}`;
+        break;
+      }
+      case "user":
+        messages.push({
+          role: "user",
+          content: contentText(message.content),
+        });
+        break;
+      case "assistant": {
+        const text = contentText(message.content);
+        const parts = Array.isArray(message.content)
+          ? (message.content as Array<Record<string, unknown>>)
+          : [];
+        const blocks: Array<unknown> = [];
+        if (text.length > 0) blocks.push({ type: "text", text });
+        for (const p of parts) {
+          if (p["type"] === "tool-call") {
+            blocks.push({
+              type: "tool_use",
+              id: p["id"],
+              name: p["name"],
+              input: p["params"] ?? {},
+            });
+          }
+        }
+        messages.push({
+          role: "assistant",
+          content: blocks.length > 0 ? blocks : text,
+        });
+        break;
+      }
+      case "tool": {
+        // Anthropic encodes tool results as user-role messages with
+        // tool_result content blocks.
+        const blocks: Array<unknown> = [];
+        for (const p of (message.content as Array<Record<string, unknown>>) ?? []) {
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: p["id"],
+            content:
+              typeof p["result"] === "string"
+                ? p["result"]
+                : JSON.stringify(p["result"]),
+          });
+        }
+        if (blocks.length > 0) {
+          messages.push({ role: "user", content: blocks });
+        }
+        break;
+      }
+    }
+  }
+  const result: { system?: string; messages: ReadonlyArray<AnthropicMessage> } =
+    { messages };
+  if (system !== undefined) result.system = system;
+  return result;
+};
+
+const toolChoiceToBedrock = (
+  toolChoice: unknown,
+): AnthropicToolChoice | undefined => {
+  if (toolChoice === "auto") return { type: "auto" };
+  if (toolChoice === "required") return { type: "any" };
+  if (toolChoice === "none") return undefined; // Anthropic has no equivalent
+  if (typeof toolChoice === "object" && toolChoice !== null) {
+    const tc = toolChoice as Record<string, unknown>;
+    if ("tool" in tc && typeof tc["tool"] === "string") {
+      return { type: "tool", name: tc["tool"] };
+    }
+    if ("oneOf" in tc) {
+      return tc["mode"] === "required" ? { type: "any" } : { type: "auto" };
+    }
+  }
+  return undefined;
+};
+
+const buildBedrockTools = (
+  options: LanguageModel.ProviderOptions,
+): ReadonlyArray<AnthropicTool> => {
+  const userDefined = options.tools.filter((t) => Tool.isUserDefined(t));
+  return userDefined.map((t) => ({
+    name: t.name,
+    description: Tool.getDescription(t as never) ?? "",
+    input_schema: Tool.getJsonSchema(t as never),
+  }));
+};
+
+/**
+ * Map a Bedrock-Anthropic InvokeModel response into `@effect/ai` response
+ * parts. Anthropic returns content as `tool_use` and `text` blocks; we emit
+ * `tool-call` and `text` parts in order, then a `finish` part.
+ */
+const bedrockResponseToParts = (
+  result: {
+    readonly content: ReadonlyArray<AnthropicContentBlock>;
+    readonly stopReason: string;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+  },
+  modelId: string,
+): Array<Response.PartEncoded> => {
+  const parts: Array<Record<string, unknown>> = [
+    {
+      type: "response-metadata",
+      modelId,
+      timestamp: new Date().toISOString(),
+    },
+  ];
+  let hasToolCalls = false;
+  for (const block of result.content) {
+    if (block.type === "text" && block.text.length > 0) {
+      parts.push({ type: "text", text: block.text });
+    } else if (block.type === "tool_use") {
+      hasToolCalls = true;
+      parts.push({
+        type: "tool-call",
+        id: block.id,
+        name: block.name,
+        params: block.input ?? {},
+      });
+    }
+  }
+  // Bedrock-Anthropic stop_reason → @effect/ai finish reason.
+  // - "tool_use" → tool-calls
+  // - "end_turn" → stop
+  // - "max_tokens" → length
+  // - "stop_sequence" → stop
+  const stopReason = result.stopReason;
+  const finishReason =
+    stopReason === "tool_use"
+      ? "tool-calls"
+      : stopReason === "max_tokens"
+        ? "length"
+        : hasToolCalls
+          ? "tool-calls"
+          : "stop";
+  parts.push({
+    type: "finish",
+    reason: finishReason,
+    usage: {
+      inputTokens: result.inputTokens ?? 0,
+      outputTokens: result.outputTokens ?? 0,
+      totalTokens: (result.inputTokens ?? 0) + (result.outputTokens ?? 0),
+    },
+  });
+  return parts as unknown as Array<Response.PartEncoded>;
+};
+
 /**
  * Layer providing `LanguageModel` over the OpenAI wire protocol, always pointed
  * at a Cloudflare AI Gateway. The endpoint is DERIVED from the account + gateway
@@ -384,6 +568,15 @@ const chatResponseToParts = (response: {
  *                               down. NOT the same thing as `MODEL_API_KEY` —
  *                               it gates access *to* the gateway, orthogonal to
  *                               the upstream `Authorization` header.
+ *
+ * Bedrock-specific env (required only when `modelName` starts with `bedrock/`):
+ *   - `AWS_ACCESS_KEY_ID`     — short-lived STS access key.
+ *   - `AWS_SECRET_ACCESS_KEY` — short-lived STS secret.
+ *   - `AWS_SESSION_TOKEN`     — STS session token.
+ *   - `AWS_REGION`            — Bedrock region (e.g. `us-east-1`).
+ *   These are minted by the run via `awsAssumeRole` and threaded in through
+ *   `agentEnv`; they bypass the gateway's own provider keys (Bedrock auth IS
+ *   SigV4, not a stored gateway key) and never touch the OpenAI-compat path.
  */
 export const makeLanguageModelLayer = (
   modelName: string,
@@ -397,6 +590,86 @@ export const makeLanguageModelLayer = (
       const aigToken = yield* Config.redacted("CF_AI_GATEWAY_TOKEN").pipe(
         Config.option,
       );
+
+      // Bedrock branch — `bedrock/<modelId>` model names are routed through
+      // the AI Gateway's Bedrock forwarder (a different endpoint than `/compat`,
+      // which Bedrock isn't reachable on — see CF docs:
+      // developers.cloudflare.com/ai-gateway/usage/providers/bedrock/). AWS
+      // creds are minted by the run via `awsAssumeRole` and threaded in here
+      // through env. No `Authorization: Bearer` header on this path — auth is
+      // SigV4 in the request signature; `cf-aig-authorization` is orthogonal.
+      if (modelName.startsWith(BEDROCK_PREFIX)) {
+        const bedrockModelId = modelName.slice(BEDROCK_PREFIX.length);
+        const awsAccessKeyId = yield* Config.string("AWS_ACCESS_KEY_ID");
+        const awsSecretAccessKey = yield* Config.redacted("AWS_SECRET_ACCESS_KEY");
+        const awsSessionToken = yield* Config.redacted("AWS_SESSION_TOKEN");
+        const awsRegion = yield* Config.string("AWS_REGION");
+        const aigTokenStr = Option.isSome(aigToken)
+          ? Redacted.value(aigToken.value)
+          : undefined;
+
+        return yield* LanguageModel.make({
+          generateText: (options) =>
+            Effect.gen(function* () {
+              const { system, messages } = promptToBedrockMessages(
+                options.prompt as {
+                  content: ReadonlyArray<{ role: string; content: unknown }>;
+                },
+              );
+              const tools = buildBedrockTools(options);
+              const toolChoice =
+                tools.length > 0
+                  ? toolChoiceToBedrock(options.toolChoice)
+                  : undefined;
+              const result = yield* Effect.tryPromise({
+                try: () =>
+                  invokeBedrockViaAiGateway({
+                    creds: {
+                      accessKeyId: awsAccessKeyId,
+                      secretAccessKey: Redacted.value(awsSecretAccessKey),
+                      sessionToken: Redacted.value(awsSessionToken),
+                    },
+                    region: awsRegion,
+                    modelId: bedrockModelId,
+                    ...(system !== undefined ? { system } : {}),
+                    messages,
+                    ...(tools.length > 0 ? { tools } : {}),
+                    ...(toolChoice !== undefined ? { toolChoice } : {}),
+                    cloudflareAccountId: accountId,
+                    gatewayId,
+                    ...(aigTokenStr !== undefined
+                      ? { gatewayAuthToken: aigTokenStr }
+                      : {}),
+                  }),
+                catch: (cause) =>
+                  new Error(
+                    `Bedrock InvokeModel failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+                  ),
+              });
+              return bedrockResponseToParts(result, bedrockModelId);
+            }).pipe(
+              Effect.timeoutFail({
+                duration: "120 seconds",
+                onTimeout: () =>
+                  new Error("Bedrock InvokeModel request timed out after 120s"),
+              }),
+              Effect.mapError(
+                (cause) =>
+                  new AiError.UnknownError({
+                    module: "DemoAgentChatModel",
+                    method: "generateText",
+                    description: `Bedrock InvokeModel via AI Gateway failed: ${String(cause)}`,
+                    cause,
+                  }),
+              ),
+            ),
+          streamText: () =>
+            Stream.die(
+              "DemoAgentChatModel: streamText is not implemented (demo-agent uses generateText only)",
+            ),
+        });
+      }
+
       const httpClient = yield* HttpClient.HttpClient;
       const url = `${gatewayCompatUrl(accountId, gatewayId)}/chat/completions`;
 
