@@ -1,18 +1,22 @@
-# Recipe: AI code review on AWS Bedrock (BYOC trust path)
+# Recipe: AI code review on AWS Bedrock via Cloudflare AI Gateway (BYOC trust path)
 
-Sibling to [`ai-code-review`](../ai-code-review/) — same surface (PR review comment + check-run), different model backend. Where `pr-review` calls Workers AI via the `modelGateway` capability, **`multi-agent-review` calls AWS Bedrock directly** via the `awsAssumeRole` primitive: the dispatcher signs an OIDC JWT, AWS STS exchanges it for short-lived credentials, the run signs `bedrock:InvokeModel` with SigV4. **No model API key. No long-lived AWS access key.** The auth flow is the operator's own OIDC issuer + an IAM role's trust policy, both BYOC.
+Sibling to [`ai-code-review`](../ai-code-review/) — same surface (PR review comment + check-run), different model backend. Both run through the unified `modelGateway` capability; the difference is which prefix the model id carries:
+
+- `pr-review`: configurable per CONFIG_KV — `@cf/...` (Workers AI catalog), `anthropic/...` (Anthropic-via-AI-Gateway BYOK), or `bedrock/...` (Bedrock via AI Gateway, BYOC trust path).
+- `multi-agent-review`: hard-pins the `bedrock/...` route, takes model + region per-dispatch (so a `workflow_dispatch` can pin a specific model for QA / model-comparison work without changing CONFIG_KV).
+
+The `bedrock/` route is the BYOC trust path: the dispatcher signs an OIDC JWT, AWS STS exchanges it for short-lived credentials, then the run SigV4-signs `bedrock:InvokeModel` and POSTs through Cloudflare's [AI Gateway Bedrock forwarder](https://developers.cloudflare.com/ai-gateway/usage/providers/bedrock/) — the gateway adds caching + observability + per-org cost dashboards without touching the AWS credentials (they ride in the Authorization header it forwards verbatim). **No model API key. No long-lived AWS access key.**
 
 ## Why this exists alongside `pr-review`
 
 | | `pr-review` | `multi-agent-review` |
 |---|---|---|
-| Model surface | Workers AI binding (`env.AI`) | AWS Bedrock `InvokeModel` |
-| Model catalog | Workers AI's hosted set, plus Anthropic-via-compat through an AI Gateway | every Bedrock-enabled model in your AWS account (Anthropic Opus, Llama, Mistral, Titan, …) |
-| Auth | the binding is the auth (no key) | OIDC federation → IAM role assume (no key) |
-| Bill | CF Workers AI quota | your AWS bill |
-| Best for | every-PR cheap reviewer | tier-1 model on PRs you want depth on, or running both in parallel |
+| Backend selection | per CONFIG_KV (`pr-review.backend`) | hard-pinned to `bedrock` |
+| Model id | from `pr-review.<backend>.model` | from the dispatch input `modelId` (workflow_dispatch override-friendly) |
+| AWS region / role | from `pr-review.bedrock.region` / `roleArn` | from the dispatch input `region` / `roleArn` |
+| Best for | the operator's everyday reviewer (one config, all PRs) | per-dispatch model overrides (model bake-offs, tier escalation on specific PRs) |
 
-Pick one based on the model you want; run both side-by-side if you want a redundant reviewer panel (the `flare-dispatch/pr-review` and `flare-dispatch/multi-agent-review` check-runs each post their own review comment, gated by their own marker, with their own idempotency).
+Run both side-by-side if you want a redundant reviewer panel — the `flare-dispatch/pr-review` and `flare-dispatch/multi-agent-review` check-runs each post their own review comment, gated by their own marker, with their own idempotency.
 
 ## How the BYOC trust path works
 
@@ -22,10 +26,13 @@ flowchart LR
   JWT -->|AssumeRoleWithWebIdentity| STS[AWS STS]
   STS -->|"verify iss against<br/>AWS OIDC provider"| OP[OIDC Provider<br/>arn:aws:iam::&lt;acct&gt;:oidc-provider/&lt;host&gt;]
   STS -->|short-lived creds<br/>access + secret + session| W
-  W -->|"SigV4-signed POST<br/>bedrock-runtime:InvokeModel"| BR[Bedrock]
+  W -->|"SigV4-signed POST<br/>(AWS hostname signed)"| AIG[AI Gateway<br/>aws-bedrock forwarder]
+  AIG -->|forwards verbatim| BR[bedrock-runtime:InvokeModel]
 ```
 
 The dispatcher publishes its OIDC discovery + JWKS at `/.well-known/openid-configuration` and `/.well-known/jwks.json`. AWS validates the JWT's `iss` against the OIDC provider URL the operator registered, and validates the `sub` against the IAM role's trust policy. Two factors gate the role assumption — the HMAC + the JWT signature — so a leaked HMAC alone cannot mint Bedrock-invoke credentials.
+
+The AI Gateway sits between the Worker and AWS purely as a forwarder + observability layer: the SigV4 signature targets the AWS hostname (`bedrock-runtime.<region>.amazonaws.com`), the gateway forwards the signed request to AWS verbatim, and the gateway never sees plaintext AWS credentials. Caching, rate-limiting, and per-org cost dashboards come for free.
 
 ## Setup
 
@@ -80,14 +87,19 @@ The `url` MUST equal the `OIDC_ISSUER_URL` Worker secret (issuer URL is checked 
 }
 ```
 
-### 3. Worker Secrets
+### 3. Worker secrets and vars
 
-Set on the Dispatcher Worker via `wrangler secret put`:
+Required on the Dispatcher Worker:
 
-| Secret | What it is |
-|---|---|
-| `OIDC_SIGNING_JWK` | ES256 private JWK the Dispatcher signs JWTs with. Generate with `pnpm cli oidc keygen`. |
-| `OIDC_ISSUER_URL` | The Dispatcher's origin (`https://<your-dispatcher>.workers.dev`). Must equal the `url` of the AWS OIDC provider (step 1). |
+| Setting | Kind | What it is |
+|---|---|---|
+| `OIDC_SIGNING_JWK` | secret | ES256 private JWK the Dispatcher signs JWTs with. Generate with `pnpm cli oidc keygen`. |
+| `OIDC_ISSUER_URL` | secret | The Dispatcher's origin (`https://<your-dispatcher>.workers.dev`). Must equal the `url` of the AWS OIDC provider (step 1). |
+| `AI_GATEWAY_ID` | var | Cloudflare AI Gateway slug — the Bedrock route's URL pattern is `gateway.ai.cloudflare.com/v1/<account>/<gateway>/aws-bedrock/...`. Required (no direct-AWS fallback). |
+| `CLOUDFLARE_ACCOUNT_ID` | var | First segment of the AI Gateway URL. Required for the Bedrock route. |
+| `AI_GATEWAY_AUTH_TOKEN` | secret (optional) | Set ONLY if the gateway has [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/) turned on; the run forwards it as `cf-aig-authorization: Bearer`. |
+
+`OIDC_SIGNING_JWK` / `OIDC_ISSUER_URL` go via `wrangler secret put`; the two `vars` go in `[vars]` in `wrangler.jsonc` (the matching `[env.<name>.vars]` block when deploying multiple environments).
 
 The matching public JWK is auto-served at `<issuer>/.well-known/jwks.json`; AWS pulls it on the first STS exchange and caches by `kid`.
 

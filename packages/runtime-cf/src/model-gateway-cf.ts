@@ -7,17 +7,25 @@
 // gateway's OpenAI-compatible `/chat/completions` endpoint: it eliminates the
 // per-backend secret.
 //
-// --- Two routes, selected by the model id ------------------------------------
+// --- Three routes, selected by the model id prefix --------------------------
 //
-// `@cf/...` (Workers AI catalog)         → `ai.run(model, inputs, {gateway})`
-// `anthropic/<model>` (provider via BYOK) → `ai.gateway(id).run({provider,...})`
+// `@cf/...` (Workers AI catalog)          → `ai.run(model, inputs, {gateway})`
+// `anthropic/<model>` (provider via BYOK)  → `ai.gateway(id).run({provider,...})`
+// `bedrock/<model>` (AWS Bedrock via SigV4) → `invokeBedrockViaAiGateway(...)`
 //
-// The second route is the AI Gateway UNIVERSAL endpoint, still through the
-// binding (`env.AI.gateway(id)`), so the no-secret property is preserved: the
-// gateway holds the provider key (BYOK / stored keys) and injects it upstream;
-// the Worker authenticates by being in-account. This is what lets a run review
-// with a frontier model (e.g. `anthropic/claude-sonnet-4-6`) instead of being
-// limited to the Workers AI catalog.
+// The Anthropic universal route is the AI Gateway UNIVERSAL endpoint, still
+// through the binding (`env.AI.gateway(id)`), so the no-secret property is
+// preserved: the gateway holds the provider key (BYOK / stored keys) and
+// injects it upstream; the Worker authenticates by being in-account.
+//
+// The Bedrock route is different: AWS InvokeModel requires a SigV4-signed
+// request, and Workers AI doesn't currently expose a `bedrock` provider on the
+// universal endpoint with BYOC trust (assume-role). So the route bypasses the
+// binding and POSTs the SigV4-signed request to the AI Gateway's Bedrock
+// forwarder URL — the gateway adds caching + observability + cost dashboards
+// without touching the AWS credentials (they ride in the Authorization header
+// it forwards verbatim). Per-execution short-lived STS creds come in on
+// `req.aws`; no long-lived AWS keys live on the runtime layer.
 //
 // --- The Workers AI text-generation contract ---------------------------------
 //
@@ -60,6 +68,7 @@ import {
   type ModelGatewayService,
   type ModelToolCall,
 } from "@flare-dispatch/core";
+import { invokeBedrockViaAiGateway } from "./bedrock-invoke";
 
 /** A `messages` entry sent to Workers AI. */
 type AiMessage = { readonly role: string; readonly content: string };
@@ -353,26 +362,161 @@ const completeAnthropic = (
     return fromAnthropicContent(parsed.content ?? []);
   });
 
+// ---------------------------------------------------------------------------
+// The Bedrock-via-AI-Gateway route.
+
+/** Model ids carrying this prefix route via SigV4 + AI Gateway Bedrock URL. */
+const BEDROCK_PREFIX = "bedrock/";
+
+const BEDROCK_DEFAULT_MAX_TOKENS = 2048;
+
+/** Anthropic-on-Bedrock body version pin — required on every InvokeModel call. */
+const BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31";
+
 /**
- * Build the `ModelGateway` Layer backed by the Workers AI binding. The model id
- * selects the route: `anthropic/<model>` goes through the AI Gateway universal
- * endpoint (BYOK provider key stored in the gateway); anything else is run as a
- * Workers AI catalog model.
+ * Build the Anthropic-on-Bedrock InvokeModel body. Bedrock's wire shape for
+ * Anthropic models is the Anthropic Messages API body MINUS the `model` field
+ * (the model id is in the URL) PLUS an `anthropic_version` field.
+ */
+const bedrockAnthropicBody = (req: ModelCompletionRequest): unknown => ({
+  anthropic_version: BEDROCK_ANTHROPIC_VERSION,
+  max_tokens: req.maxTokens ?? BEDROCK_DEFAULT_MAX_TOKENS,
+  system: req.system,
+  messages: [{ role: "user", content: req.user }],
+  ...(req.tools !== undefined && req.tools.length > 0
+    ? {
+        tools: req.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.parameters,
+        })),
+        // Forced tool use — same as the Anthropic universal route.
+        tool_choice: { type: "any" },
+      }
+    : {}),
+  ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+});
+
+/**
+ * The Bedrock route. Pinned to AI Gateway: requires both a `cloudflareAccountId`
+ * and a `gatewayId` configured on the runtime layer. AWS credentials come in on
+ * `req.aws` — short-lived STS creds the run minted via `awsAssumeRole`. Each
+ * absence (missing aws creds, missing account id, missing gateway id) fails
+ * with a `ModelGatewayError` naming what to set, so the run's error boundary
+ * can tell the operator.
+ */
+const completeBedrock = (
+  cloudflareAccountId: string | undefined,
+  gatewayId: string | undefined,
+  gatewayAuthToken: string | undefined,
+  req: ModelCompletionRequest,
+): Effect.Effect<ModelCompletionResult, ModelGatewayError> =>
+  Effect.gen(function* () {
+    if (req.aws === undefined) {
+      return yield* Effect.fail(
+        new ModelGatewayError({
+          model: req.model,
+          reason: "auth-failed",
+          message:
+            "bedrock/* models need short-lived AWS credentials on req.aws — mint them with awsAssumeRole(roleArn) inside the run",
+        }),
+      );
+    }
+    if (cloudflareAccountId === undefined) {
+      return yield* Effect.fail(
+        new ModelGatewayError({
+          model: req.model,
+          reason: "unknown",
+          message:
+            "bedrock/* models route via the AI Gateway Bedrock forwarder — set CLOUDFLARE_ACCOUNT_ID on the dispatcher",
+        }),
+      );
+    }
+    if (gatewayId === undefined) {
+      return yield* Effect.fail(
+        new ModelGatewayError({
+          model: req.model,
+          reason: "unknown",
+          message:
+            "bedrock/* models route via the AI Gateway Bedrock forwarder — set AI_GATEWAY_ID on the dispatcher",
+        }),
+      );
+    }
+
+    const modelId = req.model.slice(BEDROCK_PREFIX.length);
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        invokeBedrockViaAiGateway({
+          creds: {
+            accessKeyId: req.aws!.accessKeyId,
+            secretAccessKey: req.aws!.secretAccessKey,
+            sessionToken: req.aws!.sessionToken,
+          },
+          region: req.aws!.region,
+          modelId,
+          body: bedrockAnthropicBody(req),
+          cloudflareAccountId,
+          gatewayId,
+          ...(gatewayAuthToken !== undefined ? { gatewayAuthToken } : {}),
+        }),
+      catch: (cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        return new ModelGatewayError({
+          model: req.model,
+          reason: reasonFor(message),
+          message: `Bedrock InvokeModel via AI Gateway failed: ${message}`,
+        });
+      },
+    });
+
+    // Anthropic-on-Bedrock returns `{content:[{type,text|name+input}]}`. The
+    // shared helper concatenated the text blocks already; we don't get the raw
+    // content array back, so tool-call extraction would need a richer return
+    // type. V0: text-only (the runs that need this route — multi-agent-review
+    // and pr-review's `bedrock` backend — both use text mode). Tools mode on
+    // Bedrock is a separate scope.
+    return {
+      toolCalls: [],
+      text: result.response,
+      ...(result.inputTokens !== undefined
+        ? { inputTokens: result.inputTokens }
+        : {}),
+      ...(result.outputTokens !== undefined
+        ? { outputTokens: result.outputTokens }
+        : {}),
+    } satisfies ModelCompletionResult;
+  });
+
+/**
+ * Build the `ModelGateway` Layer. The model id prefix selects the route:
  *
- * @param ai         `env.AI` — the Workers AI binding.
- * @param gatewayId  optional AI Gateway id to route through (`AI_GATEWAY_ID`).
- *                   `undefined` → Workers AI runs directly (no gateway), and
- *                   `anthropic/*` models fail with an operator-facing error.
+ *   `bedrock/<model>`   → AI Gateway Bedrock forwarder (SigV4, BYOC creds)
+ *   `anthropic/<model>` → AI Gateway universal endpoint (BYOK Anthropic key)
+ *   anything else       → Workers AI catalog (`@cf/...`)
+ *
+ * @param ai                   `env.AI` — the Workers AI binding.
+ * @param gatewayId            optional AI Gateway id (`AI_GATEWAY_ID`). Required
+ *                             for the `anthropic/*` and `bedrock/*` routes.
+ * @param cloudflareAccountId  Cloudflare account id (`CLOUDFLARE_ACCOUNT_ID`).
+ *                             Required for the `bedrock/*` route — it's the
+ *                             first segment of the AI Gateway Bedrock URL.
+ * @param gatewayAuthToken     optional `cf-aig-authorization` token for
+ *                             Authenticated Gateway. Forwarded as a header on
+ *                             the `bedrock/*` route only.
  */
 export const makeModelGatewayLive = (
   ai: AiBinding,
   gatewayId: string | undefined,
+  cloudflareAccountId?: string,
+  gatewayAuthToken?: string,
 ): Layer.Layer<ModelGateway> => {
   const service: ModelGatewayService = {
     complete: (req) =>
-      req.model.startsWith(ANTHROPIC_PREFIX)
-        ? completeAnthropic(ai, gatewayId, req)
-        : completeWorkersAi(ai, gatewayId, req),
+      req.model.startsWith(BEDROCK_PREFIX)
+        ? completeBedrock(cloudflareAccountId, gatewayId, gatewayAuthToken, req)
+        : req.model.startsWith(ANTHROPIC_PREFIX)
+          ? completeAnthropic(ai, gatewayId, req)
+          : completeWorkersAi(ai, gatewayId, req),
   };
 
   return Layer.succeed(ModelGateway, service);

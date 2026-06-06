@@ -115,6 +115,47 @@ describe("resolveBackend", () => {
     const exit = await Effect.runPromiseExit(resolveBackend(getter({})));
     expect(exit._tag).toBe("Failure");
   });
+
+  it("resolves bedrock with model + roleArn + region (default mode = json)", async () => {
+    const store = {
+      "pr-review.backend": "bedrock",
+      [BACKEND_KEYS.bedrock.modelKey]:
+        "bedrock/us.anthropic.claude-opus-4-6-v1",
+      [BACKEND_KEYS.bedrock.roleArnKey as string]:
+        "arn:aws:iam::123456789012:role/PrReviewBedrock",
+      [BACKEND_KEYS.bedrock.regionKey as string]: "us-west-2",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.backend).toBe("bedrock");
+    expect(resolved.model).toBe("bedrock/us.anthropic.claude-opus-4-6-v1");
+    expect(resolved.mode).toBe("json");
+    expect(resolved.region).toBe("us-west-2");
+    expect(resolved.roleArn).toBe(
+      "arn:aws:iam::123456789012:role/PrReviewBedrock",
+    );
+  });
+
+  it("bedrock — region defaults to us-east-1 when the region key is unset", async () => {
+    const store = {
+      "pr-review.backend": "bedrock",
+      [BACKEND_KEYS.bedrock.modelKey]:
+        "bedrock/us.anthropic.claude-opus-4-6-v1",
+      [BACKEND_KEYS.bedrock.roleArnKey as string]:
+        "arn:aws:iam::123456789012:role/PrReviewBedrock",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.region).toBe("us-east-1");
+  });
+
+  it("bedrock — fails with BackendUnconfigured when roleArn is unset", async () => {
+    const store = {
+      "pr-review.backend": "bedrock",
+      [BACKEND_KEYS.bedrock.modelKey]:
+        "bedrock/us.anthropic.claude-opus-4-6-v1",
+    };
+    const exit = await Effect.runPromiseExit(resolveBackend(getter(store)));
+    expect(exit._tag).toBe("Failure");
+  });
 });
 
 describe("namespaced config (downstream recipe reuse)", () => {

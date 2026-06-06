@@ -260,6 +260,17 @@ export type ReviewDomainInput = {
   readonly backend: string;
   /** Output mode — "tools" (default) sends a tool; "json" parses text. */
   readonly mode?: ReviewMode;
+  /**
+   * Optional AWS creds — required only for `bedrock/*` models. Threaded through
+   * to `completeStructured` → `completeRaw` → `modelGateway.complete`. Other
+   * backends ignore.
+   */
+  readonly aws?: {
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+    readonly sessionToken: string;
+    readonly region: string;
+  };
 };
 
 /**
@@ -274,6 +285,17 @@ const completeRaw = (opts: {
   readonly user: string;
   readonly tools?: ReadonlyArray<ModelTool>;
   readonly maxTokens?: number;
+  /**
+   * Optional AWS credentials threaded through to the modelGateway — required
+   * only for `bedrock/*` model ids (the Bedrock route SigV4-signs with these
+   * short-lived STS creds). Other backends ignore this field.
+   */
+  readonly aws?: {
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+    readonly sessionToken: string;
+    readonly region: string;
+  };
 }) =>
   modelGateway
     .complete({
@@ -282,6 +304,7 @@ const completeRaw = (opts: {
       user: opts.user,
       maxTokens: opts.maxTokens ?? REVIEW_MAX_TOKENS,
       ...(opts.tools !== undefined ? { tools: opts.tools } : {}),
+      ...(opts.aws !== undefined ? { aws: opts.aws } : {}),
     })
     .pipe(
       Effect.catchTag("ModelGatewayError", (e) =>
@@ -312,6 +335,16 @@ export type CompleteStructuredInput<A> = {
   readonly backend: string;
   /** The model id (a bare `@cf/...` for the Workers AI binding). */
   readonly model: string;
+  /**
+   * Optional AWS creds — required only for `bedrock/*` models (the modelGateway
+   * Bedrock route needs them for SigV4). Other backends ignore this field.
+   */
+  readonly aws?: {
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+    readonly sessionToken: string;
+    readonly region: string;
+  };
   /** Output mode — "tools" (default) sends a tool; "json" parses text. */
   readonly mode?: ReviewMode;
   /** The system-role instruction. */
@@ -402,6 +435,7 @@ export const completeStructured = <A>(
       system: input.system,
       user: framedUser("json"),
       ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+      ...(input.aws !== undefined ? { aws: input.aws } : {}),
     });
     return yield* parseStructured(result.text, decode, ctx);
   });
@@ -414,6 +448,7 @@ export const completeStructured = <A>(
       user: framedUser("tools"),
       tools: [tool],
       ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+      ...(input.aws !== undefined ? { aws: input.aws } : {}),
     });
     const call = firstToolCall(result.toolCalls, toolName);
     if (call === undefined) {
@@ -460,6 +495,7 @@ export const reviewDomain = (
     backend: input.backend,
     model: input.model,
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
+    ...(input.aws !== undefined ? { aws: input.aws } : {}),
     system: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
     userBody: renderDomainBody(input),
     jsonContract: DOMAIN_JSON_CONTRACT,

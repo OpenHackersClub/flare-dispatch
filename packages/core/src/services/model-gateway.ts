@@ -48,7 +48,13 @@ export type ModelToolCall = {
 
 /** A single-turn model request. */
 export type ModelCompletionRequest = {
-  /** The model id, as the backend names it (e.g. a bare `@cf/...` for Workers AI). */
+  /**
+   * The model id with a backend prefix the gateway dispatches on:
+   *
+   *   `@cf/...`             — Workers AI catalog (default when no prefix)
+   *   `anthropic/<model>`   — Anthropic Messages API via AI Gateway BYOK
+   *   `bedrock/<model>`     — AWS Bedrock InvokeModel via AI Gateway
+   */
   readonly model: string;
   /** The system-role instruction. */
   readonly system: string;
@@ -64,6 +70,18 @@ export type ModelCompletionRequest = {
   readonly maxTokens?: number;
   /** Optional sampling temperature. */
   readonly temperature?: number;
+  /**
+   * AWS credentials + region — required for `bedrock/*` model ids only.
+   * Per-execution: short-lived STS creds minted by `awsAssumeRole` inside the
+   * run, threaded here so the Bedrock route can SigV4-sign without holding any
+   * deploy-time AWS keys. Other backends ignore this field.
+   */
+  readonly aws?: {
+    readonly accessKeyId: string;
+    readonly secretAccessKey: string;
+    readonly sessionToken: string;
+    readonly region: string;
+  };
 };
 
 /** What a completion yields — tool calls and/or free text. */
@@ -72,6 +90,14 @@ export type ModelCompletionResult = {
   readonly toolCalls: ReadonlyArray<ModelToolCall>;
   /** The model's free-text answer (empty when it answered with a tool call). */
   readonly text: string;
+  /**
+   * Optional token-usage telemetry. Backends that surface a usage block
+   * (Bedrock, Anthropic) populate these; backends that don't (Workers AI
+   * catalog) leave them undefined. Caller-side: log them when present, never
+   * gate on them.
+   */
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
 };
 
 /**

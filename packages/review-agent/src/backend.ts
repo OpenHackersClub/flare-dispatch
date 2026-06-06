@@ -20,7 +20,7 @@
 // `<namespace>.backend`, `<namespace>.<backend>.model|mode`, `<namespace>.prompt`.
 //
 // The active backend is `config.get("<namespace>.backend")` →
-//   "opencode" | "reasonix" | "anthropic"   (default "opencode").
+//   "opencode" | "reasonix" | "anthropic" | "bedrock"   (default "opencode").
 //
 // Each backend is a profile of (model id, output mode), for namespace `pr-review`:
 //
@@ -40,6 +40,19 @@
 //     CONFIG_KV  pr-review.anthropic.mode   "tools" | "json"  (default "tools")
 //     Requires AI_GATEWAY_ID on the deploy + an Anthropic key stored in that
 //     gateway (BYOK). Still no key in config — the gateway injects it.
+//
+//   backend "bedrock" (AWS Bedrock InvokeModel via the AI Gateway forwarder —
+//                      BYOC trust path: OIDC → STS → SigV4)
+//     CONFIG_KV  pr-review.bedrock.model    `bedrock/`-prefixed model id
+//                                            e.g. bedrock/us.anthropic.claude-opus-4-6-v1
+//     CONFIG_KV  pr-review.bedrock.region   AWS region (default us-east-1)
+//     CONFIG_KV  pr-review.bedrock.roleArn  IAM role ARN to AssumeRoleWithWebIdentity
+//     CONFIG_KV  pr-review.bedrock.mode     "json"  (forced — Bedrock route is text-only V0)
+//     Requires AI_GATEWAY_ID + CLOUDFLARE_ACCOUNT_ID on the deploy +
+//     OIDC_SIGNING_JWK + OIDC_ISSUER_URL secrets. The role's trust policy must
+//     pin the dispatcher's OIDC issuer URL + a `sub` claim of `pr-review:*`.
+//     No long-lived AWS key — the run mints short-lived STS creds inside the
+//     execution and threads them into the modelGateway request.
 //
 // NOTE: Workers AI model ids are bare `@cf/...` (the binding's own naming) —
 // NOT the AI-Gateway-compat `workers-ai/@cf/...` prefix the old HTTP path used.
@@ -63,7 +76,12 @@ import { Effect, Match } from "effect";
 import { BackendUnconfigured } from "./errors.js";
 
 /** The selectable backends. Default is the first. */
-export const BACKENDS = ["opencode", "reasonix", "anthropic"] as const;
+export const BACKENDS = [
+  "opencode",
+  "reasonix",
+  "anthropic",
+  "bedrock",
+] as const;
 export type Backend = (typeof BACKENDS)[number];
 
 export const DEFAULT_BACKEND: Backend = "opencode";
@@ -94,6 +112,20 @@ export type BackendKeyDescriptor = {
    * everything, found nothing".
    */
   readonly defaultMaxDiffChars: number;
+  /**
+   * `bedrock` backend only — CONFIG_KV key carrying the AWS region the run
+   * exchanges OIDC for STS in (and signs InvokeModel against). Other backends
+   * leave this undefined.
+   */
+  readonly regionKey?: string;
+  /** `bedrock` backend's default region when `regionKey` is unset. */
+  readonly defaultRegion?: string;
+  /**
+   * `bedrock` backend only — CONFIG_KV key carrying the IAM role ARN to
+   * AssumeRoleWithWebIdentity into. No default: a missing value fails resolution
+   * with `BackendUnconfigured` so the operator gets a precise error.
+   */
+  readonly roleArnKey?: string;
 };
 
 /**
@@ -109,6 +141,16 @@ const CATALOG_MAX_DIFF_CHARS = 60_000;
  * reviewer embeds the whole diff).
  */
 const ANTHROPIC_MAX_DIFF_CHARS = 240_000;
+
+/**
+ * Anthropic-on-Bedrock has the same 200k context as direct Anthropic — same
+ * effective cap. Bedrock-side per-region quota and InvokeModel rate limits are
+ * the operator's concern, not this module's.
+ */
+const BEDROCK_MAX_DIFF_CHARS = 240_000;
+
+/** Default region a `bedrock` backend resolves to when `regionKey` is unset. */
+const BEDROCK_DEFAULT_REGION = "us-east-1";
 
 /**
  * Build the per-backend config key names for a given namespace — the operator
@@ -139,6 +181,20 @@ export const namespacedKeys = (
     // arguments come back as a parsed object the engine already tolerates.
     defaultMode: "tools",
     defaultMaxDiffChars: ANTHROPIC_MAX_DIFF_CHARS,
+  },
+  bedrock: {
+    modelKey: `${namespace}.bedrock.model`,
+    modeKey: `${namespace}.bedrock.mode`,
+    // The shared `invokeBedrockViaAiGateway` helper concatenates the response's
+    // text content blocks but does NOT surface tool-use blocks — Bedrock route
+    // is text-only V0. Force `json` so the engine doesn't send a `report` tool
+    // the route can't return; the model emits a strict-JSON object the engine
+    // parses + Schema-decodes.
+    defaultMode: "json",
+    defaultMaxDiffChars: BEDROCK_MAX_DIFF_CHARS,
+    regionKey: `${namespace}.bedrock.region`,
+    defaultRegion: BEDROCK_DEFAULT_REGION,
+    roleArnKey: `${namespace}.bedrock.roleArn`,
   },
 });
 
@@ -176,6 +232,17 @@ export type ResolvedBackend = {
   readonly mode: ReviewMode;
   /** Diff cap (chars) sized to this backend's context window — see `capDiff`. */
   readonly maxDiffChars: number;
+  /**
+   * `bedrock` backend only — AWS region the engine should mint STS creds in
+   * (and the modelGateway Bedrock route signs against). `undefined` for other
+   * backends.
+   */
+  readonly region?: string;
+  /**
+   * `bedrock` backend only — IAM role ARN the engine `awsAssumeRole`s into.
+   * `undefined` for other backends.
+   */
+  readonly roleArn?: string;
 };
 
 /** Narrow an arbitrary config string to a known `Backend`, or the default. */
@@ -215,6 +282,41 @@ export const resolveBackend = <R>(
     }
 
     const mode = parseMode(yield* getConfig(keys.modeKey), keys.defaultMode);
+
+    if (backend === "bedrock") {
+      // The bedrock backend needs the AWS role to assume + region to sign in.
+      // Region is optional (default us-east-1); roleArn is required — without
+      // it the run can't mint STS creds and the modelGateway Bedrock route
+      // would fail far less informatively.
+      const regionRaw =
+        keys.regionKey !== undefined
+          ? yield* getConfig(keys.regionKey)
+          : undefined;
+      const region =
+        regionRaw !== undefined && regionRaw.trim() !== ""
+          ? regionRaw
+          : (keys.defaultRegion ?? BEDROCK_DEFAULT_REGION);
+      const roleArn =
+        keys.roleArnKey !== undefined
+          ? yield* getConfig(keys.roleArnKey)
+          : undefined;
+      if (roleArn === undefined || roleArn.trim() === "") {
+        return yield* Effect.fail(
+          new BackendUnconfigured({
+            backend,
+            missing: keys.roleArnKey ?? `${backend}.roleArn`,
+          }),
+        );
+      }
+      return {
+        backend,
+        model,
+        mode,
+        maxDiffChars: keys.defaultMaxDiffChars,
+        region,
+        roleArn,
+      };
+    }
 
     return { backend, model, mode, maxDiffChars: keys.defaultMaxDiffChars };
   });

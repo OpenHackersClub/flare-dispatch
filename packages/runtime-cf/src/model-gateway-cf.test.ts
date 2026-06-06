@@ -235,3 +235,167 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
     expect(exit._tag).toBe("Failure");
   });
 });
+
+// --- The Bedrock-via-AI-Gateway route ---------------------------------------
+
+describe("makeModelGatewayLive — bedrock-via-AI-Gateway route", () => {
+  /** A `fetch` stub that records the URL + headers + body and returns canned JSON. */
+  const stubFetch = (
+    payload: { content?: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } } = {
+      content: [{ type: "text", text: "review body" }],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    },
+  ): {
+    fetchImpl: typeof fetch;
+    seen: { url?: string; headers?: Record<string, string>; body?: string };
+  } => {
+    const seen: { url?: string; headers?: Record<string, string>; body?: string } = {};
+    const fetchImpl = ((url: string, init: RequestInit) => {
+      seen.url = url;
+      seen.headers = init.headers as Record<string, string>;
+      seen.body = init.body as string;
+      return Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+    return { fetchImpl, seen };
+  };
+
+  // Smuggle the fetch stub into the Bedrock route by monkey-patching globalThis.fetch
+  // for the duration of one test. The shared helper defaults to the global fetch.
+  const withFetch = async <T>(fetchImpl: typeof fetch, fn: () => Promise<T>): Promise<T> => {
+    const original = globalThis.fetch;
+    (globalThis as { fetch: typeof fetch }).fetch = fetchImpl;
+    try {
+      return await fn();
+    } finally {
+      (globalThis as { fetch: typeof fetch }).fetch = original;
+    }
+  };
+
+  // Cast through unknown — the AiBinding stub doesn't matter on the bedrock route
+  // (it's bypassed entirely), but the Layer factory still needs a value.
+  const inertAi = ({} as unknown) as AiBinding;
+
+  const awsCreds = {
+    accessKeyId: "AKIA-TEST",
+    secretAccessKey: "secret-test",
+    sessionToken: "session-token-test",
+    region: "us-east-1",
+  };
+
+  it("routes through the AI Gateway Bedrock URL with the AWS hostname signed", async () => {
+    const { fetchImpl, seen } = stubFetch();
+    const result = await withFetch(fetchImpl, () =>
+      Effect.runPromise(
+        modelGateway
+          .complete({
+            model: "bedrock/us.anthropic.claude-opus-4-6-v1",
+            system: "you are a reviewer",
+            user: "review this",
+            aws: awsCreds,
+          })
+          .pipe(Effect.provide(makeModelGatewayLive(inertAi, "g", "acct123"))),
+      ),
+    );
+
+    // URL pinned to the AI Gateway forwarder
+    expect(seen.url).toBe(
+      "https://gateway.ai.cloudflare.com/v1/acct123/g/aws-bedrock/bedrock-runtime/us-east-1/model/us.anthropic.claude-opus-4-6-v1/invoke",
+    );
+    // SigV4 signs against the AWS hostname (host header), not the gateway
+    expect(seen.headers!.host).toBe("bedrock-runtime.us-east-1.amazonaws.com");
+    expect(seen.headers!.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIA-TEST/);
+    // x-amz-security-token forwards the STS session token
+    expect(seen.headers!["x-amz-security-token"]).toBe("session-token-test");
+    // Body shape is Anthropic-on-Bedrock with the version pin
+    const body = JSON.parse(seen.body!) as {
+      anthropic_version: string;
+      system: string;
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(body.anthropic_version).toBe("bedrock-2023-05-31");
+    expect(body.system).toBe("you are a reviewer");
+    expect(body.messages).toEqual([{ role: "user", content: "review this" }]);
+
+    // Response mapped to {text, toolCalls:[], inputTokens, outputTokens}
+    expect(result.text).toBe("review body");
+    expect(result.toolCalls).toEqual([]);
+    expect(result.inputTokens).toBe(100);
+    expect(result.outputTokens).toBe(50);
+  });
+
+  it("forwards cf-aig-authorization when an auth token is configured", async () => {
+    const { fetchImpl, seen } = stubFetch();
+    await withFetch(fetchImpl, () =>
+      Effect.runPromise(
+        modelGateway
+          .complete({
+            model: "bedrock/us.anthropic.claude-opus-4-6-v1",
+            system: "s",
+            user: "u",
+            aws: awsCreds,
+          })
+          .pipe(
+            Effect.provide(
+              makeModelGatewayLive(inertAi, "g", "acct123", "secret-bearer"),
+            ),
+          ),
+      ),
+    );
+    expect(seen.headers!["cf-aig-authorization"]).toBe("Bearer secret-bearer");
+  });
+
+  it("fails with an operator-facing error when req.aws is missing", async () => {
+    const { fetchImpl } = stubFetch();
+    const exit = await withFetch(fetchImpl, () =>
+      Effect.runPromiseExit(
+        modelGateway
+          .complete({
+            model: "bedrock/us.anthropic.claude-opus-4-6-v1",
+            system: "s",
+            user: "u",
+          })
+          .pipe(Effect.provide(makeModelGatewayLive(inertAi, "g", "acct123"))),
+      ),
+    );
+    expect(exit._tag).toBe("Failure");
+  });
+
+  it("fails when CLOUDFLARE_ACCOUNT_ID is not configured", async () => {
+    const { fetchImpl } = stubFetch();
+    const exit = await withFetch(fetchImpl, () =>
+      Effect.runPromiseExit(
+        modelGateway
+          .complete({
+            model: "bedrock/us.anthropic.claude-opus-4-6-v1",
+            system: "s",
+            user: "u",
+            aws: awsCreds,
+          })
+          .pipe(Effect.provide(makeModelGatewayLive(inertAi, "g", undefined))),
+      ),
+    );
+    expect(exit._tag).toBe("Failure");
+  });
+
+  it("fails when AI_GATEWAY_ID is not configured", async () => {
+    const { fetchImpl } = stubFetch();
+    const exit = await withFetch(fetchImpl, () =>
+      Effect.runPromiseExit(
+        modelGateway
+          .complete({
+            model: "bedrock/us.anthropic.claude-opus-4-6-v1",
+            system: "s",
+            user: "u",
+            aws: awsCreds,
+          })
+          .pipe(Effect.provide(makeModelGatewayLive(inertAi, undefined, "acct123"))),
+      ),
+    );
+    expect(exit._tag).toBe("Failure");
+  });
+});
