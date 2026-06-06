@@ -18,11 +18,14 @@ flowchart TB
     subgraph CP[Control plane]
       DSP[Dispatcher Worker<br/>authenticate, route, dedup]
       WF[Workflow Engine<br/>one durable instance per execution]
+      ADM[Run-admission semaphore<br/>per-pool FIFO, D1-backed]
+      LEASE[Per-container-id lease<br/>D1-backed, serializes]
       CO[Coordinator DO<br/>fan-out result aggregation]
     end
     subgraph DP[Data plane]
-      SB[Sandbox / Container<br/>git, install, test]
-      BR[Browser Rendering<br/>Playwright sessions]
+      SBL[Sandbox · lean<br/>RUNS_SANDBOX]
+      SBB[Sandbox · browser<br/>RUNS_SANDBOX_BROWSER]
+      BR[Browser Rendering<br/>BROWSER binding · CDP bridge]
     end
     subgraph ST[Storage]
       R2[(R2 — cache, artifacts, logs)]
@@ -38,13 +41,16 @@ flowchart TB
   Admin[Operator<br/>via CF Access] -->|admin POST| DSP
   DSP --> WF
   WF -->|aggregate shard results| CO
-  WF --> SB
+  WF -->|admit before container| ADM
+  WF -->|lease container id| LEASE
+  WF --> SBL
+  WF --> SBB
   WF --> BR
   WF --> R2
   WF --> D1
   WF -.->|only at very high shard counts| Q
   Q -.-> WF
-  WF -->|installation token| CHK
+  WF -->|installation token + writeback PR| CHK
   APP -.->|provides token| WF
 ```
 
@@ -65,7 +71,7 @@ It is invoked two ways — the Worker's `fetch()` handler serves the HTTP surfac
 | **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). | **Live** |
 | **Schedule** | `scheduled()` | A Cloudflare Cron Trigger fires on a wall-clock cadence; the handler instantiates a scheduling Workflow (Schedule mode). See [§ Schedule-mode dispatch](#schedule-mode-dispatch). | Live |
 | **Inspection** | `fetch()` | Return execution metadata; redirect to signed artifact / log URLs. | **Planned (V1)** — `/v1/executions/:id` for `await`-mode polling. |
-| **Admin** | `fetch()` | Operator surface — execution list, force-cancel, replay, signalling a paused Workflow. Gated by Cloudflare Access. | **Planned (V2/V3)** — lands with `step.waitForEvent` (`/v1/admin/events/:wf_id`). |
+| **Admin** | `fetch()` | Operator surface — signal a Workflow paused on `step.waitForEvent` via `POST /v1/admin/events/:wf_id` (`routes/admin-events.ts`, wired in `router.ts`). Gated by Cloudflare Access; opt-in bearer fallback — refuses `503` unless `ADMIN_TOKEN` is set. Execution list / force-cancel / replay remain Planned. | Live (opt-in) |
 | **OIDC issuer** | `fetch()` | Public, unauthenticated `/.well-known/openid-configuration` + `/.well-known/jwks.json`. The Dispatcher self-issues OIDC tokens runs federate against AWS STS / GCP STS / Vault — see [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy). Public by design: IdPs fetch the JWKS unauthenticated to verify token signatures. | **Live** |
 
 Only the `fetch()` surfaces are publicly reachable. `scheduled()` has no HTTP route — Cloudflare invokes it internally from the Cron Trigger, which is why Schedule mode authenticates nothing inbound (see [04-gha-integration § Schedule mode](04-gha-integration.md#schedule-mode)). Trigger modes, the request/response contracts, and the literal route paths are in [04-gha-integration](04-gha-integration.md). Trust boundaries and adversaries against each surface are catalogued in [07-trust-model](07-trust-model.md).
@@ -80,11 +86,34 @@ Each execution is one **durable Cloudflare Workflow instance**. The Workflow bod
 
 A Durable Object used **only by fan-out runs** to aggregate child-shard results. A matrix run spawns N child Workflows; each reports its result into a Coordinator keyed by the parent execution. Single-writer semantics let shard-completion handlers race without conflict. Once every shard has reported, the Coordinator triggers check-run finalization. Spawning the children does not itself need the Coordinator — see [§ Fan-out model](#fan-out-model).
 
+### Run-admission semaphore
+
+> **Status: Live** — `run-admission-d1.ts` in `@flare-dispatch/runtime-cf`, wired in `apps/dispatcher/src/workflow.ts` (`makeRunAdmissionD1` / `decideAdmission`).
+
+Before any run touches a container, the Workflow passes a **global, per-pool admission semaphore** — a FIFO queue persisted in D1 (migration `0003`). It caps in-flight runs per container pool at `ADMISSION_CAP` (a wrangler var, default 16; see [§ KV/storage](#storage) and [05-byoc](05-byoc.md)). Overflow runs enqueue and surface a "Queued — waiting for a sandbox slot behind N runs" line, then drain in FIFO order; the slot is heartbeated for the whole run and released on every exit path. A crashed holder's slot is reclaimed by a heartbeat-TTL sweep, so a dead Worker never wedges the pool. Only a pool whose slot never frees ultimately fails the run with `AdmissionTimedOut`. There is one pool per container tier (lean / browser), keyed by the same routing rule as the binding. No new operator config.
+
+### Per-container-id lease
+
+> **Status: Live** — `container-lease-d1.ts` in `@flare-dispatch/runtime-cf`, wired in `workflow.ts` (`makeContainerLeaseD1`).
+
+Inside the admission slot sits a **per-container-id lease**, also D1-backed, that serializes any two runs sharing the same sandbox container id. The Workflow acquires the lease before the run touches its container, holds it (heartbeating) for the run, and releases it on every exit path via `acquireUseRelease`. A second run on the same container id waits, then fails with `ContainerBusy` after ~10 minutes rather than colliding mid-execution. Nesting order is **admission (outer, global) → lease (inner, per-container-id) → run body**.
+
+### Post-run writeback
+
+> **Status: Live** — `packages/core/src/writeback.ts` + the writeback stage in `workflow.ts` (`runWriteback` / `makeWritebackTokenMinter`); `refresh-fixtures` is the worked example (#112).
+
+A post-run lifecycle stage that lets a run **propose a diff as a PR** without ever handing credentials to the container. Only on a successful run that declares a `writeback` spec: the container regenerates files into R2 (`artifacts/<exec>/writeback/…`) in a credential-free image; the **Worker** — sole holder of the App credentials — validates the changed-files manifest (path-traversal / allowlist / byte + count caps, with `.github/workflows` behind an opt-in gate) and commits a branch + PR via the Git Data API. It is best-effort: a writeback failure annotates the green check and never flips the run red. See [§ Per-execution lifecycle](#per-execution-lifecycle).
+
 ## Data plane
 
 ### Sandbox / Container
 
-Every step that runs arbitrary code — `git clone`, `pnpm install`, `pytest`, `cargo test`, bash scripts — acquires a container from a pool. Containers come from versioned, per-language-stack images (Node, Playwright, Rust, Python); a run may override the image via its `image:` input. Base images are kept thin: run-level installs happen at runtime and are cached to R2. The concrete image registry and tags are a deployment concern — see [05-byoc](05-byoc.md).
+Every step that runs arbitrary code — `git clone`, `pnpm install`, `pytest`, `cargo test`, bash scripts — acquires a container from a pool. Base images are kept thin: run-level installs happen at runtime and are cached to R2. The concrete image registry and tags are a deployment concern — see [05-byoc](05-byoc.md).
+
+There are **two container tiers**, two DO classes built from the same Dockerfile (`WITH_BROWSER` toggles the chromium layer):
+
+- **Lean** — `RUNS_SANDBOX` (DO class `RunSandbox`), the default for every run.
+- **Browser** — `RUNS_SANDBOX_BROWSER` (DO class `RunSandboxBrowser`), the chromium-baked image (chromium-headless-shell + demo-agent baked in). A run declares which it needs with `sandboxImage: "browser"` — distinct from `limits.requiresBrowser`. The Workflow routes via `selectSandboxNs`; the browser binding is optional, and a deploy that omits it degrades by falling back to the lean image (non-fatal only if the run installs its own browser — a run relying on the baked image fails on the lean tier).
 
 ### Browser Rendering
 
@@ -93,7 +122,7 @@ Browser-centric runs (`playwright-e2e`, `cdp-acceptance`) use Cloudflare Browser
 - **REST mode** — Puppeteer against the managed pool; fast for short, stateless page interactions.
 - **CDP mode** — direct CDP WebSocket attach for fine-grained instrumentation (request interception, heap snapshots, network events).
 
-A run picks whichever mode its assertions need.
+A run picks whichever mode its assertions need. The CF Browser Rendering binding (`BROWSER`) is live: `GET /v1/browser/cdp` bridges a container's `connectOverCDP` to a Browser Rendering session (the only supported way to reach CF Browser Rendering CDP — it is not a public, token-dialable WebSocket). The route refuses `503` when the binding is absent; non-browser runs are unaffected.
 
 ## Storage
 
@@ -103,7 +132,7 @@ Four stores, each with a distinct role:
 |---|---|---|
 | **R2** | Package cache, artifacts, per-step logs | Zero egress within Cloudflare. Cache keys are content-addressed by lockfile hash + image digest, so cross-environment poisoning is impossible. |
 | **D1** | Execution and step metadata | Metadata and pointers only — logs and artifacts live in R2. |
-| **KV** | Config (`CONFIG_KV` — live today, backs `loadSecrets`). Receiver-level idempotency keys and the App install-token cache are **Planned (V1)** — dedicated `IDEMPOTENCY_KV` / `INSTALL_TOKEN_KV` namespaces land with the Webhook-mode receiver. | Each namespace is separate so an audit shows config never co-mingles with idempotency state. |
+| **KV** | Config (`CONFIG_KV` — live today, backs `loadSecrets`). Receiver-level idempotency keys (`IDEMPOTENCY_KV`) and the App install-token cache (`INSTALL_TOKEN_KV`) are wired and optional — each is a typed binding the runtime reads when present and degrades without (idempotency falls back to the platform `create({id})` no-op; tokens cache in Worker memory only). | Each namespace is separate so an audit shows config never co-mingles with idempotency state. |
 | **Queue** | Fan-out backpressure | **Planned (V1)** — engaged only when shard creation would exceed the platform's instance-creation rate. |
 
 ### R2 layout
@@ -140,6 +169,7 @@ sequenceDiagram
 
   DSP->>WF: Instantiate Workflow (execution id + params)
   WF->>GH: Open check-run (status=in_progress)
+  WF->>WF: Admit (per-pool semaphore) → lease container id
   WF->>SB: Acquire container, git clone
   SB-->>WF: ok
   WF->>R2: Restore package cache
@@ -147,6 +177,10 @@ sequenceDiagram
   WF->>SB: install + test command
   SB-->>WF: exit code, results
   WF->>R2: Save cache, upload artifacts
+  opt run declares writeback (on success)
+    WF->>R2: Read changed-files manifest (artifacts/<exec>/writeback)
+    WF->>GH: Validate + commit branch + PR (Git Data API)
+  end
   WF->>GH: Finalize check-run (conclusion + summary)
 ```
 

@@ -25,6 +25,41 @@ const value = [
   },
 ];
 
+// §05 / Platform — shipped capabilities that sit underneath the runs (every
+// claim here is live at HEAD; the GitHub App webhook is shipped but opt-in).
+const capabilities = [
+  {
+    id: "05.01 / Agentic review",
+    title: "Review runs that read the whole diff",
+    body: "Two PR-review runs — pr-review and multi-agent-review — review every diff in-Worker and post a scannable verdict: a summary table, per-finding headings, and GitHub blob links. Re-reviews are authoritative and auto-resolve findings you've fixed.",
+  },
+  {
+    id: "05.02 / Writeback",
+    title: "Propose the fix back as a PR",
+    body: "A run can return a changed-files manifest from its credential-free container; the Dispatcher validates it and opens a pull request via the Git Data API. Best-effort — a writeback failure annotates the green check, it never flips the run red.",
+  },
+  {
+    id: "05.03 / Model routing",
+    title: "Provider-agnostic model gateway",
+    body: "Route model calls to Workers AI, Anthropic, reasonix, or Amazon Bedrock — Bedrock via OIDC → STS → SigV4, no long-lived keys in Worker Secrets. Swap the backend from KV config with no redeploy.",
+  },
+  {
+    id: "05.04 / Admission control",
+    title: "Bursts queue, they don't fail red",
+    body: "A global FIFO admission queue caps in-flight runs at the container-pool size; work beyond capacity queues and drains in order instead of erroring. Per-container leases serialize runs that share a sandbox image.",
+  },
+  {
+    id: "05.05 / Session replay",
+    title: "Scrub the walkthrough inline",
+    body: "product-demo drives a deployed app over CDP with native session recording; reviewers replay the run in a self-hosted rrweb player, linked straight from the check summary and the result email.",
+  },
+  {
+    id: "05.06 / Three trigger modes",
+    title: "Action, Schedule, or Webhook",
+    body: "Fire a run from a GitHub Actions step, a Cloudflare Cron Trigger, or the GitHub App webhook (opt-in) — one Dispatcher, every result posted back as a GitHub Check Run.",
+  },
+];
+
 // §03 mirrors the /recipes catalog exactly — each recipe, with its source
 // files read from the monorepo-root recipes/ directory at build time.
 const recipeSnippets = recipes.map((recipe) => ({
@@ -60,6 +95,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
       </p>
       <div class="hero__cta reveal" data-delay="4">
         <a class="btn" href="/docs/prd">Read the PRD</a>
+        <a class="btn btn--ghost" href={`${site.repo}#quickstart`}>Quickstart</a>
         <a class="btn btn--ghost" href="/recipes">Browse recipes</a>
       </div>
     </div>
@@ -272,32 +308,50 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
     </div>
   </section>
 
+  <section class="tenets">
+    <div class="container">
+      <div class="tenets__header">
+        <span class="section-marker">§05 / Platform</span>
+        <h2>More than runs — the platform underneath.</h2>
+      </div>
+      <div class="tenets__grid">
+        {capabilities.map((c) => (
+          <article class="tenet">
+            <span class="tenet__id">{c.id}</span>
+            <h3 class="tenet__title">{c.title}</h3>
+            <p class="tenet__rationale">{c.body}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
   <section class="manifesto">
     <div class="container">
       <div class="manifesto__header">
-        <span class="section-marker">§05 / Design philosophy</span>
+        <span class="section-marker">§06 / Design philosophy</span>
         <h2>Three bets the design is built on.</h2>
       </div>
       <ol class="manifesto__list">
         <li class="manifesto__item">
-          <span class="manifesto__num">§05.01</span>
+          <span class="manifesto__num">§06.01</span>
           <div>
             <p class="manifesto__statement"><strong>Progressive</strong> offloading.</p>
             <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions keeps the cheap jobs and the PR gate; nothing is all-or-nothing.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§05.02</span>
+          <span class="manifesto__num">§06.02</span>
           <div>
             <p class="manifesto__statement">Runs are <strong>typed programs</strong>, not YAML.</p>
             <p class="manifesto__body">A run is an Effect-TS program — Schema-typed inputs and outputs, composable steps, tagged errors, exhaustive matching. Fork it, vendor-edit it, unit-test it without booting a container.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§05.03</span>
+          <span class="manifesto__num">§06.03</span>
           <div>
             <p class="manifesto__statement">BYOC <strong>by construction</strong>.</p>
-            <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs are yours.</p>
+            <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs ship at HEAD and are yours to fork.</p>
           </div>
         </li>
       </ol>
@@ -307,11 +361,12 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="container">
     <div class="cta-band">
       <div>
-        <span class="section-marker">§06 / Read on</span>
-        <h2>Pre-implementation. The specs are the contract.</h2>
+        <span class="section-marker">§07 / Read on</span>
+        <h2>Live at HEAD. The specs are the contract; the runs are shipped.</h2>
       </div>
       <div class="cta-band__actions">
         <a class="btn" href="/docs/prd">Open the PRD</a>
+        <a class="btn btn--ghost" href={`${site.repo}#quickstart`}>Quickstart</a>
         <a class="btn btn--ghost" href="/recipes">Browse recipes</a>
       </div>
     </div>
