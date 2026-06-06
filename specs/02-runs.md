@@ -65,10 +65,15 @@ Schema.Struct({
   sha: Schema.String,
   command: Schema.String,                    // e.g. "pnpm test"
   image: Schema.optional(Schema.String),     // override container image
-  env: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
+  env: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })), // non-sensitive only
+  secrets: Schema.optionalWith(Schema.Array(Schema.String), { default: () => [] }),
+                                             // config-store keys → env vars (loadSecrets, required)
+  secretPrefix: Schema.optional(Schema.String), // config-lookup prefix, e.g. "staging/"
   timeoutSec: Schema.optional(Schema.Number),// default 600
 })
 ```
+
+Credentials ride `secrets`/`secretPrefix` (resolved from the config store by `loadSecrets`, same contract as [`cdp-acceptance`](#4-cdp-acceptance)), never `env`: dispatch inputs are persisted (the `executions` row, Workflow params), so a secret in `env` would sit in storage at rest. On a key collision the per-dispatch `env` value wins over the config-store value.
 
 **Outputs:**
 
