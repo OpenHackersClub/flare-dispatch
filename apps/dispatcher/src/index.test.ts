@@ -116,6 +116,7 @@ describe("GET /health", () => {
         "ci-triage-pr",
         "deploy-smoke",
         "matrix-fanout",
+        "multi-agent-review",
         "offload-test",
         "playwright-demo",
         "playwright-e2e",

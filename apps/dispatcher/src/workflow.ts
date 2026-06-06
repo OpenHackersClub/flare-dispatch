@@ -308,6 +308,16 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       ...(this.env.AI_GATEWAY_ID !== undefined
         ? { aiGatewayId: this.env.AI_GATEWAY_ID }
         : {}),
+      // `bedrock/*` model ids route through the AI Gateway Bedrock forwarder —
+      // the URL needs the Cloudflare account id, and Authenticated Gateway (when
+      // turned on) needs a separate `cf-aig-authorization` token. Both absent →
+      // bedrock route fails with an operator-facing error, other routes ignore.
+      ...(this.env.CLOUDFLARE_ACCOUNT_ID !== undefined
+        ? { cloudflareAccountId: this.env.CLOUDFLARE_ACCOUNT_ID }
+        : {}),
+      ...(this.env.AI_GATEWAY_AUTH_TOKEN !== undefined
+        ? { aiGatewayAuthToken: this.env.AI_GATEWAY_AUTH_TOKEN }
+        : {}),
       sandboxPreviewHostname: this.env.SANDBOX_PREVIEW_HOSTNAME,
       ...(publicOrigin !== undefined ? { publicOrigin } : {}),
       // Wire the live OIDC signing Layer when both the JWK + issuer URL are

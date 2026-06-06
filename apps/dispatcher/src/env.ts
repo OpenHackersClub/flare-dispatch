@@ -253,4 +253,14 @@ export interface Env {
    * unaffected. Read-only: mutating CF state stays a `wrangler` / CI concern.
    */
   readonly CLOUDFLARE_API_TOKEN?: string;
+
+  /**
+   * Optional AI Gateway authentication token — a Worker secret, set via
+   * `wrangler secret put AI_GATEWAY_AUTH_TOKEN`. Forwarded as
+   * `cf-aig-authorization: Bearer <token>` on `bedrock/*` model calls only;
+   * required ONLY when the operator's AI Gateway has [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/)
+   * turned on. Orthogonal to AWS SigV4. Absent → no header is sent (the
+   * default for an unauthenticated gateway).
+   */
+  readonly AI_GATEWAY_AUTH_TOKEN?: string;
 }

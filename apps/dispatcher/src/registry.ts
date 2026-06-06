@@ -15,6 +15,7 @@ import {
   ciTriagePr,
   deploySmoke,
   matrixFanout,
+  multiAgentReview,
   offloadTest,
   playwrightDemo,
   playwrightE2E,
@@ -33,6 +34,7 @@ export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [productDemo.name]: productDemo as Run<unknown, unknown>,
   [playwrightDemo.name]: playwrightDemo as Run<unknown, unknown>,
   [prReview.name]: prReview as Run<unknown, unknown>,
+  [multiAgentReview.name]: multiAgentReview as Run<unknown, unknown>,
   [specDriftPr.name]: specDriftPr as Run<unknown, unknown>,
   [ciTriagePr.name]: ciTriagePr as Run<unknown, unknown>,
 };

@@ -49,7 +49,7 @@ import {
   type Container,
   type WebhookPayload,
 } from "@flare-dispatch/core";
-import { workspace } from "@flare-dispatch/core/primitives";
+import { awsAssumeRole, workspace } from "@flare-dispatch/core/primitives";
 import {
   type BackendUnconfigured,
   capDiff,
@@ -255,6 +255,34 @@ const reviewBody = (input: RunInput) =>
       yield* step("resolve-style", () => config.get("pr-review.style")),
     );
 
+    // 5c. When the resolved backend is `bedrock`, mint short-lived AWS creds via
+    //     OIDC federation — the modelGateway Bedrock route SigV4-signs each call
+    //     with these. The role's trust policy SHOULD pin `sub: pr-review:*` so
+    //     a leaked HMAC alone can't assume the role; `awsAssumeRole`'s default
+    //     subject is `<run>:<execution-id>`, which matches that pattern. Other
+    //     backends skip this step entirely.
+    const bedrockCreds =
+      resolved.backend === "bedrock" &&
+      resolved.roleArn !== undefined &&
+      resolved.region !== undefined
+        ? yield* step("assume-bedrock-role", () =>
+            awsAssumeRole({
+              roleArn: resolved.roleArn as string,
+              region: resolved.region as string,
+              sessionName: `pr-review-${input.sha.slice(0, 12)}`,
+            }),
+          )
+        : undefined;
+    const awsCreds =
+      bedrockCreds !== undefined && resolved.region !== undefined
+        ? {
+            accessKeyId: bedrockCreds.accessKeyId,
+            secretAccessKey: bedrockCreds.secretAccessKey,
+            sessionToken: bedrockCreds.sessionToken,
+            region: resolved.region,
+          }
+        : undefined;
+
     // 6. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
     //    agents this tier calls for. Each calls the model via the `modelGateway`
     //    capability (provided by the runtime, like `config`/`sandbox`); findings
@@ -271,6 +299,7 @@ const reviewBody = (input: RunInput) =>
             backend: resolved.backend,
             mode: resolved.mode,
             ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
+            ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
           }),
         { concurrency: plan.agents.length },
       ),

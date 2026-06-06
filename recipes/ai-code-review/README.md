@@ -57,16 +57,23 @@ The engine selects a model backend from config — repoint it in seconds, no red
 
 | Key (CONFIG_KV) | Meaning |
 |---|---|
-| `pr-review.backend` | `opencode` (default) or `reasonix` |
+| `pr-review.backend` | `opencode` (default), `reasonix`, `anthropic`, or `bedrock` |
 | `pr-review.prompt` | *(optional)* override the generic per-domain reviewer system prompt |
 | `pr-review.opencode.model` | bare Workers AI model id for the **opencode** backend, e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 | `pr-review.opencode.mode` | `tools` (default) or `json` — how structured output is coaxed (see below) |
 | `pr-review.reasonix.model` | bare Workers AI model id for the **reasonix** backend, e.g. `@cf/deepseek-ai/deepseek-r1-distill-qwen-32b` |
 | `pr-review.reasonix.mode` | `tools` or `json` (**default `json`** — DeepSeek-class reasoning models ignore tool-calls) |
+| `pr-review.anthropic.model` | `anthropic/`-prefixed model id, e.g. `anthropic/claude-sonnet-4-6`. Routes via the AI Gateway universal endpoint (BYOK Anthropic key stored in the gateway). Requires `AI_GATEWAY_ID`. |
+| `pr-review.anthropic.mode` | `tools` (default) or `json` |
+| `pr-review.bedrock.model` | `bedrock/`-prefixed model id, e.g. `bedrock/us.anthropic.claude-opus-4-6-v1`. Routes via the AI Gateway Bedrock forwarder; SigV4-signed with short-lived STS creds (BYOC trust path). Requires `AI_GATEWAY_ID` + `CLOUDFLARE_ACCOUNT_ID` + `OIDC_SIGNING_JWK` + `OIDC_ISSUER_URL`. |
+| `pr-review.bedrock.region` | AWS region (default `us-east-1`) |
+| `pr-review.bedrock.roleArn` | IAM role ARN to AssumeRoleWithWebIdentity into. Trust policy MUST pin `sub: pr-review:*`. |
 
-Model ids are bare `@cf/...` (the Workers AI binding's own naming) — **not** the `workers-ai/@cf/...` compat-endpoint prefix. An AI Gateway can front all calls by setting the `AI_GATEWAY_ID` var on the Worker.
+Model ids are bare `@cf/...` for the Workers AI catalog, `anthropic/...` for the AI-Gateway universal endpoint, or `bedrock/...` for the AI-Gateway Bedrock forwarder. An AI Gateway can front Workers AI calls by setting the `AI_GATEWAY_ID` var on the Worker; the same `AI_GATEWAY_ID` is used for the `anthropic/` and `bedrock/` routes (required, not optional).
 
-A misconfigured backend (no `model` key) fails fast — the run posts a PR comment naming the exact missing key.
+The `bedrock` backend is the BYOC trust path — the engine mints short-lived STS creds via OIDC federation per execution (no long-lived AWS keys). See [the multi-agent-review recipe](../multi-agent-review/README.md#how-the-byoc-trust-path-works) for the AWS-side OIDC provider + IAM role setup.
+
+A misconfigured backend (no `model` key, or for `bedrock` no `roleArn`) fails fast — the run posts a PR comment naming the exact missing key.
 
 #### Output mode: `tools` vs `json`
 

@@ -183,8 +183,25 @@ export type CFRuntimeLiveOptions = {
    * Workers AI calls through — for caching / rate-limiting / observability.
    * `undefined`/empty → call Workers AI directly (no gateway). Only used when
    * `ai` is present.
+   *
+   * REQUIRED for `anthropic/*` and `bedrock/*` model ids — those routes pin to
+   * an AI Gateway URL pattern.
    */
   readonly aiGatewayId?: string;
+  /**
+   * Cloudflare account id (`CLOUDFLARE_ACCOUNT_ID` var) — the first segment of
+   * the AI Gateway Bedrock forwarder URL. REQUIRED for `bedrock/*` model ids.
+   * `undefined` → `bedrock/*` calls fail with an operator-facing error naming
+   * what to set; other routes ignore this field.
+   */
+  readonly cloudflareAccountId?: string;
+  /**
+   * Optional `cf-aig-authorization` token (`AI_GATEWAY_AUTH_TOKEN` secret) —
+   * forwarded as a header on the `bedrock/*` route only when the operator's
+   * AI Gateway has [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/)
+   * turned on. Orthogonal to AWS SigV4.
+   */
+  readonly aiGatewayAuthToken?: string;
 };
 
 /**
@@ -255,6 +272,14 @@ export const makeCFRuntimeLive = (
           opts.ai,
           opts.aiGatewayId !== undefined && opts.aiGatewayId.length > 0
             ? opts.aiGatewayId
+            : undefined,
+          opts.cloudflareAccountId !== undefined &&
+            opts.cloudflareAccountId.length > 0
+            ? opts.cloudflareAccountId
+            : undefined,
+          opts.aiGatewayAuthToken !== undefined &&
+            opts.aiGatewayAuthToken.length > 0
+            ? opts.aiGatewayAuthToken
             : undefined,
         );
   // `Github` is live when App credentials are present. Prefer the dedicated
