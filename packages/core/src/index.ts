@@ -25,6 +25,29 @@ export {
 export { step, runEffect, type StepOpts } from "./step";
 export { type RunContext } from "./context";
 
+// --- Writeback (run-declared "propose a diff as a PR") -----------------------
+export {
+  WRITEBACK_ARTIFACT,
+  WRITEBACK_MANIFEST_FILE,
+  WRITEBACK_FILES_DIR,
+  DEFAULT_WRITEBACK_MAX_BYTES,
+  DEFAULT_WRITEBACK_MAX_FILES,
+  WritebackEntry,
+  WritebackManifest,
+  decodeManifest,
+  validateManifest,
+  describeRejection,
+  resolveHeadBranch,
+  matchGlob,
+  type WritebackSpec,
+  type WritebackBranch,
+  type WritebackPr,
+  type WritebackMode,
+  type WritebackRejection,
+  type WritebackValidation,
+  type ValidatedEntry,
+} from "./writeback";
+
 // --- Container lease (pure decision logic) -----------------------------------
 export {
   decideLease,

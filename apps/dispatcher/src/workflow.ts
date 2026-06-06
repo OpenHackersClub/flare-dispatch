@@ -62,14 +62,19 @@ import {
   ADMISSION_POLL_EVERY_MS,
   type BrowserRenderingConfig,
   type ChecksGithubConfig,
+  describeOutcome,
   type EmailCloudflareConfig,
   LEASE_HEARTBEAT_EVERY_MS,
   makeCFRuntimeLive,
   makeContainerLeaseD1,
   makeRunAdmissionD1,
+  makeWritebackTokenMinter,
   previewSafeSandboxId,
   resolveAdmissionCap,
+  runWriteback,
+  type WritebackOutcome,
 } from "@flare-dispatch/runtime-cf";
+import { WRITEBACK_ARTIFACT } from "@flare-dispatch/core";
 import { lookupRun } from "./registry";
 import { selectSandboxNs } from "./sandbox-routing";
 import { queuedSummary } from "./admission-summary";
@@ -286,6 +291,11 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     // `StepRunner` bound to *this* Workflow's `step` so each `step(...)` in the
     // run body is a real durable `WorkflowStep.do(...)` checkpoint.
     const db = this.env.RUNS_METADATA;
+    // Captured for the post-run writeback step: the R2 bucket the container's
+    // changed-files artifact landed in, and the App config that mints the
+    // installation token the Worker (never the container) commits with.
+    const bucket = this.env.RUNS_STORAGE;
+    const githubAppConfig = resolveGithubAppConfig(this.env);
     const checkRunName = `flare-dispatch/${payload.run}`;
     // The Cloudflare Workflows instance page for this execution — the "Details"
     // link on the GitHub check-run + a markdown link in its summary. `undefined`
@@ -686,11 +696,75 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         ...(summaryJson !== undefined ? { summaryJson } : {}),
       });
 
+      // --- Post-run writeback (the Worker proposes the diff as a PR) --------
+      //
+      // ONLY on a successful run that declares `writeback`: the container has
+      // written a changed-files manifest + blobs to its artifact output
+      // (`artifacts/<exec>/writeback/…` in R2); the WORKER — holding the App
+      // installation token the container never sees — validates the manifest
+      // against the run's declared `writeback` spec (path traversal, allowlist,
+      // size cap, `.github/workflows/**` opt-in) and commits it via the Git
+      // Data API (blob→tree→commit→ref→PR). Idempotent on the head branch.
+      //
+      // Best-effort, like the check-run + notify: a writeback failure is a
+      // logged line on the (already-green) check-run summary, never a flip to
+      // red — the run's own verdict stands; the proposed PR is a side output.
+      // Runs in its own durable `step.do` so a Worker eviction mid-commit
+      // replays the recorded outcome rather than re-committing.
+      let writebackLine: string | undefined;
+      if (run.writeback !== undefined && status === "success") {
+        const spec = run.writeback;
+        if (githubAppConfig === undefined) {
+          writebackLine =
+            "writeback skipped — GitHub App credentials not configured on this deploy";
+        } else {
+          const repo = payload.github.repo;
+          const mintToken = makeWritebackTokenMinter(
+            githubAppConfig,
+            repo,
+            payload.github.installation_id,
+          );
+          const outcome: WritebackOutcome = yield* Effect.tryPromise(() =>
+            (
+              step.do as unknown as (
+                n: string,
+                cb: () => Promise<WritebackOutcome>,
+              ) => Promise<WritebackOutcome>
+            )("writeback", () =>
+              runWriteback({
+                bucket,
+                executionId: payload.executionId,
+                spec,
+                repo,
+                dispatchRef: payload.github.ref,
+                artifactName: WRITEBACK_ARTIFACT,
+                mintToken,
+              }),
+            ),
+          ).pipe(
+            // A writeback failure (GitHub API error, missing creds mid-flight)
+            // must never turn a green run red — log it and surface a line.
+            Effect.catchAllCause((cause) =>
+              Effect.logError(`writeback failed — ${cause}`).pipe(
+                Effect.as<WritebackOutcome>({
+                  kind: "rejected",
+                  reasons: ["writeback errored — see Worker logs"],
+                }),
+              ),
+            ),
+          );
+          writebackLine = describeOutcome(outcome);
+          yield* Effect.logInfo(`writeback: ${writebackLine}`);
+        }
+      }
+
       // Complete the check-run with the run's verdict.
       const logsSuffix =
         detailsUrl !== undefined
           ? ` — [view step logs in Cloudflare ↗](${detailsUrl})`
           : "";
+      const writebackSuffix =
+        writebackLine !== undefined ? `\n\n${writebackLine}` : "";
       yield* checks.update({
         repo: payload.github.repo,
         checkRunId,
@@ -700,7 +774,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
           title: checkRunName,
           summary: Exit.match(exit, {
             onSuccess: () =>
-              `✓ ${payload.run} — execution succeeded.${logsSuffix}`,
+              `✓ ${payload.run} — execution succeeded.${logsSuffix}${writebackSuffix}`,
             // The run's own markdown (when the failure carries one) renders
             // beneath the generic line + logs link, truncated to GitHub's
             // 65535-char summary limit.

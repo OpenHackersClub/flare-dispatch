@@ -47,8 +47,14 @@ export {
 } from "./actions";
 export {
   openDraftPullRequest,
+  commitFilesAndOpenPr,
   treeEntry,
+  deletionEntry,
   type FileEdit,
+  type FileDeletion,
+  type TreeEntry,
+  type CommitFilesOptions,
+  type CommitFilesResult,
   type OpenDraftPullRequestOptions,
   type OpenDraftPullRequestResult,
 } from "./pull-requests";

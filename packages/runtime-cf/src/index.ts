@@ -95,6 +95,13 @@ export {
   publicJwkFromSigning,
   type OidcLiveConfig,
 } from "./oidc-live";
+export {
+  runWriteback,
+  describeOutcome,
+  makeWritebackTokenMinter,
+  type RunWritebackOptions,
+  type WritebackOutcome,
+} from "./writeback-r2";
 
 // --- The Sandbox Durable Object class ----------------------------------------
 // Re-exported so `apps/dispatcher` can `extends` it for the `RUNS_SANDBOX`

@@ -74,4 +74,49 @@ describe("defineRun", () => {
       expect(run.sandboxImage).toBe("browser");
     });
   });
+
+  describe("writeback", () => {
+    const validWriteback = {
+      branch: "flare-dispatch/refresh",
+      commitMessage: "chore: refresh",
+      pr: { title: "t", body: "b" },
+    } as const;
+
+    it("carries a valid writeback spec through", () => {
+      const run = defineRun({ ...validSpec, writeback: validWriteback });
+      expect(run.writeback?.branch).toBe("flare-dispatch/refresh");
+    });
+
+    it("accepts a { prefix } branch", () => {
+      const run = defineRun({
+        ...validSpec,
+        writeback: { ...validWriteback, branch: { prefix: "fd/wb" } },
+      });
+      expect(run.writeback?.branch).toEqual({ prefix: "fd/wb" });
+    });
+
+    it("rejects an empty branch name", () => {
+      expect(() =>
+        defineRun({ ...validSpec, writeback: { ...validWriteback, branch: "" } }),
+      ).toThrow(/writeback\.branch/);
+    });
+
+    it("rejects an empty commit message", () => {
+      expect(() =>
+        defineRun({
+          ...validSpec,
+          writeback: { ...validWriteback, commitMessage: "  " },
+        }),
+      ).toThrow(/writeback\.commitMessage/);
+    });
+
+    it("rejects a non-positive maxBytes", () => {
+      expect(() =>
+        defineRun({
+          ...validSpec,
+          writeback: { ...validWriteback, maxBytes: 0 },
+        }),
+      ).toThrow(/writeback\.maxBytes/);
+    });
+  });
 });

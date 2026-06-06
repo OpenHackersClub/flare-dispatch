@@ -378,6 +378,63 @@ The detection reuses the `ai-code-review` engine: it resolves the configurable `
 
 ---
 
+## Writeback: runs that propose PRs
+
+> **Status: Live.** Any run can declare a `writeback` output ([`runs/refresh-fixtures.ts`](../runs/refresh-fixtures.ts) is the worked example). The run's container regenerates files and emits a changed-files manifest; after the run **succeeds**, the Dispatcher Worker turns that manifest into a commit + PR via the GitHub App's Git Data API.
+
+Runs are output-only by design — containers boot with **no git or `gh` credential** and cannot push branches or open PRs. Writeback keeps that property while letting any run *propose* a diff. The split is the whole point: the container says *what* it would change; the **Worker** — the only place the GitHub App credentials live — decides whether to apply it and does the committing.
+
+Motivating cases (all generic, deterministic regenerations a human reviews before merge):
+
+- refreshing recorded-API-fixture snapshots against the live upstream;
+- a dependency bump + lockfile regeneration;
+- regenerating generated docs / API references from source;
+- updating committed test snapshots.
+
+### The contract
+
+A run declares the capability in its **definition** (trusted, Worker-side — never assembled from container output):
+
+```ts
+defineRun({
+  // …
+  writeback: {
+    branch: "flare-dispatch/refresh-fixtures",   // fixed bot branch; or { prefix } for a fresh branch per run
+    baseBranch: "main",                          // optional; defaults to the dispatch ref / repo default
+    commitMessage: "chore: refresh fixtures",
+    pr: { title: "chore: refresh fixtures", body: "…", draft: true },  // or `false` to push the branch only
+    updateExisting: true,                        // re-runs force-update the ref + the open PR (default)
+    pathAllowlist: ["fixtures/**", "**/*.snap"], // only these paths may be written
+    // allowWorkflows: true,                      // required to touch .github/workflows/** (App needs the `workflows` permission)
+  },
+});
+```
+
+The **container** writes its proposed edit to a conventional artifact location and uploads it as a directory artifact named `writeback`:
+
+- `artifacts/writeback/manifest.json` — `{ "entries": [ { "path": "<repo-relative>", "mode"?: "100644"|"100755", "deleted"?: true }, … ] }`;
+- `artifacts/writeback/files/<repo-relative path>` — the full new content for each non-deleted entry.
+
+An **empty or absent** manifest is a clean **no-op** (most runs produce no diff) — never a failure.
+
+### The Worker post-run step
+
+On a successful run with a `writeback` spec, the Worker:
+
+1. reads the manifest + blobs from R2 (the directory-artifact the container uploaded);
+2. **validates** the manifest against the spec — rejects path traversal / absolute paths, enforces the `pathAllowlist`, the total-size cap, and the `.github/workflows/**` opt-in;
+3. mints the GitHub App installation token and commits via the Git Data API — blob → tree (`base_tree` = head of the base branch) → commit → create-or-force-update the ref — then opens a PR (or updates the open one on a fixed branch). Deletions are `sha: null` tree entries; per-file modes carry through.
+
+Idempotent across retries (force-update the ref, reuse the open PR), and runs in its own durable Workflow step so a Worker eviction mid-commit replays the recorded outcome. Writeback is **best-effort reporting**: a writeback failure logs + annotates the (already-green) check-run summary, never flips the run red. When App credentials are absent on the deploy, writeback is a logged skip.
+
+### Security model
+
+- **Credentials never enter the container.** The GitHub App private key lives only in the Worker; the container only ever writes files to its own artifact output.
+- **Capability is declared, not inferred.** A run can only writeback if its *definition* says so; the container cannot widen the branch, base, allowlist, or workflow opt-in. The manifest is data the Worker validates, not config it trusts.
+- **Path validation rejects escapes** (`..`, absolute, `./`, empty segments), enforces the `pathAllowlist` when declared, caps total bytes + file count, and gates `.github/workflows/**` behind an explicit per-run opt-in (which also requires granting the App the `workflows` permission).
+
+---
+
 ## Primitive: `cache-pnpm` / `npm` / `cargo` / `uv`
 
 Not a dispatch-able run — a DSL primitive composed inside other runs, exposed as [`installCached`](03-dsl.md#installcached). Looks up an R2 key derived from the relevant lockfile hash, downloads the archive into the container if present, executes the install command, and uploads the resulting cache if the key was missing.
