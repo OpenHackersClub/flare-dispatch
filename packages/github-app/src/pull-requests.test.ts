@@ -9,11 +9,19 @@
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { openDraftPullRequest, treeEntry } from "./index";
+import {
+  commitFilesAndOpenPr,
+  deletionEntry,
+  openDraftPullRequest,
+  treeEntry,
+} from "./index";
 
 let calls: string[] = [];
 let createdRef = false;
 let openPrs: Array<{ number: number; html_url: string }> = [];
+let headRefExists = false;
+let lastTreeBody: { tree: unknown[]; base_tree: string } | undefined;
+let lastPrBody: Record<string, unknown> | undefined;
 
 const base = "https://api.github.com/repos/:owner/:repo";
 
@@ -22,7 +30,12 @@ const server = setupServer(
     calls.push("GET repo");
     return HttpResponse.json({ default_branch: "main" });
   }),
-  http.get(`${base}/git/ref/heads/:branch`, () => {
+  http.get(`${base}/git/ref/heads/:branch`, ({ params }) => {
+    // The head-ref existence probe (updateExisting: false) hits this too; a
+    // 404 means "fresh branch". The base-branch lookup always resolves.
+    if (params.branch === "exists" && !headRefExists) {
+      return HttpResponse.text("not found", { status: 404 });
+    }
     calls.push("GET ref");
     return HttpResponse.json({ object: { sha: "basecommitsha" } });
   }),
@@ -34,8 +47,12 @@ const server = setupServer(
     calls.push("POST blob");
     return HttpResponse.json({ sha: "blobsha" });
   }),
-  http.post(`${base}/git/trees`, () => {
+  http.post(`${base}/git/trees`, async ({ request }) => {
     calls.push("POST tree");
+    lastTreeBody = (await request.json()) as {
+      tree: unknown[];
+      base_tree: string;
+    };
     return HttpResponse.json({ sha: "newtreesha" });
   }),
   http.post(`${base}/git/commits`, () => {
@@ -58,8 +75,7 @@ const server = setupServer(
   }),
   http.post(`${base}/pulls`, async ({ request }) => {
     calls.push("POST pull");
-    const body = (await request.json()) as Record<string, unknown>;
-    expect(body.draft).toBe(true);
+    lastPrBody = (await request.json()) as Record<string, unknown>;
     return HttpResponse.json(
       { number: 7, html_url: "https://github.com/owner/name/pull/7" },
       { status: 201 },
@@ -77,6 +93,9 @@ afterEach(() => {
   calls = [];
   createdRef = false;
   openPrs = [];
+  headRefExists = false;
+  lastTreeBody = undefined;
+  lastPrBody = undefined;
 });
 afterAll(() => server.close());
 
@@ -118,6 +137,7 @@ describe("openDraftPullRequest", () => {
     expect(calls).toContain("POST commit");
     expect(calls).toContain("POST ref");
     expect(calls).toContain("POST pull");
+    expect(lastPrBody?.draft).toBe(true);
   });
 
   it("updates the ref (422 → PATCH) and reuses an open PR (created: false)", async () => {
@@ -142,5 +162,106 @@ describe("openDraftPullRequest", () => {
     expect(calls).not.toContain("POST pull");
     // baseBranch supplied → no default-branch lookup.
     expect(calls).not.toContain("GET repo");
+  });
+});
+
+describe("deletionEntry (pure)", () => {
+  it("builds a sha:null deletion tree entry", () => {
+    expect(deletionEntry("stale.json")).toEqual({
+      path: "stale.json",
+      mode: "100644",
+      type: "blob",
+      sha: null,
+    });
+  });
+});
+
+describe("commitFilesAndOpenPr — writeback contract", () => {
+  it("carries deletions (sha:null) + an executable mode into the tree", async () => {
+    const result = await commitFilesAndOpenPr({
+      token: "t",
+      repo: "owner/name",
+      baseBranch: "main",
+      headBranch: "fd/wb",
+      commitMessage: "writeback",
+      files: [{ path: "scripts/run.sh", content: "#!/bin/sh", mode: "100755" }],
+      deletions: [{ path: "old/gone.txt" }],
+      pr: { title: "wb", body: "body" },
+    });
+    expect(result.created).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(result.commitSha).toBe("newcommitsha");
+
+    const tree = lastTreeBody?.tree as Array<Record<string, unknown>>;
+    const exe = tree.find((e) => e.path === "scripts/run.sh");
+    expect(exe?.mode).toBe("100755");
+    expect(exe?.sha).toBe("blobsha");
+    const del = tree.find((e) => e.path === "old/gone.txt");
+    expect(del?.sha).toBeNull();
+  });
+
+  it("opens a non-draft PR when draft:false", async () => {
+    await commitFilesAndOpenPr({
+      token: "t",
+      repo: "owner/name",
+      baseBranch: "main",
+      headBranch: "fd/wb",
+      commitMessage: "wb",
+      files: [{ path: "a.txt", content: "x" }],
+      pr: { title: "t", body: "b", draft: false },
+    });
+    expect(lastPrBody?.draft).toBe(false);
+  });
+
+  it("pr:false pushes the branch only — no PR opened", async () => {
+    const result = await commitFilesAndOpenPr({
+      token: "t",
+      repo: "owner/name",
+      baseBranch: "main",
+      headBranch: "fd/wb",
+      commitMessage: "wb",
+      files: [{ path: "a.txt", content: "x" }],
+      pr: false,
+    });
+    expect(result.created).toBe(false);
+    expect(result.number).toBeUndefined();
+    expect(result.commitSha).toBe("newcommitsha");
+    expect(calls).not.toContain("POST pull");
+    expect(calls).not.toContain("GET pulls");
+  });
+
+  it("updateExisting:false on an existing branch is a no-op skip", async () => {
+    headRefExists = true;
+    const result = await commitFilesAndOpenPr({
+      token: "t",
+      repo: "owner/name",
+      baseBranch: "main",
+      headBranch: "exists",
+      commitMessage: "wb",
+      files: [{ path: "a.txt", content: "x" }],
+      updateExisting: false,
+      pr: { title: "t", body: "b" },
+    });
+    expect(result.skipped).toBe(true);
+    expect(result.created).toBe(false);
+    expect(calls).not.toContain("POST commit");
+    expect(calls).not.toContain("POST tree");
+  });
+
+  it("updateExisting:false on a fresh branch proceeds to commit", async () => {
+    headRefExists = false; // GET head ref → 404 → fresh
+    const result = await commitFilesAndOpenPr({
+      token: "t",
+      repo: "owner/name",
+      baseBranch: "main",
+      headBranch: "exists",
+      commitMessage: "wb",
+      files: [{ path: "a.txt", content: "x" }],
+      updateExisting: false,
+      pr: { title: "t", body: "b" },
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.created).toBe(true);
+    expect(calls).toContain("POST commit");
   });
 });

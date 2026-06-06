@@ -31,6 +31,7 @@ Live at HEAD:
 - **Trigger modes** — **Action** (HMAC POST from the [bundled JS Action](actions/flare-dispatch-action/README.md)) and **Schedule** (Cloudflare Cron Triggers → Dispatcher `scheduled()` handler). **Webhook** mode (`POST /v1/webhooks/github`) is Planned (V1).
 - **GitHub App** — manifest-creation install flow (`POST /v1/github/app/manifest` + callback) ships the operator's one-click App setup; the webhook receiver itself is Planned (V1).
 - **DSL** — six run-author capabilities (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) and six primitives (`workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`) all wired against Cloudflare Containers / Browser Rendering / R2 / D1 / KV. `step.waitForEvent`, `step.sleepUntil`, `io.priorExecution`, and the `github` read capability are stubbed → Planned.
+- **Writeback** — a run can declare a `writeback` output to *propose a diff as a PR* (fixture refreshes, dependency bumps, generated-doc updates). The credential-free container writes a changed-files manifest; the Worker validates it and commits via the GitHub App's Git Data API. See [`specs/02-runs.md` § Writeback](specs/02-runs.md).
 
 Implementation has skipped around the V0–V4 roadmap deliberately — each run / capability lands when the underlying platform plumbing composes without new infra. See [`specs/pm/plan.md`](specs/pm/plan.md) for the full roadmap and [`specs/02-runs.md`](specs/02-runs.md) for the per-run status.
 

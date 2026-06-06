@@ -9,6 +9,7 @@
 import type { Effect, Schema } from "effect";
 import type { RunContext } from "./context";
 import type { RunError } from "./errors";
+import type { WritebackSpec } from "./writeback";
 
 export type RunLimits = {
   readonly maxDurationSec: number;
@@ -103,6 +104,16 @@ export type RunSpec<I, O, IEnc, OEnc> = {
   readonly limits: RunLimits;
   readonly triggers?: readonly TriggerSpec<I>[];
   readonly schedules?: readonly ScheduleSpec<I>[];
+  /**
+   * Declares that this run can "propose a diff as a PR". When set, the run's
+   * container writes a changed-files manifest + blobs to a conventional
+   * artifact location; after a SUCCESSFUL run the Dispatcher Worker — never the
+   * container — validates the manifest against this spec and commits it via the
+   * GitHub App's Git Data API, then opens/updates a PR. The capability is
+   * declared HERE (trusted, Worker-side); the container only fills in the file
+   * contents within the envelope this spec allows. See `./writeback`.
+   */
+  readonly writeback?: WritebackSpec;
   readonly run: (input: I) => Effect.Effect<O, RunError, RunContext>;
 };
 
@@ -142,6 +153,31 @@ export const defineRun = <I, O, IEnc, OEnc>(
     throw new Error(
       `defineRun: \`limits.maxDurationSec\` must be a positive number, got ${spec.limits.maxDurationSec} for run "${spec.name}"`,
     );
+  }
+  if (spec.writeback !== undefined) {
+    const wb = spec.writeback;
+    const branchName =
+      typeof wb.branch === "string" ? wb.branch : wb.branch.prefix;
+    if (branchName.trim().length === 0) {
+      throw new Error(
+        `defineRun: \`writeback.branch\` must be a non-empty branch name (or { prefix }) for run "${spec.name}"`,
+      );
+    }
+    if (wb.commitMessage.trim().length === 0) {
+      throw new Error(
+        `defineRun: \`writeback.commitMessage\` must be non-empty for run "${spec.name}"`,
+      );
+    }
+    if (wb.maxBytes !== undefined && wb.maxBytes <= 0) {
+      throw new Error(
+        `defineRun: \`writeback.maxBytes\` must be positive, got ${wb.maxBytes} for run "${spec.name}"`,
+      );
+    }
+    if (wb.maxFiles !== undefined && wb.maxFiles <= 0) {
+      throw new Error(
+        `defineRun: \`writeback.maxFiles\` must be positive, got ${wb.maxFiles} for run "${spec.name}"`,
+      );
+    }
   }
   return { ...spec, _tag: "Run" } as Run<I, O>;
 };

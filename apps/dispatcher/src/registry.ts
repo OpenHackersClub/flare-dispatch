@@ -21,6 +21,7 @@ import {
   playwrightE2E,
   prReview,
   productDemo,
+  refreshFixtures,
   specDriftPr,
 } from "@flare-dispatch/runs";
 
@@ -37,6 +38,7 @@ export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [multiAgentReview.name]: multiAgentReview as Run<unknown, unknown>,
   [specDriftPr.name]: specDriftPr as Run<unknown, unknown>,
   [ciTriagePr.name]: ciTriagePr as Run<unknown, unknown>,
+  [refreshFixtures.name]: refreshFixtures as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */
