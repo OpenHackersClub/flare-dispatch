@@ -37,6 +37,7 @@
 import {
   createCheckRun,
   getInstallationToken,
+  progressCheckRun,
   updateCheckRun,
 } from "@flare-dispatch/github-app";
 import { Effect, Layer } from "effect";
@@ -71,6 +72,10 @@ const makeNoopChecks = (reason: string): ChecksService => ({
         `checks.create skipped (${reason}) — check-run "${name}" not posted`,
       ),
       NOOP_CHECK_RUN_ID,
+    ),
+  progress: () =>
+    Effect.logInfo(
+      `checks.progress skipped (${reason}) — in-progress output not posted`,
     ),
   update: ({ conclusion }) =>
     Effect.logInfo(
@@ -125,6 +130,33 @@ export const makeChecksGithubLive = (
             }),
           catch: (cause) =>
             new Error("ChecksGithubLive: check-run create failed", { cause }),
+        });
+      }).pipe(Effect.orDie),
+
+    progress: ({ repo, checkRunId, output, detailsUrl }) =>
+      Effect.gen(function* () {
+        // Same sentinel handling as `update`: a degraded create has no real
+        // check-run to PATCH.
+        if (checkRunId === NOOP_CHECK_RUN_ID) {
+          yield* Effect.logInfo(
+            "checks.progress skipped — create returned the no-op sentinel id",
+          );
+          return;
+        }
+        const accessToken = yield* token();
+        yield* Effect.tryPromise({
+          try: () =>
+            progressCheckRun({
+              token: accessToken,
+              repo,
+              checkRunId,
+              output,
+              detailsUrl,
+            }),
+          catch: (cause) =>
+            new Error("ChecksGithubLive: check-run progress update failed", {
+              cause,
+            }),
         });
       }).pipe(Effect.orDie),
 

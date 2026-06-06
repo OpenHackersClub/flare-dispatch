@@ -92,6 +92,7 @@ export {
   makeChecksFake,
   type ChecksFakeState,
   type CheckCreateCall,
+  type CheckProgressCall,
   type CheckUpdateCall,
 } from "./fakes/checks-fake";
 export {

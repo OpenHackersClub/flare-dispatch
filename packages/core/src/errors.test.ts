@@ -7,6 +7,7 @@ import { Match } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   AcceptanceFailed,
+  AdmissionTimedOut,
   ApprovalTimedOut,
   ArtifactUploadFailed,
   BrowserUnavailable,
@@ -46,6 +47,7 @@ const summarize = (e: RunError): string =>
       AcceptanceFailed: ({ exitCode }) => `acceptance exited ${exitCode}`,
       ContainerLaunchFailed: ({ image }) => `launch ${image}`,
       ContainerBusy: ({ containerId }) => `container busy ${containerId}`,
+      AdmissionTimedOut: ({ position }) => `admission ${position} ahead`,
       PortNeverOpened: ({ port }) => `port ${port} never opened`,
       ExposePortFailed: ({ port }) => `expose port ${port} failed`,
       BrowserUnavailable: ({ reason }) => `browser ${reason}`,
@@ -100,6 +102,15 @@ const samples: ReadonlyArray<{ name: string; err: RunError; expect: string }> =
         waitedMs: 600_000,
       }),
       expect: "container busy demo-acme-repo-abc123",
+    },
+    {
+      name: "AdmissionTimedOut",
+      err: new AdmissionTimedOut({
+        queuedForMs: 1_200_000,
+        position: 3,
+        poolBusy: 16,
+      }),
+      expect: "admission 3 ahead",
     },
     {
       name: "PortNeverOpened",
@@ -240,6 +251,17 @@ describe("cause-carrying messages (#88)", () => {
   it("ArtifactUploadFailed.message stringifies non-Error causes", () => {
     const err = new ArtifactUploadFailed({ name: "log", cause: "boom" });
     expect(err.message).toBe(`artifact "log" upload failed: boom`);
+  });
+
+  it("AdmissionTimedOut.message reads as an infra-wait timeout, not a test failure", () => {
+    const err = new AdmissionTimedOut({
+      queuedForMs: 1_200_000,
+      position: 3,
+      poolBusy: 16,
+    });
+    expect(err.message).toBe(
+      "timed out waiting for a sandbox slot after 20 min (3 run(s) ahead, 16 slot(s) busy) — the run never started",
+    );
   });
 
   it("CacheError.message carries phase, key, and cause", () => {

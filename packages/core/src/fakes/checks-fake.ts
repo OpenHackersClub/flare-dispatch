@@ -23,6 +23,13 @@ export type CheckCreateCall = {
   readonly detailsUrl?: string;
 };
 
+export type CheckProgressCall = {
+  readonly checkRunId: string;
+  readonly repo: string;
+  readonly output: CheckOutput;
+  readonly detailsUrl?: string;
+};
+
 export type CheckUpdateCall = {
   readonly checkRunId: string;
   readonly repo: string;
@@ -34,6 +41,7 @@ export type CheckUpdateCall = {
 /** Inspectable record of every check-run call. */
 export type ChecksFakeState = {
   readonly creates: CheckCreateCall[];
+  readonly progresses: CheckProgressCall[];
   readonly updates: CheckUpdateCall[];
 };
 
@@ -42,7 +50,7 @@ export const makeChecksFake = (): {
   layer: Layer.Layer<Checks>;
   state: ChecksFakeState;
 } => {
-  const state: ChecksFakeState = { creates: [], updates: [] };
+  const state: ChecksFakeState = { creates: [], progresses: [], updates: [] };
   let checkRunSeq = 0;
 
   const service: ChecksService = {
@@ -52,6 +60,11 @@ export const makeChecksFake = (): {
         const checkRunId = `fake-check-${checkRunSeq}`;
         state.creates.push({ checkRunId, repo, sha, name, output, detailsUrl });
         return checkRunId;
+      }),
+
+    progress: ({ repo, checkRunId, output, detailsUrl }) =>
+      Effect.sync(() => {
+        state.progresses.push({ checkRunId, repo, output, detailsUrl });
       }),
 
     update: ({ repo, checkRunId, conclusion, output, detailsUrl }) =>

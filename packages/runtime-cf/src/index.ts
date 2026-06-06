@@ -45,6 +45,16 @@ export {
   type ContainerLeaseStore,
   type LeaseHandle,
 } from "./container-lease-d1";
+export {
+  makeRunAdmissionD1,
+  resolveAdmissionCap,
+  ADMISSION_CAP_DEFAULT,
+  ADMISSION_POLL_EVERY_MS,
+  ADMISSION_MAX_QUEUE_AGE_MS,
+  ADMISSION_TTL_MS,
+  ADMISSION_WAITER_TTL_MS,
+  type RunAdmissionStore,
+} from "./run-admission-d1";
 export { makeStepRunnerCloudflare } from "./step-runner-cf";
 export {
   makeChecksGithubLive,

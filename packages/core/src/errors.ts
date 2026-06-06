@@ -84,6 +84,37 @@ export class ContainerBusy extends Schema.TaggedError<ContainerBusy>()(
   },
 ) {}
 
+/**
+ * A run timed out waiting for a global admission slot — the container pool
+ * stayed saturated for the whole dispatch-age ceiling (issue #109).
+ *
+ * Every run passes a per-pool admission semaphore (cap = the pool's
+ * `max_instances`) before its body starts; this fires when the queue never
+ * drained in time. The run **never started** — no container booted, no test
+ * ran — so the failure is capacity back-pressure, not a test failure, and the
+ * check-run summary must say so (see the dispatcher's `failure-summary.ts`).
+ */
+export class AdmissionTimedOut extends Schema.TaggedError<AdmissionTimedOut>()(
+  "AdmissionTimedOut",
+  {
+    /** Total time queued before giving up, ms. */
+    queuedForMs: Schema.Number,
+    /** Live queued runs still ahead when the wait gave up. */
+    position: Schema.Number,
+    /** Admission slots in use in the run's pool when the wait gave up. */
+    poolBusy: Schema.Number,
+  },
+) {
+  // The Workflows attempt record persists only error.name + error.message
+  // (#88) — make the message read as an infra-wait timeout on its own.
+  override get message(): string {
+    return (
+      `timed out waiting for a sandbox slot after ${Math.round(this.queuedForMs / 60_000)} min ` +
+      `(${this.position} run(s) ahead, ${this.poolBusy} slot(s) busy) — the run never started`
+    );
+  }
+}
+
 export class PortNeverOpened extends Schema.TaggedError<PortNeverOpened>()(
   "PortNeverOpened",
   {
@@ -261,6 +292,7 @@ export type RunError =
   | AcceptanceFailed
   | ContainerLaunchFailed
   | ContainerBusy
+  | AdmissionTimedOut
   | PortNeverOpened
   | ExposePortFailed
   | BrowserUnavailable

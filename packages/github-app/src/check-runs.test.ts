@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createCheckRun,
   GithubApiError,
+  progressCheckRun,
   updateCheckRun,
 } from "./index";
 
@@ -113,6 +114,44 @@ describe("createCheckRun", () => {
         repo: "owner/name",
         sha: "abc123",
         name: "flare-dispatch/offload-test",
+      }),
+    ).rejects.toBeInstanceOf(GithubApiError);
+  });
+});
+
+describe("progressCheckRun", () => {
+  it("PATCHes /check-runs/{id} with status:in_progress and NO conclusion", async () => {
+    await progressCheckRun({
+      token: "ghs_test",
+      repo: "owner/name",
+      checkRunId: "555001",
+      output: {
+        title: "flare-dispatch/offload-test",
+        summary: "Queued — waiting for a sandbox slot behind 3 runs (16/16 in use); times out 12:34 UTC",
+      },
+    });
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0]!.id).toBe("555001");
+    expect(patches[0]!.authorization).toBe("Bearer ghs_test");
+    expect(patches[0]!.body).toMatchObject({ status: "in_progress" });
+    expect(patches[0]!.body).not.toHaveProperty("conclusion");
+    expect(patches[0]!.body).not.toHaveProperty("completed_at");
+  });
+
+  it("surfaces a GithubApiError on a non-2xx response", async () => {
+    server.use(
+      http.patch(
+        "https://api.github.com/repos/:owner/:repo/check-runs/:id",
+        () => HttpResponse.json({ message: "Gone" }, { status: 410 }),
+      ),
+    );
+    await expect(
+      progressCheckRun({
+        token: "ghs_test",
+        repo: "owner/name",
+        checkRunId: "555001",
+        output: { title: "t", summary: "s" },
       }),
     ).rejects.toBeInstanceOf(GithubApiError);
   });

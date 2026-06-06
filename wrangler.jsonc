@@ -31,7 +31,16 @@
   //     check-run renders exactly as before with no link. Uncomment + fill, or
   //     override per-deploy with `CLOUDFLARE_ACCOUNT_ID=... wrangler deploy`.
   "vars": {
-    "CLOUDFLARE_ACCOUNT_ID": "c91d52c288c452ab734ede1518b00e11"
+    "CLOUDFLARE_ACCOUNT_ID": "c91d52c288c452ab734ede1518b00e11",
+    // ADMISSION_CAP — admission-semaphore slots per container pool (issue
+    //   #109): at most this many runs are in flight per pool; the rest queue
+    //   FIFO in D1 (run_admissions). One var covers BOTH pools (lean +
+    //   browser, each 16 instances today). Keep it ≤ each container's
+    //   `max_instances` below — a cap above the pool just readmits the
+    //   launch-failure burst the gate exists to prevent. Operators may set it
+    //   slightly BELOW max_instances (e.g. "14") for slot-turnover headroom.
+    //   Unset → code defaults to 16.
+    "ADMISSION_CAP": "16"
     // EMAIL_FROM — verified Email Routing sender for completion-notify email
     //   (the `notify.emails` dispatch field). Must be an address on the zone the
     //   `send_email` binding below is attached to. Uncomment + set once Email
@@ -82,6 +91,7 @@
       "class_name": "RunSandbox",
       "image": "./infra/Dockerfile.sandbox",
       "instance_type": "standard-2",
+      // Keep ADMISSION_CAP (vars above) ≤ max_instances (#109).
       "max_instances": 16
     },
     {
@@ -89,6 +99,7 @@
       "image": "./infra/Dockerfile.sandbox",
       "image_vars": { "WITH_BROWSER": "true" },
       "instance_type": "standard-2",
+      // Keep ADMISSION_CAP (vars above) ≤ max_instances (#109).
       "max_instances": 16
     }
   ],
