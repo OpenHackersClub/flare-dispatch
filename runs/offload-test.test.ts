@@ -15,6 +15,9 @@
 //                      injected into the exec env (per-dispatch `env` wins on
 //                      a key collision); a named-but-unset key fails the run
 //                      with `SecretsMissing` before the exec
+//   (e) install     — `install: true` runs the R2-cached dependency install
+//                      inside the checkout step; the `image` override reaches
+//                      the container acquire
 //
 // Plus a determinism guard: the run body must not call `Date.now()` /
 // `crypto.randomUUID()` directly — non-determinism flows only through `io`,
@@ -37,6 +40,7 @@ const baseInput = {
   sha: "abc123",
   command: "pnpm test",
   secrets: [] as readonly string[],
+  install: false,
 } as const;
 
 describe("offload-test", () => {
@@ -137,6 +141,41 @@ describe("offload-test", () => {
       return Effect.gen(function* () {
         const result = yield* offloadTest.run(baseInput);
         expect(result.durationMs).toBe(4242);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "install — runs the cached dependency install in the checkout, image override reaches acquire",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0 } },
+      });
+      const input = { ...baseInput, install: true, image: "custom/image:1" };
+
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(input);
+        expect(result.exitCode).toBe(0);
+
+        // The container acquire honours the `image` override (previously the
+        // input was declared but never threaded).
+        expect(handles.sandbox.acquired[0]).toEqual({ image: "custom/image:1" });
+
+        // `installCached` detected pnpm from the lockfile probe and — the test
+        // Cache fake always misses — ran the real install before the command.
+        const commands = handles.sandbox.execs.map((e) => e.command);
+        expect(commands).toContain("pnpm install --frozen-lockfile");
+        expect(commands.indexOf("pnpm install --frozen-lockfile")).toBeLessThan(
+          commands.indexOf("pnpm test"),
+        );
+
+        // Still exactly the three run steps — the install lives inside
+        // `checkout`, not a fourth step.
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "exec",
+          "upload-log",
+        ]);
       }).pipe(Effect.provide(layer));
     },
   );

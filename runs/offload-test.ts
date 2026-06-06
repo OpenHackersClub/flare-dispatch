@@ -48,7 +48,7 @@
 
 import { Effect, Schema } from "effect";
 import { artifact, defineRun, sandbox, step } from "@flare-dispatch/core";
-import { loadSecrets } from "@flare-dispatch/core/primitives";
+import { loadSecrets, workspace } from "@flare-dispatch/core/primitives";
 
 /** Input contract — specs/02-runs.md § 1. */
 const OffloadTestInput = Schema.Struct({
@@ -56,6 +56,12 @@ const OffloadTestInput = Schema.Struct({
   sha: Schema.String,
   command: Schema.String, // e.g. "pnpm test"
   image: Schema.optional(Schema.String), // override container image
+  /**
+   * Run the R2-cached dependency install (`installCached`: lockfile-detected
+   * tool, content-addressed restore) after the clone, so the command doesn't
+   * have to open with its own cold `pnpm install` / `npm ci` / `cargo fetch`.
+   */
+  install: Schema.optionalWith(Schema.Boolean, { default: () => false }),
   /** Non-sensitive env only — dispatch inputs are persisted (header note 3). */
   env: Schema.optional(
     Schema.Record({ key: Schema.String, value: Schema.String }),
@@ -98,9 +104,16 @@ export const offloadTest = defineRun({
 
   run: (input) =>
     Effect.gen(function* () {
-      // checkout — clone the repo at the requested SHA into a fresh container.
-      const repoDir = yield* step("checkout", () =>
-        sandbox.git.clone({ repo: input.repo, sha: input.sha }),
+      // checkout — acquire a container (honouring the `image` override), clone
+      // the repo at the requested SHA, and optionally run the R2-cached
+      // dependency install. One primitive, same opening move as cdp-acceptance.
+      const { container, dir } = yield* step("checkout", () =>
+        workspace({
+          repo: input.repo,
+          sha: input.sha,
+          image: input.image,
+          install: input.install,
+        }),
       );
 
       // load-secrets — resolve the named credentials from the config store
@@ -120,7 +133,8 @@ export const offloadTest = defineRun({
       // why the run's `durationMs` is read from it (see header note 2).
       const result = yield* step("exec", () =>
         sandbox.exec({
-          cwd: repoDir,
+          cwd: dir,
+          container,
           command: input.command,
           // Per-dispatch `env` wins over a same-named config-store secret —
           // the more specific source overrides the global one.
@@ -130,6 +144,9 @@ export const offloadTest = defineRun({
       );
 
       // upload-log — push the captured stdout/stderr to R2, get a signed URL.
+      // No `container` here: `result.logPath` is the R2 object key the live
+      // sandbox exec streamed the log to (artifact-r2.ts "R2-source-key mode"),
+      // not a container filesystem path.
       const logUri = yield* step("upload-log", () =>
         artifact.upload({
           name: "step.log",

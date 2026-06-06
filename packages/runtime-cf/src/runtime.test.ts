@@ -123,6 +123,7 @@ const INPUT = {
   sha: "abc123",
   command: "pnpm test",
   secrets: [] as readonly string[],
+  install: false,
 };
 
 /**
