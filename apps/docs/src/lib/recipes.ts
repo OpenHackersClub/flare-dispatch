@@ -29,8 +29,9 @@ export type Recipe = {
    *
    * Optional: a recipe without a `baseline` skips the comparison widget
    * entirely (the page renders the typed run as the single Source section).
-   * The six original recipes all ship a baseline; the Schedule-mode recipes
-   * added in PR #13 do not yet — they're a follow-up.
+   * Most Action- and Webhook-mode recipes ship a baseline; the Schedule-mode
+   * recipes intentionally do not — a wall-clock cron has no GHA-native event
+   * to compare against, so there is no faithful baseline workflow to show.
    */
   baseline?: RecipeFile;
   /**
@@ -79,6 +80,19 @@ export const recipes: Recipe[] = [
       flare: "2 typed runs + dispatch",
       gha: "1 workflow · 5 jobs + matrix + REST glue",
     },
+    hasReadme: true,
+  },
+  {
+    slug: "multi-agent-review",
+    label: "Multi-agent review",
+    useCase: "Bedrock-pinned multi-agent PR review for QA and model bake-offs",
+    mode: "Action",
+    blurb:
+      "PR review on AWS Bedrock routed through Cloudflare AI Gateway — AWS credentials are minted per-execution via OIDC->STS->SigV4, so no long-lived AWS key lives in GHA or the Worker. Model + region are per-dispatch overrides (not CONFIG_KV) for model bake-offs, the system prompt is operator-overridable via the `multi-agent-review.prompt` CONFIG_KV key, and the review posts back as a `flare-dispatch` PR review comment when a `pr` + `installationId` are present.",
+    files: [
+      { name: "multi-agent-review.run.ts", lang: "ts" },
+      { name: "ci.yml", lang: "yaml" },
+    ],
     hasReadme: true,
   },
   {

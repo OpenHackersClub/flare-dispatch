@@ -1,5 +1,6 @@
 ---
 import "../styles/global.css";
+import { site } from "../lib/site";
 
 interface Props {
   title: string;
@@ -8,6 +9,43 @@ interface Props {
 
 const { title, description = "BYOC (Cloudflare) CI/CD that offloads the expensive half of CI from GitHub Actions onto Cloudflare Workflows, Containers, and Browser Rendering. Typed Effect-TS runs." } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site).toString();
+
+// og:image — absolute URL of an existing asset. A dedicated 1200x630 OG image
+// is a follow-up; /logo-1024.png is the safest existing file today.
+const ogImage = new URL("/logo-1024.png", Astro.site).toString();
+const origin = new URL(Astro.site ?? "/").toString();
+
+// schema.org JSON-LD — built in frontmatter, JSON.stringify'd into the script.
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: site.name,
+      url: origin,
+      description: site.blurb,
+      applicationCategory: "DeveloperApplication",
+      operatingSystem: "Cloudflare Workers",
+      isAccessibleForFree: true,
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      codeRepository: site.repo,
+      sameAs: [site.repo],
+    },
+    {
+      "@type": "Organization",
+      name: "OpenHackersClub",
+      url: "https://github.com/OpenHackersClub",
+      logo: ogImage,
+      sameAs: [site.repo, "https://github.com/OpenHackersClub"],
+    },
+    {
+      "@type": "WebSite",
+      name: site.name,
+      url: origin,
+      description: site.tagline,
+    },
+  ],
+};
 ---
 
 <meta charset="UTF-8" />
@@ -27,7 +65,16 @@ const canonical = new URL(Astro.url.pathname, Astro.site).toString();
 <meta property="og:description" content={description} />
 <meta property="og:type" content="website" />
 <meta property="og:url" content={canonical} />
+<meta property="og:site_name" content="FlareDispatch" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:image" content={ogImage} />
+<meta property="og:image:alt" content="FlareDispatch logo" />
 <meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={ogImage} />
+
+<script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />
 
 <script is:inline>
   // Set theme as early as possible to avoid flash. Prefers stored value, then system.

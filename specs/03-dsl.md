@@ -1,6 +1,6 @@
 # 03 — DSL
 
-Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and the run-author capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github`, `cloudflare`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes. `github` ships a narrow partially-live surface (see [§ `github`](#github)); `cloudflare` is a read-only window into the account's Pages deployments (see [§ `cloudflare`](#cloudflare)); the dispatcher's check-run callback rides on a runtime-only `checks` service that run bodies never see directly.
+Runs are Effect-TS programs. The DSL is a small surface — `defineRun`, `step`, and the run-author capability namespaces (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`, `github`, `cloudflare`, `oidc`, `modelGateway`, `email`, `childRuns`) — wired together by Effect Layers so the same run code executes against the live CF stack, against `wrangler dev` locally, and against in-memory test fakes. `github` ships a narrow partially-live surface (see [§ `github`](#github)); `cloudflare` is a read-only window into the account's Pages deployments (see [§ `cloudflare`](#cloudflare)); the dispatcher's check-run callback rides on a runtime-only `checks` service that run bodies never see directly.
 
 ## The layering: capabilities, primitives, recipes
 
@@ -12,7 +12,7 @@ flowchart TB
     EFF[Schema · Layer · tagged errors · Schedule]
   end
   subgraph L1[Capabilities — @flare-dispatch/core]
-    CAP["sandbox · browser · cache · artifact<br/>io · config · github · cloudflare"]
+    CAP["sandbox · browser · cache · artifact · io · config<br/>github · cloudflare · oidc · modelGateway · email · childRuns"]
   end
   subgraph L2[Primitives — @flare-dispatch/core/primitives]
     PRIM["workspace · installCached · loadSecrets<br/>sharded · bootApp · probeHttp"]
@@ -30,7 +30,7 @@ flowchart TB
 - **Primitives** are reusable Effect-TS compositions the DSL ships *on top of* capabilities — `workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`. Every recipe was re-deriving the same checkout → install → fan-out → upload shapes by hand; a primitive is that shape, named once, typed once, tested once. **This is the DX layer**: the DSL "creates primitives" so a recipe author rides them instead of rebuilding them. Primitives are still just Effects — composable, layer-swappable, unit-testable — see [§ Primitives](#primitives).
 - **Recipes** are `defineRun` programs that ride on primitives and carry only the logic unique to *that* CI use case. A recipe drops to raw capabilities only for the part no primitive covers — the escape hatch is always open, but the common path is a primitive call.
 
-The rest of this spec walks the tiers bottom-up: `defineRun` / `step` (the run frame), the seven capability namespaces, then the primitives built from them. The worked recipes that ride on this stack are in [recipes/](../recipes/). How each tier is shipped — `@flare-dispatch/core` as a pinned library, recipes as copy-paste — and what that split means for the supply chain is [§ Distribution and supply chain](#distribution-and-supply-chain).
+The rest of this spec walks the tiers bottom-up: `defineRun` / `step` (the run frame), the capability namespaces, then the primitives built from them. The worked recipes that ride on this stack are in [recipes/](../recipes/). How each tier is shipped — `@flare-dispatch/core` as a pinned library, recipes as copy-paste — and what that split means for the supply chain is [§ Distribution and supply chain](#distribution-and-supply-chain).
 
 > **Terminology.** "Primitive" in this spec always means a DSL primitive (this layering). The Cloudflare building blocks a run consumes — Workers, Workflows, Containers, R2, D1 — are called **platform primitives** to keep the two apart; [02-runs](02-runs.md) tags each run with the platform primitives it touches.
 
@@ -221,7 +221,7 @@ Run authors don't call `runEffect` directly — `step(name, body)` does it under
 
 ### Human-in-the-loop with `step.waitForEvent`
 
-> **Status: Planned (V2/V3).** Currently stubbed in [`packages/core/src/step.ts`](../packages/core/src/step.ts) (`Effect.die("step.waitForEvent: not implemented in V0")`). Lands with the first run that needs it, alongside the Dispatcher's `/v1/admin/events/:wf_id` signalling route and the CF Access wiring.
+> **Status: live at HEAD.** `step.waitForEvent` is wired in [`packages/core/src/step.ts`](../packages/core/src/step.ts) — it delegates to the ambient `StepRunner.waitForEvent` (the inline runner reads from a test-supplied event queue; `StepRunnerCloudflare` wraps the CF `WorkflowStep.waitForEvent` API). The signalling route is shipped too — the Dispatcher's [`/v1/admin/events/:wf_id`](../apps/dispatcher/src/routes/admin-events.ts) handler forwards `{type, payload}` to the named Workflow via `env.RUNS_WORKFLOW.get(wfId).sendEvent(...)`. The route is opt-in: a deploy without `ADMIN_TOKEN` returns `503` on it. Receiver-level approval dedup on `(wf_id, decider_email)` is not yet implemented — it lands with the first shipped run that uses `waitForEvent`.
 
 Some runs pause for a human signal: release approval, manual gate before promoting to prod, "click here to ack the diff before applying the migration." CF Workflows supports this natively via [`step.waitForEvent`](https://developers.cloudflare.com/workflows/build/events-and-parameters/) — the Workflow **hibernates** until an external POST to `env.RUNS_WORKFLOW.get(wfId).sendEvent({ type, payload })` arrives, or until a timeout fires.
 
@@ -490,7 +490,7 @@ namespace io {
 
 `io.priorExecution` reads D1 execution metadata for the most recent **terminal** execution whose Workflow `instanceId` starts with `family:` — excluding the current one. The `family` is the semantic dedup key (see [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-all-modes)) minus its head-SHA component: `pr-review:{repo}:{pr}` rather than `pr-review:{repo}:{pr}:{head_sha}`. A run uses it to make its current decision relative to its last one — incremental review, "did this regress since the previous push," resolving stale findings. The prior `output` is decoded against `outputSchema`; a decode mismatch (the prior execution ran an older run version with a different output shape) yields `Option.none()` rather than failing.
 
-> **Status: Planned.** Stubbed in [`packages/runtime-cf/src/io-live.ts`](../packages/runtime-cf/src/io-live.ts) — the live implementation returns `Option.none()` unconditionally. Lands with the first recipe whose body branches on prior outcome (`pr-review` incremental mode is the canonical caller).
+> **Status: live at HEAD.** Implemented in [`packages/runtime-cf/src/io-live.ts`](../packages/runtime-cf/src/io-live.ts) — a real D1 query (`SELECT … FROM executions WHERE id LIKE 'family:%' AND id != <current> AND status IN ('success','failure') ORDER BY completed_at DESC LIMIT 1`), with the current execution excluded. It returns `Option.none()` only when the D1 binding is absent (a stand-alone `IOLive` for tests / local dev), the prior `summary_json` is NULL / unparseable, the decode against `outputSchema` mismatches (an older run version's output shape), or a D1 read faults mid-lookup — all "best-effort tuning, never a hard run failure." `pr-review` incremental mode is the canonical caller.
 
 ### `config`
 
@@ -658,6 +658,83 @@ The pattern is the IAM-recommended *workload identity federation*: a stable issu
 
 `OidcSigningFailed` ([§ Errors](#errors)) wraps a key-load failure or a `SubtleCrypto.sign` reject — it is a deploy-time misconfiguration error, never transient, so runs that catch it should fail loudly rather than retry. `StsAssumeRoleFailed` (from the primitive) is the IdP-side failure — a `400` from a mistrusted issuer, a `403` from a misconfigured role — and similarly non-retryable.
 
+### `modelGateway`
+
+> **Status: live at HEAD.** [`packages/core/src/services/model-gateway.ts`](../packages/core/src/services/model-gateway.ts) (shapes), [`packages/runtime-cf/src/model-gateway-cf.ts`](../packages/runtime-cf/src/model-gateway-cf.ts) (live Layer).
+
+A provider-agnostic "ask a model one turn" capability — `complete` sends a system + user message (optionally with a tool the model may call) and returns the model's tool calls and/or free text. It is deliberately *not* "Workers AI" or "`/chat/completions`": those are **backends**. The `model` id carries a backend prefix the gateway dispatches on, so an operator switches backend from `CONFIG_KV` **without a `wrangler deploy`** (see [§ `config`](#config)): `@cf/...` → Workers AI catalog (binding-as-auth, no key travels with the request); `anthropic/<model>` → Anthropic Messages API via AI Gateway (BYOK); `bedrock/<model>` → AWS Bedrock `InvokeModel` via AI Gateway (the per-execution `aws` STS creds from [`awsAssumeRole`](#awsassumerole) SigV4-sign the call — no deploy-time AWS key).
+
+```ts
+namespace modelGateway {
+  declare const complete: (req: {
+    model: string;                             // backend-prefixed model id (see above)
+    system: string;
+    user: string;
+    tools?: readonly ModelTool[];              // present → forced tool choice where supported
+    maxTokens?: number;
+    temperature?: number;
+    aws?: {                                    // bedrock/* only — per-execution STS creds
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken: string;
+      region: string;
+    };
+  }) => Effect.Effect<ModelCompletionResult, ModelGatewayError, RunContext>;
+}
+```
+
+`ModelCompletionResult` carries `toolCalls` (empty when the model answered with text), `text` (empty when it answered with a tool call), and optional `inputTokens` / `outputTokens` usage telemetry (Bedrock / Anthropic populate them; the Workers AI catalog leaves them undefined — log them when present, never gate on them). A model that simply *declined to call a tool* is **not** a failure — it surfaces as an empty `toolCalls` in a successful result. `ModelGatewayError` (defined alongside the service in [`model-gateway.ts`](../packages/core/src/services/model-gateway.ts), not in the central `RunError` union) is the backend-side failure (`auth-failed` / `rate-limited` / `bad-response` / `timeout` / `unknown`), provider-agnostic so the calling engine maps it to its own error. The capability is the seam the agentic `pr-review` / `multi-agent-review` runs call (see [recipes/ai-code-review](../recipes/ai-code-review/)); a fake ([`@flare-dispatch/core/testing`](../packages/core/src/testing.ts)'s `makeModelGatewayFake`) returns canned outputs so a model-calling run is unit-testable without the network.
+
+### `email`
+
+> **Status: live at HEAD, opt-in.** [`packages/core/src/services/email.ts`](../packages/core/src/services/email.ts) (shapes), [`packages/runtime-cf/src/email-cf.ts`](../packages/runtime-cf/src/email-cf.ts) (`makeEmailCloudflareLive`, backed by Cloudflare Email Routing's `send_email` binding).
+
+A **reporting** capability, in the same family as `checks`: a run's success or failure must never hinge on whether a notification went out. So `send` is **total** — it has no error channel. Per-recipient delivery outcomes are returned as *data*; a deploy with no email backend degrades to `skipped: true` (a logged no-op) rather than failing the run.
+
+```ts
+namespace email {
+  declare const send: (req: {
+    to: readonly string[];                     // Email Routing destinations (see below)
+    subject: string;
+    html: string;                              // primary rendering
+    text?: string;                             // plain-text alternative
+  }) => Effect.Effect<EmailSendResult, never, RunContext>;
+}
+```
+
+`EmailSendResult` partitions the requested recipients into `accepted` + `rejected` (a partial failure rejects only the offending addresses, never the whole batch), carries the provider `messageId` of the first accepted send when available, and sets `skipped: true` when no backend is configured. The capability is **opt-in**: it is a logged no-op until `send_email` is configured, and the Cloudflare backend requires each recipient to be a **verified Email Routing destination address** (the provider rejects others) plus an `EMAIL_ALLOWED_RECIPIENTS` allowlist. The interface is provider-agnostic — a Resend / MailChannels / SES Layer can back the same Tag with no run-level change. The run-authored failure-summary emails on red checks ([04-gha-integration § Notifications](04-gha-integration.md)) ride this surface.
+
+### `childRuns`
+
+> **Status: live at HEAD.** [`packages/core/src/services/child-runs.ts`](../packages/core/src/services/child-runs.ts) (shapes + the `spawnChildRun` accessor), [`packages/runtime-cf/src/child-runs-cf.ts`](../packages/runtime-cf/src/child-runs-cf.ts) (live Layer). The `waitForChildren` join is a [primitive](#waitforchildren) built on it.
+
+The child-Workflow fan-out lever — "enumerate, then fan out" ([01-architecture § Scheduling](01-architecture.md)). `spawnChildRun` instantiates an **independent** `RunWorkflow` instance — a child execution in its own durable Workflow, with its own step budget, its own container, and (for browser runs) its own Browser Rendering session. This is distinct from the [`sharded`](#sharded) primitive, which fans out *inside one instance* and shares the parent's CPU/step budget: use `sharded` for a handful of shards on one container; use `childRuns` (via the [`fanOut`](#fanout) primitive) when shard count, per-shard duration, or per-shard browser sessions would strain a single instance. `matrix-fanout` is the worked example.
+
+```ts
+type ChildRunHandle = {
+  executionId: string;                         // == instanceId; build a details URL from it
+  instanceId: string;                          // == executionId; the dedup key
+  created: boolean;                             // false when an instance with this id already existed
+};
+
+namespace childRuns {
+  // Spawn a child RunWorkflow instance.
+  declare const spawn: (opts: {
+    run: string;                               // child run name — registered on the same deploy
+    input: unknown;                            // validated against the CHILD's inputs Schema (a mismatch fails the child)
+    instanceId?: string;                       // omitted → deterministic id from parent exec + run + input hash (replay-safe)
+  }) => Effect.Effect<ChildRunHandle, ChildSpawnFailed, RunContext>;
+
+  // Read each child's lifecycle status (running | success | failure | cancelled |
+  // missing) + its summary_json when terminal. Total — a transient D1 read fault
+  // degrades to a non-terminal status; waitForChildren's timeout is the backstop.
+  declare const poll: (opts: { ids: readonly string[] }) =>
+    Effect.Effect<readonly ChildStatusRecord[], never, RunContext>;
+}
+```
+
+A run author imports the `spawnChildRun` accessor (`spawnChildRun({ run, input })`), never the Tag — it's the call the `playwright-e2e` and staggered-sweep sketches above already use. Spawns are idempotent on replay: an omitted `instanceId` is derived deterministically from the parent execution id + run name + a hash of the input, so a parent Workflow replay recreates the **same** id — and CF Workflows treats a duplicate `create({id})` as a no-op (`created: false`), exactly the idempotency a fan-out parent wants. `ChildSpawnFailed` ([§ Errors](#errors)) is the spawn-side failure. The join half — block until every spawned child settles, then roll up their decoded outputs — is [`waitForChildren`](#waitforchildren).
+
 ## Primitives
 
 Capabilities are atomic. Recipes are not — every recipe needs to *check out a repo*, most need to *fan out across shards*, several need to *boot the app under test* or *install dependencies with a cache*. Left to raw capabilities, every recipe re-derives the same five-line `acquire → clone → install` dance, the same `Effect.forEach(Array.from({ length: n }, …), …, { concurrency })` fan-out, the same curl-and-classify probe loop.
@@ -747,6 +824,36 @@ declare const sharded: <A, E>(opts: {
 ```
 
 Fan-out across a *list* of heterogeneous items (scanners, review agents) stays plain `Effect.forEach` — `sharded` is specifically the count-and-index case. The DSL does not wrap what Effect already expresses cleanly.
+
+### `fanOut`
+
+The *cross-instance* counterpart of `sharded`, built on the [`childRuns`](#childruns) capability: spawn one **independent** child `RunWorkflow` per item in a list — each its own durable Workflow with its own step budget, container, and Browser Rendering session — so the parallelism ceiling is the *account*-level limit, not the parent instance's per-instance step quota or per-exec container-kill window. Call it inside a `step("fanout", () => fanOut(...))` so the spawn set is one checkpoint; the deterministic child instance ids make the underlying `create` idempotent on replay regardless. It is intentionally **fire-and-spawn**: it returns the spawn handles, not the children's outputs — joining is [`waitForChildren`](#waitforchildren)'s job.
+
+```ts
+declare const fanOut: <T>(opts: {
+  run: string;                               // child run name (registered on the same deploy)
+  items: readonly T[];                       // one child per item
+  toInput: (item: T, shard: Shard) => unknown;        // item → child input
+  toInstanceId?: (item: T, shard: Shard) => string;   // omit → deterministic id (replay-safe)
+  concurrency?: number;                      // default: all at once (spawn is a cheap create)
+}) => Effect.Effect<readonly ChildRunHandle[], ChildSpawnFailed, RunContext>;
+```
+
+Use `sharded` for a handful of shards on one container; reach for `fanOut` when shard count, per-shard duration, or per-shard browser sessions would strain a single instance. `matrix-fanout` is the worked caller.
+
+### `waitForChildren`
+
+The join half of a `fanOut`: poll the [`childRuns`](#childruns) capability for each spawned child's status until **every** one settles (`success` / `failure` / `cancelled`), then return their records — including each terminal child's `summaryJson`, so a parent can decode and roll up its children's outputs (merge N shard reports into one, count pass/fail). Each poll is a single cheap D1 read separated by `io.sleep`, never a long-held connection — and CF Workflows bounds only CPU, not wall-clock per step, so a parent can wait out a 25-minute matrix from inside one `step("await-children", ...)`. The loop is bounded by `maxAttempts = ceil(timeout / pollEvery)` (a count, not a wall-clock read), so `io.now` drift across a checkpoint resume cannot change how many polls run — it stays replay-deterministic.
+
+```ts
+declare const waitForChildren: (opts: {
+  ids: readonly string[];                    // child execution ids — typically fanOut handle ids
+  pollEvery?: Duration | string;             // default "5 seconds"
+  timeout?: Duration | string;               // overall ceiling before ChildWaitTimeout; default "30 minutes"
+}) => Effect.Effect<readonly ChildStatusRecord[], ChildWaitTimeout, RunContext>;
+```
+
+A fan-out over zero ids returns `[]` immediately. `ChildWaitTimeout` ([§ Errors](#errors)) carries the still-`pending` ids and the elapsed `waitedMs` when the ceiling lapses with children unsettled.
 
 ### `bootApp`
 
@@ -949,12 +1056,23 @@ export class StsAssumeRoleFailed extends Schema.TaggedError<StsAssumeRoleFailed>
   },
 ) {}
 
+export class ChildSpawnFailed extends Schema.TaggedError<ChildSpawnFailed>()(
+  "ChildSpawnFailed",
+  { run: Schema.String, instanceId: Schema.String, cause: Schema.Unknown },
+) {}
+
+export class ChildWaitTimeout extends Schema.TaggedError<ChildWaitTimeout>()(
+  "ChildWaitTimeout",
+  { pending: Schema.Array(Schema.String), waitedMs: Schema.Number },
+) {}
+
 export type RunError =
   | CheckoutFailed | ExecFailed | ExecTimeout
   | ContainerLaunchFailed | PortNeverOpened | BrowserUnavailable
   | CacheError | ArtifactUploadFailed | StepFailed | SecretsMissing
   | ApprovalTimedOut | EventPayloadInvalid | GitHubApiError
-  | OidcSigningFailed | StsAssumeRoleFailed;
+  | OidcSigningFailed | StsAssumeRoleFailed
+  | ChildSpawnFailed | ChildWaitTimeout;
 ```
 
 Runs recover with `Effect.catchTag` / `Effect.catchTags`. Anything not caught fails the execution with the full Cause attached to the check-run summary.

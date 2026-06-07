@@ -14,19 +14,30 @@ Every shipped run exports:
   version: string;                           // semver
   inputs: Schema.Schema<I, IEncoded>;        // typed input contract
   outputs: Schema.Schema<O, OEncoded>;       // typed output contract
-  image?: string;                            // default container image
+  image?: string;                            // documentary registry-image URI (not yet a runtime pull)
+  sandboxImage?: "lean" | "browser";         // which deploy-bound container image to route to (default "lean")
   limits: {
     maxDurationSec: number;                  // wall-time ceiling
     maxConcurrency?: number;                 // shards or parallel executions
-    requiresBrowser?: boolean;               // declares Browser Rendering binding
+    requiresBrowser?: boolean;               // reserve a CF Browser Rendering slot
   };
   triggers?: TriggerSpec<I>[];                // Webhook-mode trigger config
   schedules?: ScheduleSpec<I>[];              // Schedule-mode trigger config (cron)
+  writeback?: WritebackSpec;                  // "propose a diff as a PR" — see § Writeback
   run: (input: I) => Effect.Effect<O, RunError, RunContext>;
 }
 ```
 
 A user-defined run in their own repo has the same shape. The shipped runs below are the starter library. `triggers` / `schedules` are both optional and select the run's trigger mode — see [03-dsl § `defineRun`](03-dsl.md#definerun).
+
+### `sandboxImage` — which container image to boot
+
+`sandboxImage` selects which of the deploy's already-bound Container images a run routes to — the dispatcher maps it to `RUNS_SANDBOX` vs `RUNS_SANDBOX_BROWSER` (see [`apps/dispatcher/src/workflow.ts`](../apps/dispatcher/src/workflow.ts), [`packages/core/src/define-run.ts`](../packages/core/src/define-run.ts)):
+
+- `"lean"` (**default**) — the base sandbox image. Correct for the majority of runs **and** for every `limits.requiresBrowser: true` run: those dial CF Browser Rendering over CDP (they connect *out* to a CF-managed browser), so they need no chromium baked in.
+- `"browser"` — the image with `chromium-headless-shell` baked in, for a run that launches Playwright's *own* chromium *inside* the sandbox and drops the `playwright install` step to rely on the baked browser. The value is wired and available; no shipped run currently selects it (`playwright-demo` runs chromium in-sandbox but its caller installs it, so it stays `"lean"`).
+
+This axis is deliberately **distinct** from `limits.requiresBrowser`: `requiresBrowser` = "reserve a CF Browser Rendering slot"; `sandboxImage` = "which container image to boot". A run can be `requiresBrowser: true, sandboxImage: "lean"` (CDP, no in-image browser) or `requiresBrowser: false, sandboxImage: "browser"` (in-sandbox Playwright). (Don't confuse `sandboxImage` with the documentary `image` field, which names a specific registry artifact and does **not** yet drive a runtime image-pull — Container images are bound to DO classes at deploy.)
 
 ---
 
@@ -34,22 +45,25 @@ A user-defined run in their own repo has the same shape. The shipped runs below 
 
 | | Run | When to use | Status |
 |---|---|---|---|
-| 1 | [`offload-test`](#1-offload-test) | Single command, single container, pass/fail back to GHA | **Live** (V0) |
-| 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | **Live** (V1) — runs inline `sharded`; child-Workflow fan-out deferred |
-| 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | **Live** (V2) — runs inline `sharded`; Browser Rendering binding deferred |
-| 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | **Live** (V2) |
-| 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode | **Live** (V3) |
-| 6 | [`deploy-smoke`](#8-deploy-smoke) | Post-deploy smoke test against a live URL, Webhook-mode-first | **Live** (V2) |
-| 7 | [`playwright-demo`](#9-playwright-demo) | Record a Playwright walkthrough of a deployed surface | **Live** (V3) |
+| 1 | [`offload-test`](#1-offload-test) | Single command, single container, pass/fail back to GHA | **Live at HEAD** (V0) |
+| 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | **Live at HEAD** (V1) — runs inline `sharded` |
+| 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | **Live at HEAD** (V2) |
+| 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | **Live at HEAD** (V2) |
+| 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode | **Live at HEAD** (V3) |
+| 6 | [`deploy-smoke`](../runs/deploy-smoke.ts) | Post-deploy smoke test against a live URL, Webhook-mode-first | **Live at HEAD** (V2) |
+| 7 | [`playwright-demo`](../runs/playwright-demo.ts) | Record a Playwright walkthrough of a deployed surface | **Live at HEAD** (V3) |
 | 8 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
 | 9 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
-| 10 | [`spec-drift-pr`](#10-spec-drift-pr) | Daily spec/implementation drift → draft PR with the reconciling spec edits | **Live** (V3) — Schedule mode |
-| 11 | [`ci-triage-pr`](#11-ci-triage-pr) | Daily triage of GitHub Actions + Cloudflare deploy failures → draft PR | **Live** (V3) — Schedule mode |
-| — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | **Live** — capability + primitive |
-| — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | **Live** — capability wired |
-| — | [`awsAssumeRole`](#primitive-awsassumerole) | Primitive — OIDC-federated AWS STS credentials | **Live** — capability + primitive |
+| 10 | [`spec-drift-pr`](#10-spec-drift-pr) | Daily spec/implementation drift → draft PR with the reconciling spec edits | **Live at HEAD** (V3) — Schedule mode |
+| 11 | [`ci-triage-pr`](#11-ci-triage-pr) | Daily triage of GitHub Actions + Cloudflare deploy failures → draft PR | **Live at HEAD** (V3) — Schedule mode |
+| 12 | [`pr-review`](#12-pr-review) | Multi-domain AI code review on every PR push | **Live at HEAD** (V3) — Webhook mode |
+| 13 | [`multi-agent-review`](#13-multi-agent-review) | AI code review on Bedrock via the BYOC OIDC→STS trust path | **Live at HEAD** (V3) |
+| 14 | [`refresh-fixtures`](#14-refresh-fixtures) | Regenerate tracked files in a credential-free container → propose a PR (writeback) | **Live at HEAD** (V3) — worked `writeback` example |
+| — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | **Live at HEAD** — capability + primitive |
+| — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | **Live at HEAD** — capability wired |
+| — | [`awsAssumeRole`](03-dsl.md#awsassumerole) | Primitive — OIDC-federated AWS STS credentials | **Live at HEAD** — capability + primitive |
 
-> **Live runs at HEAD** — `offload-test`, `cdp-acceptance`, `product-demo`, `deploy-smoke`, `playwright-demo`, `matrix-fanout`, `playwright-e2e`, `pr-review`, `spec-drift-pr`, `ci-triage-pr` (see [`runs/index.ts`](../runs/index.ts)). All three trigger modes are wired: Action mode (HMAC POST), Webhook mode (GitHub App webhook → `/v1/webhooks/github`), and Schedule mode (Cron Trigger → `scheduled()` handler). Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
+> **Live runs at HEAD** — all twelve registered runs (`offload-test`, `cdp-acceptance`, `deploy-smoke`, `matrix-fanout`, `playwright-e2e`, `product-demo`, `playwright-demo`, `pr-review`, `multi-agent-review`, `spec-drift-pr`, `ci-triage-pr`, `refresh-fixtures`) ship from [`runs/index.ts`](../runs/index.ts) + the dispatcher's `RUN_REGISTRY` ([`apps/dispatcher/src/registry.ts`](../apps/dispatcher/src/registry.ts)); `/health` lists them sorted. All three trigger modes are wired: **Action mode** (HMAC `POST /v1/dispatch/:run`), **Schedule mode** (Cron Trigger → `scheduled()` handler), and **Webhook mode** (GitHub App webhook → `POST /v1/webhooks/github`). Webhook mode is shipped but **opt-in / off by default** — a deploy without `GITHUB_WEBHOOK_SECRET` returns `503` on that route; set the secret to enable it. "Live at HEAD" means shipped + runnable on your own `wrangler deploy` ([BYOC](05-byoc.md)) — there is no operator-hosted demo. Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
 
 ---
 
@@ -65,10 +79,19 @@ Schema.Struct({
   sha: Schema.String,
   command: Schema.String,                    // e.g. "pnpm test"
   image: Schema.optional(Schema.String),     // override container image
-  env: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
+  install: Schema.optionalWith(Schema.Boolean, { default: () => false }),
+                                             // R2-cached dependency install (installCached) after the clone
+  env: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })), // non-sensitive only
+  secrets: Schema.optionalWith(Schema.Array(Schema.String), { default: () => [] }),
+                                             // config-store keys → env vars (loadSecrets, required)
+  secretPrefix: Schema.optional(Schema.String), // config-lookup prefix, e.g. "staging/"
   timeoutSec: Schema.optional(Schema.Number),// default 600
 })
 ```
+
+Credentials ride `secrets`/`secretPrefix` (resolved from the config store by `loadSecrets`, same contract as [`cdp-acceptance`](#4-cdp-acceptance)), never `env`: dispatch inputs are persisted (the `executions` row, Workflow params), so a secret in `env` would sit in storage at rest. On a key collision the per-dispatch `env` value wins over the config-store value.
+
+`install: true` runs the lockfile-keyed, R2-cached dependency install (`installCached`, inside the `checkout` step via `workspace`) so the command doesn't open with its own cold `pnpm install` / `npm ci` / `cargo fetch` on every dispatch.
 
 **Outputs:**
 
@@ -90,9 +113,9 @@ Schema.Struct({
 
 ## 2. `matrix-fanout`
 
-> **Status: Planned (V1).** The Queues binding, Coordinator Durable Object, and `createBatch` spawn path are not declared in `wrangler.jsonc` at HEAD and no shipped run dispatches to children. The shape below is the contract V1 implements.
+> **Status: Live at HEAD.** Source: [`runs/matrix-fanout.ts`](../runs/matrix-fanout.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). At HEAD the run body fans out **inline** via the [`sharded`](03-dsl.md#sharded) primitive — one container per shard inside the parent Workflow instance, exit codes aggregated into `passed` / `failed`. The cross-instance child-Workflow path is **also shipped**: the [`childRuns`](03-dsl.md#childruns) capability + the [`fanOut`](03-dsl.md#fanout) / [`waitForChildren`](03-dsl.md#waitforchildren) primitives spawn one independent child `RunWorkflow` per shard (each its own step budget + container + Browser session), backed by the `Workflow` binding wired in [`apps/dispatcher/src/workflow.ts`](../apps/dispatcher/src/workflow.ts) (#80). The `sharded` call is the seam: a run swaps from inline `Effect.forEach` to `fanOut` over `spawnChildRun` without changing its contract. `matrix-fanout` itself stays on inline `sharded` until a shard count exceeds the parent instance's per-instance budget; the contract below holds for either backing.
 
-Executes the same command across N shards. Each shard is an independent child Workflow with its own check-run annotation. Result: one parent check that's green only if all shards pass.
+Executes the same command across N shards. Each shard reports its own exit code; the parent check is green only if every shard passes. Under the child-Workflow backing each shard is an independent child Workflow with its own check-run annotation.
 
 **Inputs:**
 
@@ -124,13 +147,13 @@ Schema.Struct({
 })
 ```
 
-**Steps (parent):** `plan → spawn-shards (createBatch) → await-completion → summarize → finalize`
+**Steps (inline `sharded`, HEAD):** `run-shards → (per shard) workspace → exec (SHARD_INDEX/SHARD_TOTAL env) → upload-log → aggregate exit codes`
 
-**Steps (child, per shard):** `checkout → exec --shard ${i}/${n} → upload-log → report-to-coordinator`
+**Steps (child-Workflow backing, via `fanOut`):** `plan → fanout (spawnChildRun per shard) → wait-for-children → summarize → finalize`; each child: `checkout → exec --shard ${i}/${n} → upload-log → report-via-own-check-run`
 
-**Platform:** Sandbox (per shard), Workflows `createBatch` (up to 100 children per call) for spawning, Durable Object (Coordinator DO) for result aggregation, R2, D1, GitHub Check Runs. Queues only used when shard count × dispatch rate would exceed Workflows' per-workflow instance-creation rate of 100/s.
+**Platform:** Sandbox (per shard), R2 (logs), D1, GitHub Check Runs. Under the child-Workflow backing: Workflows (one child `RunWorkflow` instance per shard via the `Workflow` binding) for spawning + result join by `parent_execution_id`; the account-level ceiling (container vCPU, concurrent Workflow instances) replaces the parent instance's per-instance step budget.
 
-**Limits:** `maxConcurrency: 8` default (overridable up to 100 per `createBatch` call; account-wide ceiling is 50,000 concurrent Workflow instances on Workers Paid, gated in practice by 1,500 vCPU of Container capacity); `maxDurationSec: 1800` per shard.
+**Limits:** `maxConcurrency: 8` default. Under the child-Workflow backing each shard is its own `RunWorkflow` instance (`fanOut` → `spawnChildRun` → the `Workflow` binding's `create`, one per shard), bounded by the account-wide ceiling of 50,000 concurrent Workflow instances on Workers Paid — gated in practice by 1,500 vCPU of Container capacity; `maxDurationSec: 1800` per shard.
 
 *Source:* https://developers.cloudflare.com/workflows/reference/limits/, https://developers.cloudflare.com/workflows/build/workers-api/, https://developers.cloudflare.com/containers/platform-details/limits/.
 
@@ -138,7 +161,7 @@ Schema.Struct({
 
 ## 3. `playwright-e2e`
 
-> **Status: Planned (V2).** Not shipped at HEAD — sharded Playwright requires the `matrix-fanout` spawn path (Planned V1) plus a Playwright base image. `cdp-acceptance` (§ 4) already exercises Browser Rendering for the acceptance shape; this run extends it to sharded test runners.
+> **Status: Live at HEAD.** Source: [`runs/playwright-e2e.ts`](../runs/playwright-e2e.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). One container per shard via the [`sharded`](03-dsl.md#sharded) primitive over `workspace({ install: true })`, each invoking `playwright test --shard=i/N`; `limits.requiresBrowser: true` declares the Browser Rendering binding (the suite's Playwright config dials CF Browser Rendering for the actual browser). Per-shard HTML reports upload to R2 as 30-day artifacts. The recipe at `recipes/browser-tests/playwright-e2e.run.ts` re-exports it for copy-paste.
 
 Sharded Playwright executions using Browser Rendering for the page session and Sandbox for the test runner process. Each shard gets its own Browser Rendering session(s); test files are split via Playwright's native `--shard` flag.
 
@@ -375,6 +398,105 @@ The detection reuses the `ai-code-review` engine: it resolves the configurable `
 > **Status: Live (Schedule mode).** Source: [`runs/ci-triage-pr.ts`](../runs/ci-triage-pr.ts); recipe + docs in [`recipes/ci-triage-pr/`](../recipes/ci-triage-pr/). Daily (`0 6 * * *`), it reads recent CI failures across **GitHub Actions** (`github.actionRuns`) and **Cloudflare Pages** (`cloudflare.deployments`), triages them with a model, and opens one **draft PR** carrying the write-up (`.flare-dispatch/ci-triage-<date>.md`).
 
 `github.actionRuns` and the new read-only `cloudflare` capability are the two read surfaces; the triage model call reuses the `ai-code-review` backend machinery under the `ci-triage.*` namespace (`completeStructured`, operator-overridable `ci-triage.prompt`); the PR is opened with `github.openDraftPullRequest`. A green day (no failures in `ci-triage.window-hours`) opens no PR and never calls the model. The run produces a triage diagnosis, not an automated fix. See the recipe README for the config contract and the `CLOUDFLARE_API_TOKEN` prerequisite.
+
+## 12. `pr-review`
+
+> **Status: Live at HEAD.** Source: [`runs/pr-review.ts`](../runs/pr-review.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). A FlareDispatch port of Cloudflare's multi-agent code reviewer ([blog](https://blog.cloudflare.com/ai-code-review/)). The review runs **in the Worker**, not a container CLI: the body fans out one domain reviewer per concern via the `@flare-dispatch/review-agent` engine, each calling a model through the [`modelGateway`](03-dsl.md#modelgateway) capability. The one container image (`flare-dispatch-review`: Node + git) is used only for `git` (checkout + three-dot `base...head` diff). The backend is resolved from `CONFIG_KV` **without redeploy** — `opencode`/`reasonix` (Workers AI catalog, binding-as-auth, no API key), `anthropic` (BYOK via AI Gateway), or `bedrock` (OIDC→STS→SigV4 via `awsAssumeRole`, no long-lived AWS key). A `"tools"`-mode backend that returns no tool calls auto-retries once in `"json"` mode.
+
+Webhook-mode-first: fires on `pull_request` (`opened` / `synchronize` / `ready_for_review`), zero GHA minutes. The gate skips drafts (unless labelled `request-ai-review`), `skip-ai-review`-labelled PRs, and bot authors. Each push re-reviews the full PR diff independently — the current run is authoritative, so a fixed finding clears. The diff is noise-stripped + capped to the **resolved backend's** context window; the risk tier (a pure heuristic on diff size + touched paths) picks which domain reviewers run.
+
+**Inputs:**
+
+```ts
+Schema.Struct({
+  repo: Schema.String,                       // "owner/name"
+  sha: Schema.String,                        // PR head sha
+  baseSha: Schema.String,                    // PR base-branch tip (three-dot diff endpoint)
+  pr: Schema.Number,                         // PR number
+  installationId: Schema.optional(Schema.Number), // Webhook maps it from payload.installation.id
+})
+```
+
+**Outputs:** the engine's `ReviewOutputSchema` — `{ verdict: "approve"|"comment"|"request-changes", tier, critical, warnings, suggestions, findings: { level, title, message, path, startLine, endLine }[] }`. `findings` become check-run annotations; the rest renders in the scannable PR comment (summary table + per-finding headings + GitHub blob links; operator-selectable `default` / `compact` style via `pr-review.style`).
+
+**Steps:** `resolve-backend → checkout → prepare-diff → classify-risk → resolve-prompt → resolve-style → [assume-bedrock-role] → review (fan out per domain) → coordinate → post-comment`. The whole body is wrapped in an error boundary that always posts a PR comment — success or failure — then re-fails honestly so the check goes red on a genuine error.
+
+**Trigger modes:** Webhook (the registered trigger) + Action mode (HMAC dispatch; `installationId` then omitted unless threaded through).
+
+**Platform:** Sandbox (git only), `modelGateway` (Workers AI binding / AI Gateway / Bedrock route), R2, D1, GitHub Check Runs + PR review comments.
+
+**Limits:** `maxDurationSec: 1500`; `maxConcurrency` = the full domain-reviewer count.
+
+## 13. `multi-agent-review`
+
+> **Status: Live at HEAD.** Source: [`runs/multi-agent-review.ts`](../runs/multi-agent-review.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). AI code review on **AWS Bedrock** via the BYOC `awsAssumeRole` trust path, routed through Cloudflare AI Gateway. It mints short-lived AWS credentials via OIDC federation (`AssumeRoleWithWebIdentity` — the role's trust policy pins the dispatcher's OIDC issuer + a `sub: multi-agent-review:*` pattern, so a leaked HMAC alone can't assume it), clones the repo, collects the diff, and calls Bedrock `InvokeModel` via `modelGateway.complete({ model: "bedrock/<id>", aws: <STS creds> })`. The gateway forwards the SigV4 `Authorization` header, never holds the creds.
+
+Why it sits alongside `pr-review`: the model surface is unified (both use the shared Bedrock-via-AI-Gateway helper), but the dispatch shape differs — `pr-review` reads model + region from `CONFIG_KV` (one operator setup); `multi-agent-review` takes them **per-dispatch** (a `workflow_dispatch` can override the model for QA / model-comparison work). The "multi-agent" name anticipates the eventual fan-out to N domain reviewers; V0 is single-agent because the load-bearing risk is the OIDC→JWKS→STS handshake, not review quality.
+
+**Inputs:**
+
+```ts
+Schema.Struct({
+  repo: Schema.String,
+  sha: Schema.String,
+  baseSha: Schema.optional(Schema.String),   // diff base; omit for a `git log --stat` summary
+  focusArea: Schema.optional(Schema.String), // fed to the system prompt (workflow_dispatch input)
+  modelId: Schema.optional(Schema.String),   // override the default Bedrock model
+  region: Schema.optional(Schema.String),    // default us-east-1; STS exchange happens here
+  roleArn: Schema.String,                    // IAM role to AssumeRoleWithWebIdentity into (required)
+  pr: Schema.optional(Schema.Number),        // with installationId → post a PR review comment
+  installationId: Schema.optional(Schema.Number),
+})
+```
+
+**Outputs:**
+
+```ts
+Schema.Struct({
+  review: Schema.String,                      // first 5000 chars of the model's response
+  modelId: Schema.String,                     // model id actually invoked
+  inputTokens: Schema.optional(Schema.Number),
+  outputTokens: Schema.optional(Schema.Number),
+})
+```
+
+**Steps:** `assume-bedrock-role → checkout → collect-diff → resolve-prompt → invoke-bedrock → [post-comment]`. The PR comment is posted only when both `pr` and `installationId` are present, and is best-effort (a GitHub 4xx/5xx never fails the run — the review still lands in the check-run summary + `summary_json`). The comment carries a marker footer for idempotent updates.
+
+**Platform:** Sandbox (git), `awsAssumeRole` (OIDC→STS), `modelGateway` (Bedrock route via AI Gateway), R2, D1, GitHub Check Runs + PR review comments.
+
+**Limits:** `maxDurationSec: 1500`.
+
+## 14. `refresh-fixtures`
+
+> **Status: Live at HEAD.** Source: [`runs/refresh-fixtures.ts`](../runs/refresh-fixtures.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). The worked example for the [`writeback`](#writeback-runs-that-propose-prs) capability: the container runs an operator-supplied regeneration command, stages a changed-files manifest + blobs from `git status --porcelain`, and uploads them as the `writeback` directory artifact. It holds **no git/gh credential** and never pushes — after the run succeeds, the Dispatcher Worker validates the manifest against the `writeback` spec and commits it via the GitHub App as a branch + draft PR. An empty/absent manifest is a clean no-op.
+
+**Inputs:**
+
+```ts
+Schema.Struct({
+  repo: Schema.String,                       // "owner/name"
+  sha: Schema.String,
+  command: Schema.String,                    // the regeneration command (codegen / record / snapshot)
+})
+```
+
+**Outputs:**
+
+```ts
+Schema.Struct({
+  exitCode: Schema.Number,
+  changedPaths: Schema.Array(Schema.String), // repo-relative paths staged for writeback (empty ⇒ no diff)
+  writebackUri: Schema.String,               // the writeback artifact URL the Worker consumed
+})
+```
+
+**Steps:** `checkout → regenerate → stage-writeback → upload-writeback`. The Worker's post-run writeback step (branch + commit + PR) is separate — see [§ Writeback](#writeback-runs-that-propose-prs).
+
+**Writeback spec (declared in the run definition):** fixed bot branch `flare-dispatch/refresh-fixtures` (re-runs force-update it + the one open PR), a draft PR, and a `pathAllowlist` of `["fixtures/**", "**/__fixtures__/**", "**/*.snap"]` (`.github/workflows/**` stays gated — `allowWorkflows` defaults off).
+
+**Platform:** Sandbox (git + the regeneration command), R2 (the `writeback` directory artifact), D1, GitHub Check Runs; the GitHub App's Git Data API for the Worker-side commit + PR.
+
+**Limits:** `maxDurationSec: 1800`.
 
 ---
 

@@ -27,11 +27,16 @@ A GHA workflow calls the **flare-dispatch-action**, which HMAC-signs a dispatch 
 
 Live at HEAD:
 
-- **Runs** — `offload-test` (V0, `pnpm test` → green/red check), `cdp-acceptance` (V2, boot app + CDP assertions), `playwright-demo` (V2, hand-authored Playwright spec → signed R2 tarball), `product-demo` (V3, AI-driven demo over a deployed URL — `@effect/ai`-powered provider-agnostic CDP loop via the operator's own sandbox image + a [drop-in `Dockerfile` layer](recipes/product-demo/Dockerfile.example), any OpenAI-compatible upstream).
-- **Trigger modes** — **Action** (HMAC POST from the [bundled JS Action](actions/flare-dispatch-action/README.md)) and **Schedule** (Cloudflare Cron Triggers → Dispatcher `scheduled()` handler). **Webhook** mode (`POST /v1/webhooks/github`) is Planned (V1).
-- **GitHub App** — manifest-creation install flow (`POST /v1/github/app/manifest` + callback) ships the operator's one-click App setup; the webhook receiver itself is Planned (V1).
-- **DSL** — six run-author capabilities (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) and six primitives (`workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`) all wired against Cloudflare Containers / Browser Rendering / R2 / D1 / KV. `step.waitForEvent`, `step.sleepUntil`, `io.priorExecution`, and the `github` read capability are stubbed → Planned.
-- **Writeback** — a run can declare a `writeback` output to *propose a diff as a PR* (fixture refreshes, dependency bumps, generated-doc updates). The credential-free container writes a changed-files manifest; the Worker validates it and commits via the GitHub App's Git Data API. See [`specs/02-runs.md` § Writeback](specs/02-runs.md).
+- **Runs** — all 12 are registered (`/health` lists them, sorted): `cdp-acceptance`, `ci-triage-pr`, `deploy-smoke`, `matrix-fanout`, `multi-agent-review`, `offload-test`, `playwright-demo`, `playwright-e2e`, `pr-review`, `product-demo`, `refresh-fixtures`, `spec-drift-pr`. Headline shapes: `offload-test` (`pnpm test` → green/red check), `cdp-acceptance` (boot app + CDP assertions), `playwright-demo` / `playwright-e2e` (Playwright specs → signed R2 tarball), `product-demo` (AI-driven walkthrough over CDP with Browser Run Session Recording + [rrweb replay](#how-it-works) link, per-chapter summary).
+- **Agentic PR review** — the marquee capability. `pr-review` + `multi-agent-review` review a PR diff in-Worker via an `@effect/ai` `modelGateway` capability with **selectable backends chosen from `CONFIG_KV` without redeploy**: Workers AI catalog (`@cf/…`, binding-as-auth, no API key), Anthropic-via-AI-Gateway (BYOK), `reasonix`/DeepSeek, and Bedrock-via-AI-Gateway (OIDC → STS → SigV4, **no long-lived AWS key**). Diff is capped to the chosen model's context window; the review comment is a scannable summary table + per-finding headings + GitHub blob links; re-reviews auto-resolve fixed findings.
+- **Trigger modes** — all three are wired in `apps/dispatcher/src/router.ts`: **Action** (HMAC POST from the [bundled JS Action](actions/flare-dispatch-action/README.md)), **Schedule** (Cloudflare Cron Triggers → Dispatcher `scheduled()` handler), and **Webhook** (`POST /v1/webhooks/github`, [`routes/webhook.ts`](apps/dispatcher/src/routes/webhook.ts) + tests). Webhook mode is **shipped but opt-in / off by default** — a deploy without `GITHUB_WEBHOOK_SECRET` returns `503` on that route; set the secret to enable it (it does not fire on every push by default).
+- **GitHub App** — manifest-creation install flow (`GET /v1/github/install/new` renders a form that POSTs the manifest to GitHub; the `GET /v1/github/installed` callback exchanges the temporary code for the App's credentials) ships the operator's one-click App setup; the webhook receiver is live (opt-in, see above).
+- **DSL** — six run-author capabilities (`sandbox`, `browser`, `cache`, `artifact`, `io`, `config`) and six primitives (`workspace`, `installCached`, `loadSecrets`, `sharded`, `bootApp`, `probeHttp`) all wired against Cloudflare Containers / Browser Rendering / R2 / D1 / KV. `step.waitForEvent` is shipped (delegates to the CF Workflows platform event; the `POST /v1/admin/events/:wf_id` signal route is wired) and `io.priorExecution` is a real D1 query. The `github` capability's `actionRuns` (read) + `openDraftPullRequest` (write) are shipped — used by `ci-triage-pr` / `spec-drift-pr`. `step.sleep` / `step.sleepUntil` and parts of the `github` read surface remain stubbed → Planned.
+- **modelGateway** — the `@effect/ai`-backed capability above; backend + model selectable from `CONFIG_KV` at runtime, no redeploy.
+- **Admission + leasing** — a global per-pool FIFO admission queue caps in-flight runs at `ADMISSION_CAP` (default 16); overflow queues ("waiting for a sandbox slot behind N runs") and drains FIFO, crashed-holder slots reclaimed by heartbeat TTL. A per-container D1 lease serializes runs sharing a sandbox container id (`ContainerBusy` after ~10 min). Zero new operator config.
+- **Dual sandbox images** — a `sandboxImage` selector picks a lean default or a chromium-baked browser variant (second DO class `RunSandboxBrowser`, `chromium-headless-shell` + demo-agent baked in).
+- **Email notify** — run-authored failure summaries can notify over Cloudflare Email Routing. **Opt-in**: a logged no-op until `send_email` is configured, gated by an `EMAIL_ALLOWED_RECIPIENTS` allowlist.
+- **Writeback** — a run can declare a `writeback` output to *propose a diff as a PR* (fixture refreshes, dependency bumps, generated-doc updates). The credential-free container writes a changed-files manifest; the Worker (sole creds holder) validates it (path-traversal / allowlist / byte+count caps, `.github/workflows` opt-in gate) and commits via the GitHub App's Git Data API as a branch + PR. Best-effort — a failure annotates the green check, never flips the run red. `refresh-fixtures` is the worked example. See [`specs/02-runs.md` § Writeback](specs/02-runs.md).
 
 Implementation has skipped around the V0–V4 roadmap deliberately — each run / capability lands when the underlying platform plumbing composes without new infra. See [`specs/pm/plan.md`](specs/pm/plan.md) for the full roadmap and [`specs/02-runs.md`](specs/02-runs.md) for the per-run status.
 
@@ -55,13 +60,14 @@ wrangler d1 migrations apply RUNS_METADATA --remote
 wrangler secret put HMAC_SECRET                          # openssl rand -base64 32
 wrangler secret put GITHUB_APP_ID                        # numeric App id
 wrangler secret put GITHUB_APP_PRIVATE_KEY < ./app.pem   # piped from the PEM
-wrangler secret put GITHUB_WEBHOOK_SECRET                # not used in V0, but expected
+wrangler secret put GITHUB_WEBHOOK_SECRET                # enables Webhook mode (opt-in); omit to leave it off
 
 wrangler deploy
 # Note the deployed URL, e.g. https://flare-dispatch-v0.<account>.workers.dev
 
 curl -fsS https://flare-dispatch-v0.<account>.workers.dev/health
-# {"status":"ok","runs":["offload-test"]}
+# {"status":"ok","runs":["cdp-acceptance","ci-triage-pr","deploy-smoke","matrix-fanout","multi-agent-review","offload-test","playwright-demo","playwright-e2e","pr-review","product-demo","refresh-fixtures","spec-drift-pr"]}
+# — all 12 registered runs, sorted.
 ```
 
 Install the `FlareDispatch` GitHub App on the repos you want to use it with (manifest in [`infra/github-app-manifest.json`](infra/github-app-manifest.json)). Full walkthrough: [`specs/05-byoc.md`](specs/05-byoc.md).
@@ -95,11 +101,12 @@ The Action HMAC-signs the dispatch and POSTs it; the run's result lands on the P
 
 ```
 flare-dispatch/
-├── apps/dispatcher/         Dispatcher Worker — HMAC verify, routes (dispatch, artifacts, scheduled, github), RunWorkflow
-├── packages/                @flare-dispatch/{core,runtime-cf,github-app,cli}
-├── runs/                    offload-test, cdp-acceptance, product-demo
+├── apps/dispatcher/         Dispatcher Worker — HMAC verify, router (dispatch, webhook, artifacts, scheduled, admin-events, browser-cdp, oidc, github), RunWorkflow, admission queue
+├── packages/                @flare-dispatch/{core,runtime-cf,github-app,cli,demo-agent,review-agent}
+├── runs/                    all 12 runs — pr-review, multi-agent-review, ci-triage-pr, spec-drift-pr, refresh-fixtures, offload-test, cdp-acceptance, deploy-smoke, matrix-fanout, playwright-demo, playwright-e2e, product-demo
 ├── actions/                 flare-dispatch-action — bundled JS Action (wraps @flare-dispatch/cli)
 ├── recipes/                 starter `.github/workflows/*.yml` per run
-├── infra/                   D1 schema, container Dockerfiles, App manifest
+├── infra/                   D1 migrations (0001 schema, 0002 leases, 0003 admissions), container Dockerfiles, App manifest
+├── scripts/                 build + deploy helpers
 └── specs/                   the contract — architecture, runs, DSL, GHA, BYOC, cost, trust model, PM plan
 ```

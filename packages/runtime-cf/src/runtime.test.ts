@@ -118,7 +118,13 @@ const CTX: ExecutionContext = {
   sha: "abc123",
   input: { repo: "owner/name", sha: "abc123", command: "pnpm test" },
 };
-const INPUT = { repo: "owner/name", sha: "abc123", command: "pnpm test" };
+const INPUT = {
+  repo: "owner/name",
+  sha: "abc123",
+  command: "pnpm test",
+  secrets: [] as readonly string[],
+  install: false,
+};
 
 /**
  * The `RunWorkflow` execution-row finalize boundary, minimal: open the row,
