@@ -131,10 +131,12 @@ const DEFAULT_SYSTEM_PROMPT = `You are an expert software engineer reviewing a c
 
 Review the diff for: correctness bugs, missing error handling, security issues, missing tests, and design / architecture concerns specific to the languages and frameworks the diff touches.
 
-Output a markdown review with:
-- 2-sentence executive summary
-- Findings as a bulleted list, each with: file:line (if locatable), 1-line description, severity (critical/major/minor)
-- "LGTM" if no findings`;
+Output a concise, readable GitHub-flavoured markdown review:
+- 1-2 sentence executive summary.
+- A summary table of findings — one row each: | # | Severity | Finding | Location | (severity: critical/major/minor; order by severity).
+- Then the details, grouped into AT MOST 8 actionable points ordered by severity. Merge related findings into one point rather than listing near-duplicates. Each point: what to change and why, in 1-3 sentences — direct, no filler.
+- Link to code instead of quoting it. Render every location as a markdown link [path:line](https://github.com/{repo}/blob/{sha}/{path}#L{line}) using the repo and commit sha given in the request; do not paste code blocks or restate the diff.
+- "LGTM" plus a one-line reason if no findings.`;
 
 /** Footer marker on every PR comment this run posts — for idempotent updates. */
 const COMMENT_MARKER = "<!-- flare-dispatch: multi-agent-review -->";
