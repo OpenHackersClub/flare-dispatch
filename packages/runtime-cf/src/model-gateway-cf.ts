@@ -472,8 +472,8 @@ const completeBedrock = (
     // Anthropic-on-Bedrock returns `{content:[{type,text|name+input}]}`. The
     // shared helper concatenated the text blocks already; we don't get the raw
     // content array back, so tool-call extraction would need a richer return
-    // type. V0: text-only (the runs that need this route — multi-agent-review
-    // and pr-review's `bedrock` backend — both use text mode). Tools mode on
+    // type. V0: text-only (the run that needs this route — pr-review's
+    // `bedrock` backend — uses text mode). Tools mode on
     // Bedrock is a separate scope.
     return {
       toolCalls: [],

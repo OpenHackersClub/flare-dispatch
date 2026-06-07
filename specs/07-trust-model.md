@@ -74,7 +74,7 @@ Every arrow here is live at HEAD. The dashed `wrangler secret put` arrow is the 
 | Operator → Dispatcher (secrets) | `wrangler` CLI authenticated against the operator's CF account | Yes |
 | Dispatcher → GitHub API | App JWT (RS256, ≤10 min) exchanged for installation token (1h TTL) | Yes |
 | Container → Dispatcher → Browser Rendering CDP | container dials `wss://…/v1/browser/cdp` with `BROWSER_CDP_API_TOKEN` (bearer or `?token=`); the Worker re-dials CF Browser Rendering over the `env.BROWSER` binding (`browser-cdp.ts`) | Yes |
-| Workflow → AWS | OIDC JWT federation → `sts:AssumeRoleWithWebIdentity` → short-lived STS creds (no static AWS keys); used by `multi-agent-review`'s `bedrock/*` route | Yes (#111) |
+| Workflow → AWS | OIDC JWT federation → `sts:AssumeRoleWithWebIdentity` → short-lived STS creds (no static AWS keys); used by `pr-review`'s `bedrock` backend | Yes (#111) |
 
 The dispatch request lifecycle in detail:
 
@@ -307,7 +307,7 @@ Each control below is implemented at HEAD and pointed at the file that does the 
 
 **Binding-as-auth (no secret at all).** Two capabilities authenticate by *being in-account* rather than by carrying a secret, so there is no key to leak on those paths:
 
-- **Workers AI / `modelGateway`** (`packages/runtime-cf/src/model-gateway-cf.ts`). The `pr-review` / `multi-agent-review` engines reach Workers AI through the `env.AI` binding — `ai.run(model, …)` and the AI-Gateway universal route `env.AI.gateway(id).run(…)`. Workers AI is account-billed; the binding IS the auth, so no API key travels with `@cf/...` catalog calls. The BYOK provider route still routes through the binding — the AI Gateway holds the provider key and injects it upstream; the Worker never sees it. Only the Bedrock route bypasses the binding (AWS InvokeModel needs SigV4), and that route carries short-lived STS creds, not a long-lived AWS key.
+- **Workers AI / `modelGateway`** (`packages/runtime-cf/src/model-gateway-cf.ts`). The `pr-review` engine reaches Workers AI through the `env.AI` binding — `ai.run(model, …)` and the AI-Gateway universal route `env.AI.gateway(id).run(…)`. Workers AI is account-billed; the binding IS the auth, so no API key travels with `@cf/...` catalog calls. The BYOK provider route still routes through the binding — the AI Gateway holds the provider key and injects it upstream; the Worker never sees it. Only the Bedrock route bypasses the binding (AWS InvokeModel needs SigV4), and that route carries short-lived STS creds, not a long-lived AWS key.
 - **Browser Rendering** (`env.BROWSER`). The Worker→Browser-Rendering CDP hop is binding-mediated — no Cloudflare API token on that hop (see [§ `BROWSER_CDP_API_TOKEN`](#browser_cdp_api_token-is-a-long-lived-static-credential--medium)). The residual static token gates only the container→Worker entry into the proxy.
 
 A binding that requires no secret cannot leak a secret. The blast-radius reduction is structural: a compromised container or a misconfigured run cannot exfiltrate a Workers AI key or a Browser Rendering API token, because neither exists.

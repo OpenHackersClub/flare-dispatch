@@ -19,21 +19,35 @@
 //
 // --- CONFIG the operator sets (out of band) ---------------------------------
 //
-//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix" | "anthropic"  (default opencode)
-//   CONFIG_KV  pr-review.prompt          (optional) override the per-domain reviewer system prompt
+//   CONFIG_KV  pr-review.agents         "single" (one generalist reviewer) | "multi" (tier-scaled per-domain personas)  (default "multi")
+//   CONFIG_KV  pr-review.backend        "opencode" | "reasonix" | "anthropic" | "bedrock"  (default opencode)
+//   CONFIG_KV  pr-review.prompt          (optional) override the reviewer system prompt
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.reasonix.model  bare Workers AI model id (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b)
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
 //   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
 //   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
+//   CONFIG_KV  pr-review.bedrock.model   `bedrock/`-prefixed model id (e.g. bedrock/us.anthropic.claude-opus-4-6-v1) — BYOC via AI Gateway
+//   CONFIG_KV  pr-review.bedrock.region  AWS region (default us-east-1)
+//   CONFIG_KV  pr-review.bedrock.roleArn IAM role to AssumeRoleWithWebIdentity into — trust policy MUST pin `sub: pr-review:*`
 //   CONFIG_KV  pr-review.style           "default" (verbose verdict-table) | "compact" (LGTM-header + 3-col emoji table)
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
 // silently drops tool-calling still produces a review.
 //
-// Mode: Webhook mode — fires on every pull_request push, zero GHA minutes.
+// --- Per-dispatch overrides (Action mode) -----------------------------------
+//
+// A dispatch MAY override the CONFIG_KV defaults per call via the run inputs —
+// `agents`, `backend`, `modelId`, `region`, `roleArn`, `focusArea`. Absent, the
+// CONFIG_KV defaults apply, so the everyday Webhook path is unchanged. This is
+// the model-bake-off / per-PR-escalation path the former `multi-agent-review`
+// run served: dispatch `backend: "bedrock"`, a `modelId` under test, and a
+// `roleArn` to compare a model on a real PR without touching CONFIG_KV.
+//
+// Mode: Webhook mode (fires on every pull_request push, zero GHA minutes) AND
+//       Action mode (a GHA workflow dispatches it with per-call overrides).
 // DSL:  see specs/03-dsl.md (uses `config` + `github`).
 
 import { Effect, Schema, Match } from "effect";
@@ -52,10 +66,15 @@ import {
 import { awsAssumeRole, workspace } from "@flare-dispatch/core/primitives";
 import {
   type BackendUnconfigured,
+  backendConfigKey,
   capDiff,
   coordinate as engineCoordinate,
+  DEFAULT_NAMESPACE,
+  DEFAULT_REVIEW_SYSTEM_PROMPT,
   type Finding,
   type ModelCallFailed,
+  namespacedKeys,
+  parseBackend,
   resolveBackend,
   reviewDomain,
   riskTier,
@@ -84,6 +103,24 @@ const FULL_AGENTS = [
 const LITE_AGENTS = ["security", "code-quality", "performance", "documentation"] as const;
 const TRIVIAL_AGENTS = ["code-quality"] as const;
 
+// Agent fan-out mode. `multi` (the default) fans out to the tier-scaled
+// per-domain personas above — the historical behaviour. `single` runs ONE
+// generalist reviewer covering every concern (the collapsed `multi-agent-review`
+// run's single-agent shape, now through the same structured engine). The
+// operator picks the mode via `pr-review.agents` CONFIG_KV; a dispatch overrides
+// it per call via the `agents` input.
+const GENERAL_AGENT = ["general"] as const;
+const AGENT_MODES = ["single", "multi"] as const;
+type AgentMode = (typeof AGENT_MODES)[number];
+const DEFAULT_AGENT_MODE: AgentMode = "multi";
+
+/** Narrow an arbitrary config string to a known agent mode, or the default. */
+const parseAgentMode = (raw: string | undefined): AgentMode =>
+  AGENT_MODES.includes(raw as AgentMode) ? (raw as AgentMode) : DEFAULT_AGENT_MODE;
+
+/** Config namespace this run's backend + prompt keys live under (`pr-review.*`). */
+const NS = DEFAULT_NAMESPACE;
+
 // The run's output. `findings` becomes the check-run annotation set; the rest
 // renders in the summary. Imported from the engine package so the run's
 // `outputs` schema and the engine's return type are one source of truth. Each
@@ -103,7 +140,7 @@ const DIFF_FILE = "/tmp/pr-review.diff";
 
 export const prReview = defineRun({
   name: "pr-review",
-  version: "3.0.0",
+  version: "3.1.0",
   image: "registry.cloudflare.com/openhackersclub/flare-dispatch-review:latest",
 
   triggers: [
@@ -134,6 +171,21 @@ export const prReview = defineRun({
     // Webhook mode maps it from `payload.installation.id`; Action mode omits
     // it. The run threads it to `github.pullReview` to authenticate the comment.
     installationId: Schema.optional(Schema.Number),
+    // --- Per-dispatch overrides (Action mode) — all optional. When absent the
+    //     CONFIG_KV defaults apply, so the Webhook path is unchanged. These ride
+    //     the HMAC-authenticated dispatch (operator-trusted), never the diff. ---
+    /** Override `pr-review.agents` — one generalist reviewer vs the persona fan-out. */
+    agents: Schema.optional(Schema.Literal("single", "multi")),
+    /** Override `pr-review.backend` — pin a backend for this dispatch (e.g. a bake-off). */
+    backend: Schema.optional(Schema.String),
+    /** Override the resolved backend's model id (e.g. the model under test). */
+    modelId: Schema.optional(Schema.String),
+    /** Override the bedrock backend's AWS region. */
+    region: Schema.optional(Schema.String),
+    /** Override the bedrock backend's IAM role ARN to AssumeRoleWithWebIdentity into. */
+    roleArn: Schema.optional(Schema.String),
+    /** Extra focus line appended to the reviewer system prompt for this dispatch. */
+    focusArea: Schema.optional(Schema.String),
   }),
 
   outputs: ReviewOutput,
@@ -182,13 +234,14 @@ export const prReview = defineRun({
 const reviewBody = (input: RunInput) =>
   Effect.gen(function* () {
     // 1. Resolve the configurable backend (model id + output mode + diff cap)
-    //    from CONFIG_KV — FIRST, before paying for a container, so a
-    //    misconfigured backend fails fast → the error boundary posts a PR
-    //    comment naming the missing key. No API key — the model is called
-    //    through the `modelGateway` capability (Workers AI binding via an AI
-    //    Gateway), which the runtime provides ambiently.
+    //    from CONFIG_KV, with any per-dispatch input overrides layered on top —
+    //    FIRST, before paying for a container, so a misconfigured backend fails
+    //    fast → the error boundary posts a PR comment naming the missing key. No
+    //    API key — the model is called through the `modelGateway` capability
+    //    (Workers AI binding via an AI Gateway), which the runtime provides
+    //    ambiently.
     const resolved = yield* step("resolve-backend", () =>
-      resolveBackend((key) => config.get(key)),
+      resolveEffectiveBackend(input),
     );
 
     // 2. Check out the PR head. `git` is in the image; no dependency install.
@@ -238,15 +291,35 @@ const reviewBody = (input: RunInput) =>
     );
 
     // 4. Risk tier — a pure heuristic on diff size + touched paths (no model
-    //    call). The tier IS the plan: which agents run + the coordinator model.
+    //    call). The tier is always classified (it sizes the diff cap + renders
+    //    in the comment); the agent MODE decides whether it also scales the
+    //    persona fan-out.
     const tier = yield* step("classify-risk", () => riskTier({ diff }));
-    const plan = planForTier(tier);
 
-    // 5. The per-domain reviewer system prompt — operator override or the
-    //    engine's generic default (never a project-specific rubric here).
+    // 4b. Agent fan-out mode — `single` (one generalist reviewer) vs `multi`
+    //     (the tier-scaled per-domain personas). Input override > CONFIG_KV >
+    //     default. The plan's agent set follows from the mode.
+    const agentMode: AgentMode =
+      input.agents ??
+      parseAgentMode(
+        yield* step("resolve-agents", () => config.get("pr-review.agents")),
+      );
+    const plan = planForMode(agentMode, tier);
+
+    // 5. The reviewer system prompt — operator override or the engine's generic
+    //    default — plus an optional per-dispatch focus line. Composed here (not
+    //    threaded through the engine) so `focusArea` rides the trusted dispatch
+    //    input, never the attacker-controllable diff. The model's OUTPUT is still
+    //    sanitized before it renders in the public comment regardless.
     const promptOverride = yield* step("resolve-prompt", () =>
       config.get("pr-review.prompt"),
     );
+    const basePrompt = promptOverride ?? DEFAULT_REVIEW_SYSTEM_PROMPT;
+    const focus = input.focusArea?.trim();
+    const systemPrompt =
+      focus !== undefined && focus !== ""
+        ? `${basePrompt}\n\nExtra focus for this review: ${focus}`
+        : basePrompt;
 
     // 5b. Comment style preset — operator picks the comment layout. Both
     //     presets are hard-coded server-side (so model-authored text can't
@@ -298,7 +371,7 @@ const reviewBody = (input: RunInput) =>
             model: resolved.model,
             backend: resolved.backend,
             mode: resolved.mode,
-            ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
+            systemPrompt,
             ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
           }),
         { concurrency: plan.agents.length },
@@ -343,6 +416,13 @@ type RunInput = {
   readonly baseSha: string;
   readonly pr: number;
   readonly installationId?: number;
+  // Per-dispatch overrides (Action mode) — see the `inputs` schema.
+  readonly agents?: AgentMode;
+  readonly backend?: string;
+  readonly modelId?: string;
+  readonly region?: string;
+  readonly roleArn?: string;
+  readonly focusArea?: string;
 };
 
 type Plan = {
@@ -359,6 +439,45 @@ const planForTier = (tier: Tier): Plan =>
     Match.when("full", () => ({ tier: "full" as const, agents: FULL_AGENTS })),
     Match.exhaustive,
   );
+
+/** Map the resolved agent mode + risk tier to the reviewer plan. `single` runs
+ *  ONE generalist reviewer (the tier still renders in the comment); `multi` runs
+ *  the tier-scaled per-domain personas. */
+const planForMode = (mode: AgentMode, tier: Tier): Plan =>
+  mode === "single" ? { tier, agents: GENERAL_AGENT } : planForTier(tier);
+
+/**
+ * Resolve the active backend, layering per-dispatch input overrides over
+ * CONFIG_KV. An override-aware `getConfig` shim feeds the engine's
+ * `resolveBackend` the input values where present — so a single dispatch can
+ * fully specify a backend (e.g. a Bedrock model bake-off: `backend: "bedrock"`,
+ * `modelId`, `roleArn`, `region`) with NO CONFIG_KV keys set, while an everyday
+ * webhook review with no overrides resolves exactly as before. The shim only
+ * shadows the keys an override targets; everything else still reads CONFIG_KV.
+ */
+const resolveEffectiveBackend = (input: RunInput) =>
+  Effect.gen(function* () {
+    // The effective backend names which `<backend>.*` keys an override targets.
+    const backend = parseBackend(
+      input.backend ?? (yield* config.get(backendConfigKey(NS))),
+    );
+    const keys = namespacedKeys(NS)[backend];
+    const overrides = new Map<string, string>();
+    if (input.backend !== undefined)
+      overrides.set(backendConfigKey(NS), input.backend);
+    if (input.modelId !== undefined) overrides.set(keys.modelKey, input.modelId);
+    if (input.region !== undefined && keys.regionKey !== undefined)
+      overrides.set(keys.regionKey, input.region);
+    if (input.roleArn !== undefined && keys.roleArnKey !== undefined)
+      overrides.set(keys.roleArnKey, input.roleArn);
+    return yield* resolveBackend(
+      (key) =>
+        overrides.has(key)
+          ? Effect.succeed<string | undefined>(overrides.get(key))
+          : config.get(key),
+      { namespace: NS },
+    );
+  });
 
 /**
  * Run a container command and FAIL the Effect when it exits non-zero. The core

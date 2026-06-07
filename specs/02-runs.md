@@ -56,14 +56,13 @@ This axis is deliberately **distinct** from `limits.requiresBrowser`: `requiresB
 | 9 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
 | 10 | [`spec-drift-pr`](#10-spec-drift-pr) | Daily spec/implementation drift → draft PR with the reconciling spec edits | **Live at HEAD** (V3) — Schedule mode |
 | 11 | [`ci-triage-pr`](#11-ci-triage-pr) | Daily triage of GitHub Actions + Cloudflare deploy failures → draft PR | **Live at HEAD** (V3) — Schedule mode |
-| 12 | [`pr-review`](#12-pr-review) | Multi-domain AI code review on every PR push | **Live at HEAD** (V3) — Webhook mode |
-| 13 | [`multi-agent-review`](#13-multi-agent-review) | AI code review on Bedrock via the BYOC OIDC→STS trust path | **Live at HEAD** (V3) |
-| 14 | [`refresh-fixtures`](#14-refresh-fixtures) | Regenerate tracked files in a credential-free container → propose a PR (writeback) | **Live at HEAD** (V3) — worked `writeback` example |
+| 12 | [`pr-review`](#12-pr-review) | AI code review on every PR push — single- or multi-agent, backend selectable from `CONFIG_KV` (incl. Bedrock via the BYOC OIDC→STS trust path) | **Live at HEAD** (V3) — Webhook mode |
+| 13 | [`refresh-fixtures`](#13-refresh-fixtures) | Regenerate tracked files in a credential-free container → propose a PR (writeback) | **Live at HEAD** (V3) — worked `writeback` example |
 | — | [`cache-*`](#primitive-cache-pnpm--npm--cargo--uv) | Primitive — R2-backed package cache (`installCached`) | **Live at HEAD** — capability + primitive |
 | — | [`r2-artifacts`](#primitive-r2-artifacts) | Primitive — artifact upload + signed URLs (`artifact`) | **Live at HEAD** — capability wired |
 | — | [`awsAssumeRole`](03-dsl.md#awsassumerole) | Primitive — OIDC-federated AWS STS credentials | **Live at HEAD** — capability + primitive |
 
-> **Live runs at HEAD** — all twelve registered runs (`offload-test`, `cdp-acceptance`, `deploy-smoke`, `matrix-fanout`, `playwright-e2e`, `product-demo`, `playwright-demo`, `pr-review`, `multi-agent-review`, `spec-drift-pr`, `ci-triage-pr`, `refresh-fixtures`) ship from [`runs/index.ts`](../runs/index.ts) + the dispatcher's `RUN_REGISTRY` ([`apps/dispatcher/src/registry.ts`](../apps/dispatcher/src/registry.ts)); `/health` lists them sorted. All three trigger modes are wired: **Action mode** (HMAC `POST /v1/dispatch/:run`), **Schedule mode** (Cron Trigger → `scheduled()` handler), and **Webhook mode** (GitHub App webhook → `POST /v1/webhooks/github`). Webhook mode is shipped but **opt-in / off by default** — a deploy without `GITHUB_WEBHOOK_SECRET` returns `503` on that route; set the secret to enable it. "Live at HEAD" means shipped + runnable on your own `wrangler deploy` ([BYOC](05-byoc.md)) — there is no operator-hosted demo. Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
+> **Live runs at HEAD** — all eleven registered runs (`offload-test`, `cdp-acceptance`, `deploy-smoke`, `matrix-fanout`, `playwright-e2e`, `product-demo`, `playwright-demo`, `pr-review`, `spec-drift-pr`, `ci-triage-pr`, `refresh-fixtures`) ship from [`runs/index.ts`](../runs/index.ts) + the dispatcher's `RUN_REGISTRY` ([`apps/dispatcher/src/registry.ts`](../apps/dispatcher/src/registry.ts)); `/health` lists them sorted. All three trigger modes are wired: **Action mode** (HMAC `POST /v1/dispatch/:run`), **Schedule mode** (Cron Trigger → `scheduled()` handler), and **Webhook mode** (GitHub App webhook → `POST /v1/webhooks/github`). Webhook mode is shipped but **opt-in / off by default** — a deploy without `GITHUB_WEBHOOK_SECRET` returns `503` on that route; set the secret to enable it. "Live at HEAD" means shipped + runnable on your own `wrangler deploy` ([BYOC](05-byoc.md)) — there is no operator-hosted demo. Implementation has skipped around the V0–V4 roadmap deliberately — each run lands when its underlying capabilities + primitives compose without new platform plumbing.
 
 ---
 
@@ -401,9 +400,11 @@ The detection reuses the `ai-code-review` engine: it resolves the configurable `
 
 ## 12. `pr-review`
 
-> **Status: Live at HEAD.** Source: [`runs/pr-review.ts`](../runs/pr-review.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). A FlareDispatch port of Cloudflare's multi-agent code reviewer ([blog](https://blog.cloudflare.com/ai-code-review/)). The review runs **in the Worker**, not a container CLI: the body fans out one domain reviewer per concern via the `@flare-dispatch/review-agent` engine, each calling a model through the [`modelGateway`](03-dsl.md#modelgateway) capability. The one container image (`flare-dispatch-review`: Node + git) is used only for `git` (checkout + three-dot `base...head` diff). The backend is resolved from `CONFIG_KV` **without redeploy** — `opencode`/`reasonix` (Workers AI catalog, binding-as-auth, no API key), `anthropic` (BYOK via AI Gateway), or `bedrock` (OIDC→STS→SigV4 via `awsAssumeRole`, no long-lived AWS key). A `"tools"`-mode backend that returns no tool calls auto-retries once in `"json"` mode.
+> **Status: Live at HEAD.** Source: [`runs/pr-review.ts`](../runs/pr-review.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). A FlareDispatch port of Cloudflare's multi-agent code reviewer ([blog](https://blog.cloudflare.com/ai-code-review/)). The review runs **in the Worker**, not a container CLI: the body runs the `@flare-dispatch/review-agent` engine — either **one generalist reviewer** (`pr-review.agents=single`) or a **fan-out of one domain reviewer per concern** (`agents=multi`, the default) — each calling a model through the [`modelGateway`](03-dsl.md#modelgateway) capability. The one container image (`flare-dispatch-review`: Node + git) is used only for `git` (checkout + three-dot `base...head` diff). The backend is resolved from `CONFIG_KV` **without redeploy** — `opencode`/`reasonix` (Workers AI catalog, binding-as-auth, no API key), `anthropic` (BYOK via AI Gateway), or `bedrock` (OIDC→STS→SigV4 via `awsAssumeRole`, no long-lived AWS key). A `"tools"`-mode backend that returns no tool calls auto-retries once in `"json"` mode.
 
-Webhook-mode-first: fires on `pull_request` (`opened` / `synchronize` / `ready_for_review`), zero GHA minutes. The gate skips drafts (unless labelled `request-ai-review`), `skip-ai-review`-labelled PRs, and bot authors. Each push re-reviews the full PR diff independently — the current run is authoritative, so a fixed finding clears. The diff is noise-stripped + capped to the **resolved backend's** context window; the risk tier (a pure heuristic on diff size + touched paths) picks which domain reviewers run.
+Webhook-mode-first: fires on `pull_request` (`opened` / `synchronize` / `ready_for_review`), zero GHA minutes. The gate skips drafts (unless labelled `request-ai-review`), `skip-ai-review`-labelled PRs, and bot authors. Each push re-reviews the full PR diff independently — the current run is authoritative, so a fixed finding clears. The diff is noise-stripped + capped to the **resolved backend's** context window; the risk tier (a pure heuristic on diff size + touched paths) is always classified, and in `multi` mode it picks which domain reviewers run.
+
+**Per-dispatch overrides (Action mode):** when dispatched by a GHA workflow (rather than the webhook), a single dispatch MAY override the `CONFIG_KV` defaults via the run inputs — `agents`, `backend`, `modelId`, `region`, `roleArn`, `focusArea`. Absent, the `CONFIG_KV` defaults apply (the webhook path is unchanged). This is the **model-bake-off / per-PR-escalation** path the former `multi-agent-review` run served — e.g. dispatch `backend: "bedrock"` + a `modelId` under test to compare a model on a real PR without touching `CONFIG_KV`. These inputs ride the HMAC-authenticated dispatch (operator-trusted), never the diff.
 
 **Inputs:**
 
@@ -414,12 +415,19 @@ Schema.Struct({
   baseSha: Schema.String,                    // PR base-branch tip (three-dot diff endpoint)
   pr: Schema.Number,                         // PR number
   installationId: Schema.optional(Schema.Number), // Webhook maps it from payload.installation.id
+  // Per-dispatch overrides (Action mode) — absent → CONFIG_KV defaults apply:
+  agents: Schema.optional(Schema.Literal("single", "multi")), // override pr-review.agents
+  backend: Schema.optional(Schema.String),   // pin a backend for this dispatch
+  modelId: Schema.optional(Schema.String),   // override the resolved backend's model
+  region: Schema.optional(Schema.String),    // override the bedrock region
+  roleArn: Schema.optional(Schema.String),   // override the bedrock IAM role ARN
+  focusArea: Schema.optional(Schema.String), // extra focus line for the reviewer prompt
 })
 ```
 
 **Outputs:** the engine's `ReviewOutputSchema` — `{ verdict: "approve"|"comment"|"request-changes", tier, critical, warnings, suggestions, findings: { level, title, message, path, startLine, endLine }[] }`. `findings` become check-run annotations; the rest renders in the scannable PR comment (summary table + per-finding headings + GitHub blob links; operator-selectable `default` / `compact` style via `pr-review.style`).
 
-**Steps:** `resolve-backend → checkout → prepare-diff → classify-risk → resolve-prompt → resolve-style → [assume-bedrock-role] → review (fan out per domain) → coordinate → post-comment`. The whole body is wrapped in an error boundary that always posts a PR comment — success or failure — then re-fails honestly so the check goes red on a genuine error.
+**Steps:** `resolve-backend → checkout → prepare-diff → classify-risk → resolve-agents → resolve-prompt → resolve-style → [assume-bedrock-role] → review (one generalist, or fan out per domain) → coordinate → post-comment`. The whole body is wrapped in an error boundary that always posts a PR comment — success or failure — then re-fails honestly so the check goes red on a genuine error.
 
 **Trigger modes:** Webhook (the registered trigger) + Action mode (HMAC dispatch; `installationId` then omitted unless threaded through).
 
@@ -427,46 +435,7 @@ Schema.Struct({
 
 **Limits:** `maxDurationSec: 1500`; `maxConcurrency` = the full domain-reviewer count.
 
-## 13. `multi-agent-review`
-
-> **Status: Live at HEAD.** Source: [`runs/multi-agent-review.ts`](../runs/multi-agent-review.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). AI code review on **AWS Bedrock** via the BYOC `awsAssumeRole` trust path, routed through Cloudflare AI Gateway. It mints short-lived AWS credentials via OIDC federation (`AssumeRoleWithWebIdentity` — the role's trust policy pins the dispatcher's OIDC issuer + a `sub: multi-agent-review:*` pattern, so a leaked HMAC alone can't assume it), clones the repo, collects the diff, and calls Bedrock `InvokeModel` via `modelGateway.complete({ model: "bedrock/<id>", aws: <STS creds> })`. The gateway forwards the SigV4 `Authorization` header, never holds the creds.
-
-Why it sits alongside `pr-review`: the model surface is unified (both use the shared Bedrock-via-AI-Gateway helper), but the dispatch shape differs — `pr-review` reads model + region from `CONFIG_KV` (one operator setup); `multi-agent-review` takes them **per-dispatch** (a `workflow_dispatch` can override the model for QA / model-comparison work). The "multi-agent" name anticipates the eventual fan-out to N domain reviewers; V0 is single-agent because the load-bearing risk is the OIDC→JWKS→STS handshake, not review quality.
-
-**Inputs:**
-
-```ts
-Schema.Struct({
-  repo: Schema.String,
-  sha: Schema.String,
-  baseSha: Schema.optional(Schema.String),   // diff base; omit for a `git log --stat` summary
-  focusArea: Schema.optional(Schema.String), // fed to the system prompt (workflow_dispatch input)
-  modelId: Schema.optional(Schema.String),   // override the default Bedrock model
-  region: Schema.optional(Schema.String),    // default us-east-1; STS exchange happens here
-  roleArn: Schema.String,                    // IAM role to AssumeRoleWithWebIdentity into (required)
-  pr: Schema.optional(Schema.Number),        // with installationId → post a PR review comment
-  installationId: Schema.optional(Schema.Number),
-})
-```
-
-**Outputs:**
-
-```ts
-Schema.Struct({
-  review: Schema.String,                      // first 5000 chars of the model's response
-  modelId: Schema.String,                     // model id actually invoked
-  inputTokens: Schema.optional(Schema.Number),
-  outputTokens: Schema.optional(Schema.Number),
-})
-```
-
-**Steps:** `assume-bedrock-role → checkout → collect-diff → resolve-prompt → invoke-bedrock → [post-comment]`. The PR comment is posted only when both `pr` and `installationId` are present, and is best-effort (a GitHub 4xx/5xx never fails the run — the review still lands in the check-run summary + `summary_json`). The comment carries a marker footer for idempotent updates.
-
-**Platform:** Sandbox (git), `awsAssumeRole` (OIDC→STS), `modelGateway` (Bedrock route via AI Gateway), R2, D1, GitHub Check Runs + PR review comments.
-
-**Limits:** `maxDurationSec: 1500`.
-
-## 14. `refresh-fixtures`
+## 13. `refresh-fixtures`
 
 > **Status: Live at HEAD.** Source: [`runs/refresh-fixtures.ts`](../runs/refresh-fixtures.ts), registered in [`registry.ts`](../apps/dispatcher/src/registry.ts). The worked example for the [`writeback`](#writeback-runs-that-propose-prs) capability: the container runs an operator-supplied regeneration command, stages a changed-files manifest + blobs from `git status --porcelain`, and uploads them as the `writeback` directory artifact. It holds **no git/gh credential** and never pushes — after the run succeeds, the Dispatcher Worker validates the manifest against the `writeback` spec and commits it via the GitHub App as a branch + draft PR. An empty/absent manifest is a clean no-op.
 

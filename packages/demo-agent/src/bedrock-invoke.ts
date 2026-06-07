@@ -1,7 +1,7 @@
 // AWS Bedrock InvokeModel via Cloudflare AI Gateway — container-side twin.
 //
 // Mirrors `packages/runtime-cf/src/bedrock-invoke.ts` (the Worker-side helper
-// pr-review and multi-agent-review use). Copied (not shared) because:
+// pr-review's `bedrock` backend uses). Copied (not shared) because:
 //   * runtime-cf is a Worker-only package and this code runs in the demo
 //     sandbox container.
 //   * extracting both into a shared package is a follow-up; for the V0 of

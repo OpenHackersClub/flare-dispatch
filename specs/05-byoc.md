@@ -29,7 +29,7 @@ A single Worker (the Dispatcher) bound to:
 | `RUNS_STORAGE` | R2 bucket | Live |
 | `RUNS_METADATA` | D1 database | Live |
 | `CONFIG_KV` | KV namespace (dynamic config + `loadSecrets` secret store) | Live |
-| `AI` | Workers AI (backs the `modelGateway` capability — the binding IS the auth, no model API key; `pr-review` / `multi-agent-review`) | Live |
+| `AI` | Workers AI (backs the `modelGateway` capability — the binding IS the auth, no model API key; `pr-review`) | Live |
 | `BROWSER` | Browser Rendering (backs `GET /v1/browser/cdp`, the CDP proxy `cdp-acceptance` / `product-demo` containers dial — CF Browser Rendering CDP is reachable only via this binding, not a public token-dialable WebSocket) | Live |
 | `SEND_EMAIL` | Email Routing `send_email` (backs the `email` capability + completion-notify) | Live — opt-in (commented in `wrangler.jsonc`; absent → `email` no-ops, logs + skips). Delivers only to verified destination addresses; `from` must be `EMAIL_FROM` on that zone. |
 | `triggers.crons` | Cron Triggers (Schedule mode heartbeat) | Live |
@@ -102,8 +102,8 @@ The shape at HEAD (`wrangler.jsonc` on `main`) ships the **live** bindings — i
 
   "observability": { "enabled": true },
 
-  // Workers AI binding — backs the `modelGateway` capability the `pr-review` /
-  // `multi-agent-review` engines call. The binding IS the auth (Workers AI is
+  // Workers AI binding — backs the `modelGateway` capability the `pr-review`
+  // engine calls. The binding IS the auth (Workers AI is
   // account-billed), so no model API key is configured. Optionally routed
   // through an AI Gateway via the `AI_GATEWAY_ID` var (unset → call directly).
   "ai": { "binding": "AI" },
@@ -411,7 +411,7 @@ wrangler deploy
 
 # 6. Verify
 curl -fsS https://flare-dispatch-v0.<your-subdomain>.workers.dev/health
-# {"status":"ok","runs":["cdp-acceptance","ci-triage-pr","deploy-smoke","matrix-fanout","multi-agent-review","offload-test","playwright-demo","playwright-e2e","pr-review","product-demo","refresh-fixtures","spec-drift-pr"]}
+# {"status":"ok","runs":["cdp-acceptance","ci-triage-pr","deploy-smoke","matrix-fanout","offload-test","playwright-demo","playwright-e2e","pr-review","product-demo","refresh-fixtures","spec-drift-pr"]}
 
 # 7. Create the GitHub App (interactive)
 pnpm --filter @flare-dispatch/cli cli github-app create \
