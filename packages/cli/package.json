@@ -21,6 +21,7 @@
     "@effect/cli": "^0.75.1",
     "@effect/platform": "^0.96.0",
     "@effect/platform-node": "^0.106.0",
+    "@flare-dispatch/core": "workspace:*",
     "effect": "^3.21.0"
   },
   "devDependencies": {
