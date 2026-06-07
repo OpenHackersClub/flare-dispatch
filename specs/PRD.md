@@ -19,7 +19,7 @@ Teams work around this with self-hosted runners (which they must operate and sec
 | **Small / mid eng team with a heavy test suite** | A Playwright or integration suite that dominates their GHA bill and wall-clock time | Heavy compute moves to CF Containers + Workflows fan-out; GHA keeps the trigger and the cheap jobs. See [06-cost](06-cost.md). |
 | **Team already on Cloudflare (Workers Paid)** | Wants to consolidate infra; doesn't want a second vendor or a runner fleet to operate | One `wrangler deploy` into the account they already pay for. See [05-byoc](05-byoc.md). |
 | **Platform / DevEx engineer** | Owns CI tooling for an org; needs something auditable, typed, and forkable — not opaque YAML | Runs are typed Effect-TS programs the team owns and vendor-edits. See [03-dsl](03-dsl.md). |
-| **OSS maintainer / autonomous-CI user** | Wants PR review and smoke on every push, plus nightly sweeps and weekly release notes — without burning GHA minutes or adding workflow files | Webhook mode fires runs on every push; Schedule mode fires them on a cron cadence. Both run directly off the GitHub App — zero GHA minutes, no `.github/workflows/` edits. See [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode) and [§ Schedule mode](04-gha-integration.md#schedule-mode). |
+| **OSS maintainer / autonomous-CI user** | Wants PR review and smoke on every push, plus nightly sweeps and weekly release notes — without burning GHA minutes or adding workflow files | Webhook mode (opt-in — enable by setting `GITHUB_WEBHOOK_SECRET`) fires runs on every push once on; Schedule mode fires them on a cron cadence. Both run directly off the GitHub App — zero GHA minutes, no `.github/workflows/` edits. See [04-gha-integration § Webhook mode](04-gha-integration.md#webhook-mode) and [§ Schedule mode](04-gha-integration.md#schedule-mode). |
 
 Not for: teams whose CI is already cheap and fast (lint + unit only) — there is nothing to offload.
 
@@ -30,8 +30,9 @@ Not for: teams whose CI is already cheap and fast (lint + unit only) — there i
 3. **Cheap, wide fan-out.** Workflows `createBatch` spawns up to 100 children per call, 50,000 concurrent instances per account, scale-to-zero between runs. See [01-architecture § Fan-out model](01-architecture.md#fan-out-model).
 4. **You own the runs.** Runs are typed Effect programs — composable steps, tagged errors, exhaustive matching, retry/Schedule combinators — not stringly-typed YAML. Fork them, vendor-edit them, unit-test them without booting a container. See [02-runs](02-runs.md) and [03-dsl](03-dsl.md).
 5. **BYOC, no new dashboard.** Every code path assumes "deployed into the user's own Cloudflare account" — bring-your-own-Cloud, no operator runs it for you. Status reports back as a GitHub Check Run — the existing PR UI is the UI. See [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes).
-6. **Three trigger modes, one Dispatcher.** Action mode interleaves with existing GHA jobs; Webhook mode runs autonomously on GitHub events with zero GHA minutes; Schedule mode fires runs on a wall-clock cadence via Cloudflare Cron Triggers — nightly PR-review sweeps, weekly release notes, scheduled dependency scans. See [04-gha-integration](04-gha-integration.md).
-7. **Federated cloud credentials, no long-lived keys.** The Dispatcher self-issues OIDC tokens at a stable JWKS endpoint; runs federate against AWS STS (`bedrock:InvokeModel` for agentic review, S3 for artifact mirroring), GCP STS, or HashiCorp Vault to get short-lived, per-execution credentials. No AWS / GCP access keys land in Worker Secrets. See [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy).
+6. **Three trigger modes, one Dispatcher.** Action mode interleaves with existing GHA jobs; Webhook mode (opt-in) runs autonomously on GitHub events with zero GHA minutes; Schedule mode fires runs on a wall-clock cadence via Cloudflare Cron Triggers — nightly PR-review sweeps, weekly release notes, scheduled dependency scans. See [04-gha-integration](04-gha-integration.md).
+7. **Agentic PR review in-Worker, BYOK-or-keyless.** `pr-review` and `multi-agent-review` are first-class runs: an `@effect/ai` `modelGateway` capability picks the backend from `CONFIG_KV` *without redeploy* — Workers AI catalog (`@cf/…`, binding-as-auth, no API key), Anthropic-via-AI-Gateway (BYOK), reasonix/DeepSeek, or Bedrock-via-AI-Gateway (OIDC → STS → SigV4, no long-lived AWS key). The diff is capped to the model's context window; the review posts as a scannable summary table + per-finding headings with GitHub blob links, and re-reviews auto-resolve fixed findings. See [02-runs](02-runs.md) and [07-trust-model](07-trust-model.md).
+8. **Federated cloud credentials, no long-lived keys — shipped.** The Dispatcher self-issues OIDC tokens at a stable JWKS endpoint (`/.well-known/jwks.json`); runs federate against AWS STS via `sts:AssumeRoleWithWebIdentity` (`awsAssumeRole`) for short-lived, per-execution credentials. `multi-agent-review` (#111) is the worked example: it mints AWS creds by OIDC, then SigV4-signs Bedrock `InvokeModel` through the AI Gateway — no long-lived AWS access key ever lands in Worker Secrets. GCP STS / HashiCorp Vault federation extend the same primitive. See [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy).
 
 ## What a run is
 
@@ -49,7 +50,7 @@ Runs are not opaque — they are TypeScript files in the user's repo. The shippe
 ```mermaid
 flowchart LR
   GHA[GitHub Actions<br/>trigger + cheap jobs] -->|HMAC POST<br/>/v1/dispatch| W[Run Worker<br/>in your CF account]
-  APP[GitHub App webhook<br/>autonomous trigger<br/>Planned V1] -.->|App-signed<br/>/v1/webhooks/github| W
+  APP[GitHub App webhook<br/>autonomous trigger<br/>opt-in] -->|App-signed<br/>/v1/webhooks/github| W
   CRON[Cloudflare Cron Trigger<br/>scheduled cadence] -->|scheduled handler| W
   W --> WF[CF Workflow<br/>durable orchestration]
   WF --> SB[Sandbox / Container<br/>test execution]
@@ -59,14 +60,14 @@ flowchart LR
   W -->|check-run API| GH[GitHub Checks tab]
 ```
 
-> The dashed arrow marks an autonomous **Webhook-mode** trigger that is **Planned (V1)** — the `/v1/webhooks/github` receiver is not yet wired in code. The Action-mode (solid HMAC arrow) and Schedule-mode (Cron Trigger) paths are live today.
+> All three arrows are live at HEAD. **Webhook mode** (the `/v1/webhooks/github` receiver) is shipped but **opt-in / off by default**: a deploy without `GITHUB_WEBHOOK_SECRET` returns 503 on that route, so it fires only once you set the secret — it does not run on every push by default. The Action-mode (HMAC) and Schedule-mode (Cron Trigger) paths are always on.
 
 A team installs runs by:
 
 1. Forking or cloning a template repo.
 2. `wrangler deploy` the Dispatcher into their own Cloudflare account.
 3. Visiting the Dispatcher's `/v1/github/install/new` to **create their own GitHub App** via the App Manifest flow (the project ships a manifest *template*, not a shared App on the Marketplace; the chooser there picks personal-account vs org ownership), then stashing the App's id / private key / webhook secret into Workers Secrets and installing that App on their org/repos.
-4. Adding `uses: openhackersclub/flare-dispatch-action@v1` to their workflow (Action mode), or just letting their App's webhook fire runs (Webhook mode — Planned V1).
+4. Adding `uses: openhackersclub/flare-dispatch-action@v1` to their workflow (Action mode), or just letting their App's webhook fire runs (Webhook mode — opt-in, enabled by setting `GITHUB_WEBHOOK_SECRET`).
 
 After that, each PR fires runs against the team's own Cloudflare bill. The project supplies the runs, the GHA Action, the Effect-TS DSL packages, and the App manifest template. The team supplies the account *and* the App — both are BYOC; nothing routes through an openhackersclub-operated control plane. Full deploy guide in [05-byoc](05-byoc.md); trust posture in [07-trust-model](07-trust-model.md).
 
@@ -80,7 +81,7 @@ After that, each PR fires runs against the team's own Cloudflare bill. The proje
 
 ## Success criteria
 
-V0 — the slice that proves the model, a `pnpm test` executing in CF Sandbox reporting green/red to a PR check — has shipped. Implementation has continued out of strict V order: `cdp-acceptance` (V2, browser acceptance) and `product-demo` (V3, AI demo in Action + Schedule mode) are live alongside the V0 `offload-test`. Still incremental and independently shippable: V1 adds matrix fan-out + Webhook mode + `await` mode + the cache/artifact polish on top of already-wired primitives; V2 adds the browser-pool `playwright-e2e`; V3 the human-in-loop surface and security scans; V4 polish (OpenTelemetry, retention, an `init` CLI). See [pm/plan § Implementation status](pm/plan.md#flaredispatch--roadmap--v0-plan).
+V0 — the slice that proves the model, a `pnpm test` executing in CF Sandbox reporting green/red to a PR check — has shipped. Implementation has continued out of strict V order: **12 runs are registered and live at HEAD** — `offload-test`, `cdp-acceptance`, `deploy-smoke`, `matrix-fanout`, `multi-agent-review`, `playwright-demo`, `playwright-e2e`, `pr-review`, `product-demo`, `refresh-fixtures`, `spec-drift-pr`, and `ci-triage-pr` (this is the sorted set `/health` returns). Among them, **agentic PR review** (`pr-review` + `multi-agent-review`) is a first-class product surface, and Webhook mode is shipped (opt-in). Still incremental and independently shippable: the remaining roadmap is the cache/artifact polish, the human-in-loop surface, broader security scans, and V4 polish (OpenTelemetry, retention, an `init` CLI). See [pm/plan § Implementation status](pm/plan.md#flaredispatch--roadmap--v0-plan).
 
 Project-management detail lives under [`pm/`](pm/): the phased roadmap — scope, runs shipped, and the exit criterion that closes each phase — and the 7-PR V0 build sequence are both in [pm/plan.md](pm/plan.md).
 
@@ -109,10 +110,10 @@ FlareDispatch is not a deploy pipeline. It is a **test-compute offload**: it exe
 | Spec | Covers |
 |---|---|
 | [01-architecture](01-architecture.md) | Components, per-execution lifecycle, storage, fan-out, platform limits |
-| [02-runs](02-runs.md) | Run catalog with inputs/outputs/primitives |
+| [02-runs](02-runs.md) | Run catalog with inputs/outputs/primitives — incl. agentic PR review (`pr-review`, `multi-agent-review`) |
 | [03-dsl](03-dsl.md) | Effect-TS DSL surface — `defineRun`, `step`, `sandbox`, `browser`, `cache`, `artifact` |
 | [04-gha-integration](04-gha-integration.md) | Three trigger modes (Action / Webhook / Schedule), HMAC auth, Cron Triggers, check-runs callback |
 | [05-byoc](05-byoc.md) | Bindings, secrets, wrangler config, GitHub App, local dev |
 | [06-cost](06-cost.md) | Cost model, worked estimates, head-to-head with GHA pricing |
-| [07-trust-model](07-trust-model.md) | Trust boundaries, adversary catalog, controls in place, known gaps |
+| [07-trust-model](07-trust-model.md) | Trust boundaries, adversary catalog, controls in place, known gaps — incl. modelGateway backends + OIDC federation for agentic PR review |
 | [pm/plan](pm/plan.md) | Delivery roadmap (V0–V4) and the 7-PR V0 build plan |

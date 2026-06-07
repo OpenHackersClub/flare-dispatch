@@ -24,18 +24,21 @@ A single Worker (the Dispatcher) bound to:
 | Binding | Type | Status |
 |---|---|---|
 | `RUNS_WORKFLOW` | Workflow | Live |
-| `RUNS_SANDBOX` | Container (Durable Object) | Live |
+| `RUNS_SANDBOX` | Container (Durable Object, `RunSandbox` — lean image) | Live |
+| `RUNS_SANDBOX_BROWSER` | Container (Durable Object, `RunSandboxBrowser` — chromium-baked image, same Dockerfile + `WITH_BROWSER=true`) | Live |
 | `RUNS_STORAGE` | R2 bucket | Live |
 | `RUNS_METADATA` | D1 database | Live |
 | `CONFIG_KV` | KV namespace (dynamic config + `loadSecrets` secret store) | Live |
+| `AI` | Workers AI (backs the `modelGateway` capability — the binding IS the auth, no model API key; `pr-review` / `multi-agent-review`) | Live |
+| `BROWSER` | Browser Rendering (backs `GET /v1/browser/cdp`, the CDP proxy `cdp-acceptance` / `product-demo` containers dial — CF Browser Rendering CDP is reachable only via this binding, not a public token-dialable WebSocket) | Live |
+| `SEND_EMAIL` | Email Routing `send_email` (backs the `email` capability + completion-notify) | Live — opt-in (commented in `wrangler.jsonc`; absent → `email` no-ops, logs + skips). Delivers only to verified destination addresses; `from` must be `EMAIL_FROM` on that zone. |
 | `triggers.crons` | Cron Triggers (Schedule mode heartbeat) | Live |
-| `RUNS_BROWSER` | Browser Rendering | **Planned (V2)** — `cdp-acceptance` today uses operator-pinned `BROWSER_CDP_CONNECT_URL` + `BROWSER_CDP_API_TOKEN` Worker secrets (the container, not the Worker, opens the CDP WebSocket). |
 | `COORDINATOR` | Durable Object namespace | **Planned (V1)** — fan-out result aggregation, lands with `matrix-fanout`. |
-| `IDEMPOTENCY_KV` | KV namespace (receiver dedup, 24h TTL) | **Planned (V1)** — lands with the Webhook-mode receiver. |
-| `INSTALL_TOKEN_KV` | KV namespace (App install-token cache, 55min TTL) | **Planned (V1)** — V0 caches install tokens in Worker memory only. |
+| `IDEMPOTENCY_KV` | KV namespace (receiver dedup, 24h TTL) | **Optional** — off by default; the shipped Webhook receiver uses it for receiver-level dedup when bound, and falls back to Workflow-level (semantic-id) dedup without it. |
+| `INSTALL_TOKEN_KV` | KV namespace (App install-token cache, 55min TTL) | **Optional** — off by default; the check-runs Layer caches install tokens in Worker memory without it. |
 | `RUNS_FANOUT` | Queue producer + consumer | **Planned (V1)** — engaged only at very high shard counts. |
 
-All live bindings are declared in `wrangler.jsonc`, alongside a `triggers.crons` array — not a binding, but the Cron Triggers that drive Schedule-mode runs. The Dispatcher is the only entry point exposed publicly. A `/v1/admin/*` sub-path (operator surface — force-cancel, replay, `step.waitForEvent` signalling) gated by Cloudflare Access is **Planned (V2/V3)** — see [01-architecture § Dispatcher Worker](01-architecture.md#control-plane) and [07-trust-model § Controls](07-trust-model.md#controls-in-place).
+All live bindings are declared in `wrangler.jsonc`, alongside a `triggers.crons` array — not a binding, but the Cron Triggers that drive Schedule-mode runs. The Dispatcher is the only entry point exposed publicly. The `/v1/admin/events/:wf_id` route (`step.waitForEvent` signalling) is **live at HEAD, opt-in** — gated by an `ADMIN_TOKEN` bearer check, with Cloudflare Access recommended in front for production; broader `/v1/admin/*` operator actions (e.g. force-cancel) remain **Planned (V2/V3)** — see [01-architecture § Dispatcher Worker](01-architecture.md#control-plane) and [07-trust-model § Controls](07-trust-model.md#controls-in-place).
 
 The retention sweep (`infra/cron-cleanup.ts`) referenced in [§ Retention and cleanup](#retention-and-cleanup) is also **Planned (V4)** — at HEAD `apps/dispatcher/src/routes/scheduled.ts` only routes cron ticks to runs whose `schedules[].cron` matches.
 
@@ -87,7 +90,7 @@ Runs declared in `apps/dispatcher/src/registry.ts` are dispatch-able. Adding a n
 
 ## Wrangler config
 
-The shape at HEAD (`wrangler.jsonc` on `main`) ships only the **live** bindings. The Planned bindings (`RUNS_BROWSER`, `COORDINATOR`, `IDEMPOTENCY_KV`, `INSTALL_TOKEN_KV`, `RUNS_FANOUT`) land alongside the features that consume them — V1 for fan-out + receiver dedup, V2 for the Browser Rendering binding (`cdp-acceptance` today uses `BROWSER_CDP_*` Worker secrets instead, see [§ Secrets](#secrets)).
+The shape at HEAD (`wrangler.jsonc` on `main`) ships the **live** bindings — including `AI` (Workers AI), `BROWSER` (Browser Rendering), the second container DO `RUNS_SANDBOX_BROWSER`, and an opt-in (commented-out) `send_email` block. The optional bindings `IDEMPOTENCY_KV` (receiver dedup) and `INSTALL_TOKEN_KV` (install-token cache) are off by default — the shipped code degrades gracefully without them. The fan-out bindings `COORDINATOR` + `RUNS_FANOUT` remain Planned (V1), landing with high-shard-count fan-out.
 
 ```jsonc
 // wrangler.jsonc — V0/V3 live config
@@ -99,16 +102,41 @@ The shape at HEAD (`wrangler.jsonc` on `main`) ships only the **live** bindings.
 
   "observability": { "enabled": true },
 
+  // Workers AI binding — backs the `modelGateway` capability the `pr-review` /
+  // `multi-agent-review` engines call. The binding IS the auth (Workers AI is
+  // account-billed), so no model API key is configured. Optionally routed
+  // through an AI Gateway via the `AI_GATEWAY_ID` var (unset → call directly).
+  "ai": { "binding": "AI" },
+
+  // Browser Rendering binding — backs `GET /v1/browser/cdp`, the CDP proxy the
+  // `cdp-acceptance` / `product-demo` containers connect to. CF Browser
+  // Rendering CDP is reachable ONLY via this binding, not a public
+  // token-dialable WebSocket.
+  "browser": { "binding": "BROWSER" },
+
   "workflows": [
     { "name": "runs-workflow", "binding": "RUNS_WORKFLOW", "class_name": "RunWorkflow" }
   ],
 
-  // Container binding. The `@cloudflare/sandbox` SDK's Sandbox DO speaks an
-  // RPC protocol to a server baked into the container, so the image is built
+  // Email Routing `send_email` binding — backs the `email` capability + the
+  // Workflow's completion-notify. OPT-IN: left commented so `wrangler deploy`
+  // works on deploys without Email Routing; uncomment after setup. Absent → the
+  // `email` capability no-ops (logs + skips), never failing a run. CF delivers
+  // ONLY to verified Email Routing destination addresses, and `from` must be
+  // `EMAIL_FROM` on that zone. Pin recipients with
+  // `"allowed_destination_addresses": ["a@x","b@y"]`.
+  // "send_email": [
+  //   { "name": "SEND_EMAIL" }
+  // ],
+
+  // Container bindings — TWO images from ONE Dockerfile via the `WITH_BROWSER`
+  // build arg (`image_vars`). The `@cloudflare/sandbox` SDK's Sandbox DO speaks
+  // an RPC protocol to a server baked into the container, so the image is built
   // from the matching `docker.io/cloudflare/sandbox` base via a Dockerfile
   // (infra/Dockerfile.sandbox) — a bare node image has no sandbox server.
   // Cloudflare Containers pulls only from registry.cloudflare.com, docker.io,
-  // or Amazon ECR; the Dockerfile's FROM resolves docker.io.
+  // or Amazon ECR; the Dockerfile's FROM resolves docker.io. The dispatcher
+  // routes each run to one binding by its `sandboxImage` ("lean" | "browser").
   "containers": [
     {
       "class_name": "RunSandbox",
@@ -117,20 +145,29 @@ The shape at HEAD (`wrangler.jsonc` on `main`) ships only the **live** bindings.
       //   standard-1 (1/2, 4 GiB) | standard-2 (1, 6 GiB) | standard-3 (2, 8 GiB) | standard-4 (4, 12 GiB).
       "instance_type": "standard-2",
       "max_instances": 16
+    },
+    {
+      "class_name": "RunSandboxBrowser",
+      "image": "./infra/Dockerfile.sandbox",
+      "image_vars": { "WITH_BROWSER": "true" },
+      "instance_type": "standard-2",
+      "max_instances": 16
     }
   ],
 
-  // The Container runtime is fronted by a Durable Object class. RunSandbox is the
-  // DO class backing the RUNS_SANDBOX container binding (NOT the Coordinator
-  // fan-out DO, which is Planned for V1).
+  // Each Container is fronted by a Durable Object class. RunSandbox backs the
+  // lean RUNS_SANDBOX binding; RunSandboxBrowser backs the chromium-baked
+  // RUNS_SANDBOX_BROWSER binding (NOT the Coordinator fan-out DO, Planned V1).
   "durable_objects": {
     "bindings": [
-      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" }
+      { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
+      { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" }
     ]
   },
 
   "migrations": [
-    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] }
+    { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
+    { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] }
   ],
 
   "r2_buckets": [
@@ -138,7 +175,15 @@ The shape at HEAD (`wrangler.jsonc` on `main`) ships only the **live** bindings.
   ],
 
   "d1_databases": [
-    { "binding": "RUNS_METADATA", "database_name": "flare-dispatch-v0", "database_id": "<filled by wrangler>" }
+    {
+      "binding": "RUNS_METADATA",
+      "database_name": "flare-dispatch-v0",
+      "database_id": "<filled by wrangler>",
+      // Wrangler-tracked D1 migrations (applied state lives in the database's
+      // d1_migrations table). Applied in CI before `wrangler deploy`, or
+      // manually: `wrangler d1 migrations apply RUNS_METADATA --remote`.
+      "migrations_dir": "infra/migrations"
+    }
   ],
 
   // KV namespace backing the `config` capability + `loadSecrets` primitive.
@@ -163,13 +208,13 @@ The shape at HEAD (`wrangler.jsonc` on `main`) ships only the **live** bindings.
 These entries land with the features that consume them — keep them out of `wrangler.jsonc` until the consumer exists, or `wrangler deploy --dry-run` will reject the unused binding.
 
 ```jsonc
-// Planned — V1 fan-out + receiver dedup + V2 Browser Rendering.
+// Planned — V1 fan-out + receiver dedup. (Browser Rendering + the
+// RunSandboxBrowser container DO are now LIVE — see the live config above.)
 {
-  "browser": { "binding": "RUNS_BROWSER" },                            // V2 — cdp-acceptance currently uses BROWSER_CDP_* secrets
-
   "durable_objects": {
     "bindings": [
       { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
+      { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" },
       { "name": "COORDINATOR", "class_name": "Coordinator" }           // V1 — fan-out aggregator
     ]
   },
@@ -187,7 +232,8 @@ These entries land with the features that consume them — keep them out of `wra
 
   "migrations": [
     { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
-    { "tag": "v1", "new_classes": ["Coordinator"] }
+    { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] },      // live
+    { "tag": "v2", "new_classes": ["Coordinator"] }                    // V1 — fan-out aggregator
   ],
 
   "routes": [
@@ -244,7 +290,7 @@ Set via `wrangler secret put` — never committed.
 | `GITHUB_APP_ID` | Numeric App id | From the App's GitHub settings page | Always |
 | `GITHUB_APP_PRIVATE_KEY` | PEM key for App auth | From "Generate a private key" on the App page | Always |
 | `GITHUB_WEBHOOK_SECRET` | Verifies inbound App webhooks (`X-Hub-Signature-256`) | `openssl rand -base64 32`; configured in App settings | App-webhook trigger path |
-| `OIDC_SIGNING_JWK` | The Dispatcher's OIDC issuer key (private JWK, ES256). Public half is auto-served at `/.well-known/jwks.json` | `pnpm cli oidc keygen` (writes a fresh P-256 private JWK to stdout) | Any run that uses the `oidc` capability or the `awsAssumeRole` primitive. Skip if no run federates. |
+| `OIDC_SIGNING_JWK` | The Dispatcher's OIDC issuer key (private JWK, ES256). Public half is auto-served at `/.well-known/jwks.json` | `pnpm cli oidc keygen` (writes a fresh P-256 private JWK to stdout) — **the `oidc keygen` subcommand is Planned (V3.5); see [§ CLI](#cli)**, generate the JWK out-of-band until it lands | Any run that uses the `oidc` capability or the `awsAssumeRole` primitive. Skip if no run federates. |
 
 ```sh
 wrangler secret put HMAC_SECRET                    # skip if you don't use the GHA Action / direct POST
@@ -290,7 +336,7 @@ Setup:
 2. GitHub redirects to `<your-endpoint>/v1/github/installed?code=<code>`; the Dispatcher exchanges the code at `POST /app-manifests/<code>/conversions` and renders a one-shot "Success" page that surfaces the App's `owner.login` (so you can confirm the App landed under the right account) alongside the credentials and the `wrangler secret put` commands you need to run.
 3. Stash `app_id`, `webhook_secret`, `private_key`, `client_id`, and `client_secret` into Worker Secrets — they are shown ONCE.
 4. Install the App on the org or specific repos you want to use it with via the **Install** button on the success page (it links to `https://github.com/apps/<slug>/installations/new`, the install picker; choose your org or any repo subset).
-5. Each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually. **(Planned, V1 — the webhook receiver populates the installation map; at HEAD operators pass `installation-id` explicitly to the GHA Action.)**
+5. At HEAD, pass each installation's `installation_id` explicitly to the GHA Action (the `installation-id:` input) or as a run input. **(The Webhook receiver is live but opt-in; auto-populating the installation map from webhook deliveries so you don't record it manually is a follow-up.)**
 
 > **Security note: the `state` CSRF token is generated at step 1 but not yet bound to KV at step 2** — the callback echoes it back, but the Dispatcher does not currently reject an unminted state. Tracked as a high-severity gap in [07-trust-model § Known gaps](07-trust-model.md#known-gaps).
 
@@ -365,7 +411,7 @@ wrangler deploy
 
 # 6. Verify
 curl -fsS https://flare-dispatch-v0.<your-subdomain>.workers.dev/health
-# {"status":"ok","runs":["cdp-acceptance","offload-test","product-demo"]}
+# {"status":"ok","runs":["cdp-acceptance","ci-triage-pr","deploy-smoke","matrix-fanout","multi-agent-review","offload-test","playwright-demo","playwright-e2e","pr-review","product-demo","refresh-fixtures","spec-drift-pr"]}
 
 # 7. Create the GitHub App (interactive)
 pnpm --filter @flare-dispatch/cli cli github-app create \
@@ -396,6 +442,7 @@ The Dispatcher is itself a Worker, so ongoing deploys don't have to be manual `w
 |---|---|---|
 | `dispatch` | Live | Env-var driven (`INPUT_RUN`, `INPUT_ENDPOINT`, `INPUT_HMAC_SECRET`, `INPUT_INPUTS`, …), mirroring the GHA Action contract. Also bundled into `actions/flare-dispatch-action/dist/index.js`. |
 | `github-app create --endpoint <url>` | Live | Prints the manifest-creation URL for the App-installation flow. |
+| `oidc keygen` | **Planned (V3.5)** | Writes a fresh P-256 (ES256) private JWK to stdout for `OIDC_SIGNING_JWK` — the generate/rotate helper the [§ Secrets](#secrets) table and [§ AWS federation trust policy](#aws-federation-trust-policy) reference (`pnpm cli oidc keygen \| wrangler secret put OIDC_SIGNING_JWK`). Lands with the `oidc` capability / `awsAssumeRole` primitive; until then generate the JWK out-of-band. Only `dispatch` + `github-app create` are wired in `packages/cli/src/main.ts` at HEAD. |
 | `init` | **Planned (V4)** | Interactive setup; runs the wrangler/d1/kv create steps. |
 | `deploy` | **Planned (V4)** | `wrangler deploy` + run migrations. |
 | `executions list` | **Planned (V1)** | List recent executions (D1 query). |
@@ -505,8 +552,8 @@ The full pricing model, per-execution cost anatomy, both worked estimates, the h
 A standalone trust/threat-model spec — adversaries, controls, and known gaps — is in [07-trust-model](07-trust-model.md). This section is the operator-facing summary.
 
 - **HMAC** on `/v1/dispatch/:run` (live). 32-byte secret, raw-request-bytes canonicalization (`apps/dispatcher/src/hmac.ts`), constant-time `crypto.subtle.verify("HMAC", ...)`. No `timingSafeEqual` — that's Node-only and isn't on Workers. A 401 carries `dispatcher_secret_fingerprint = sha256(secret)[:8]` so an operator can diff it against the caller-side fingerprint (issue #24).
-- **App webhook signature** on `/v1/webhooks/github`. `X-Hub-Signature-256` verified against `GITHUB_WEBHOOK_SECRET` with the same `crypto.subtle.verify` primitive. No shared secret with the user's GHA workflows. **Status: Planned (V1)** — receiver not yet wired.
-- **Cloudflare Access** on `/v1/admin/*`. Worker re-verifies the Access JWT in code so a misconfigured Access app cannot leak the admin surface. The same `/v1/admin/events/:wf_id` route debounces `(wf_id, decider_email)` in `IDEMPOTENCY_KV` (1h window) so racing approvals are deterministic. **Status: Planned (V2/V3)** — lands with `step.waitForEvent`.
+- **App webhook signature** on `/v1/webhooks/github`. `X-Hub-Signature-256` verified against `GITHUB_WEBHOOK_SECRET` with the same `crypto.subtle.verify` primitive. No shared secret with the user's GHA workflows. **Status: live at HEAD, opt-in** — the receiver ([`routes/webhook.ts`](../apps/dispatcher/src/routes/webhook.ts)) returns `503` until `GITHUB_WEBHOOK_SECRET` is set; setting it enables Webhook mode.
+- **Admin surface** on `/v1/admin/*`. The `/v1/admin/events/:wf_id` route (signals a Workflow paused on `step.waitForEvent`) is **live at HEAD, opt-in** — gated by an `ADMIN_TOKEN` bearer check (`503` when unset). Put Cloudflare Access in front of `/v1/admin/*` in production as defense-in-depth.
 - **App installation tokens** are short-lived (1 hour TTL), scoped to one installation, refreshed on demand. At V0 cached in **Worker memory only**; KV-backed `INSTALL_TOKEN_KV` (55min TTL across Worker recycles) is Planned (V1). No long-lived PATs.
 - **HTTP scheme allowlist** on the GHA Action's `endpoint` input (live). `packages/cli/src/dispatch.ts` rejects anything but `http:`/`https:` before any network attempt, blocking `file://` / `data:` / `ftp://` / cloud-metadata pivots.
 - **`::error::` workflow-command escaping** (live). The Action's `safeForCmd` in `packages/cli/src/dispatch.ts` percent-encodes `%`/`\r`/`\n` and caps user-controlled strings at 500 chars before they reach a runner log, so a hostile Dispatcher response cannot inject a second workflow command.
@@ -536,9 +583,9 @@ A `infra/grafana/` dashboard is **Planned (V4)** once OTel export is wired.
 - [ ] R2 lifecycle policy applied **(Planned, V4)**
 - [ ] Worker Secrets set (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` always; `HMAC_SECRET` if using the GHA Action / direct-POST path; `BROWSER_CDP_CONNECT_URL` + `BROWSER_CDP_API_TOKEN` if running `cdp-acceptance`)
 - [ ] GitHub App created and installed on target repos
-- [ ] Cloudflare Access app configured for `/v1/admin/*` **(Planned, V2/V3 — only relevant once a run uses `step.waitForEvent`)**
+- [ ] (Optional) Cloudflare Access in front of `/v1/admin/*` for production — the route ships with an `ADMIN_TOKEN` bearer gate; relevant once a run uses `step.waitForEvent`
 - [ ] `health` endpoint returns ok with run list
-- [ ] One successful dispatch end-to-end (CLI or GHA Action; App-webhook path lands in V1)
+- [ ] One successful dispatch end-to-end (CLI or GHA Action; the App-webhook path is live but opt-in — set `GITHUB_WEBHOOK_SECRET` to enable it)
 - [ ] Check-run appears on the PR
 - [ ] Required-status-check configured on the protected branch
 - [ ] `triggers.crons` lists every expression a run's `schedules` declares (plus `0 3 * * *` for the D1 retention sweep once V4 lands)

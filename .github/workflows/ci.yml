@@ -1,6 +1,6 @@
 # FlareDispatch CI — dogfooding itself.
 #
-# Two parallel signals on every PR / push to main:
+# Three parallel signals on every PR / push to main:
 #
 #   1. `typecheck` — runs on GHA. Fast, deterministic, no infra needed; this is
 #      the deterministic guardrail that catches contract breaks before anything
@@ -23,6 +23,17 @@
 #      Gated on `vars.FLAREDISPATCH_ENDPOINT` — forks / BYOC deployers without
 #      an endpoint configured get a clear "skipped" notice instead of a hard
 #      failure.
+#
+#   3. `dispatch-pr-review` — Action-mode dispatch of the `pr-review` run
+#      against this PR (recipes/ai-code-review/ci.yml, inlined). Webhook mode
+#      is preferred long-term (zero GHA minutes, the run's own `gate` filters
+#      drafts/bots), but Action mode dogfoods the full review path today
+#      without depending on the App's webhook delivery. The job-level `if`
+#      mirrors the webhook gate: skip drafts (unless `request-ai-review`),
+#      skip `skip-ai-review`, skip bot authors, and skip fork PRs (secrets
+#      are unavailable there, so the HMAC dispatch cannot authenticate).
+#      Fire-and-forget like dispatch-test — the verdict lands as the
+#      `flare-dispatch/pr-review` check-run + a PR review comment.
 #
 # Why typecheck (and bundle-drift) stays here: both are cheap, deterministic,
 # and shouldn't burn a Container roundtrip. Why `pnpm test` offloads: it's
@@ -113,5 +124,46 @@ jobs:
               "repo": "${{ github.event.pull_request.head.repo.full_name || github.repository }}",
               "sha": "${{ github.event.pull_request.head.sha || github.sha }}",
               "command": "pnpm test"
+            }
+          mode: fire-and-forget
+
+  dispatch-pr-review:
+    name: dispatch pr-review
+    runs-on: ubuntu-latest
+    # Mirror the webhook-mode gate (pr-review.run.ts `gate`): non-draft unless
+    # labeled `request-ai-review`, never on `skip-ai-review`, never for bot
+    # authors. Same-repo PRs only — fork PRs get no secrets, so the HMAC
+    # dispatch can't authenticate anyway.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'request-ai-review')) &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-ai-review') &&
+      !endsWith(github.event.pull_request.user.login, '[bot]')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: FlareDispatch not configured — skipping
+        if: vars.FLAREDISPATCH_ENDPOINT == ''
+        run: |
+          echo "::notice::dispatch-pr-review skipped — FLAREDISPATCH_ENDPOINT is not set."
+          echo "Set repo variable FLAREDISPATCH_ENDPOINT and secret FLAREDISPATCH_HMAC to enable."
+
+      # `installationId` is intentionally absent: the Dispatcher resolves the
+      # installation from the repo→installation KV map when it opens the
+      # check-run (specs/04-gha-integration.md § Check-runs callback).
+      - name: Dispatch pr-review
+        if: vars.FLAREDISPATCH_ENDPOINT != ''
+        uses: ./actions/flare-dispatch-action
+        with:
+          run: pr-review
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.event.pull_request.head.sha }}",
+              "baseSha": "${{ github.event.pull_request.base.sha }}",
+              "pr": ${{ github.event.pull_request.number }}
             }
           mode: fire-and-forget

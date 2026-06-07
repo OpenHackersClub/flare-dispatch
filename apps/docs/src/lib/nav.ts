@@ -61,6 +61,11 @@ export const nav: NavSection[] = [
         label: "Cost",
         blurb: "Cost model, worked estimates, head-to-head with GHA pricing.",
       },
+      {
+        slug: "07-trust-model",
+        label: "Trust & Threat Model",
+        blurb: "Trust assumptions, system-boundary auth, adversary catalog, controls in place, known gaps.",
+      },
     ],
   },
   {

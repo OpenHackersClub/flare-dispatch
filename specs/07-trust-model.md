@@ -43,10 +43,10 @@ flowchart LR
   end
 
   OP[Operator] -.->|wrangler secret put| DSP
-  ADM[Operator<br/>via CF Access — Planned V2/V3] -.->|Access JWT| DSP
+  ADM[Operator<br/>via CF Access + bearer] -->|Access JWT + ADMIN_TOKEN| DSP
 
   GHA -->|HMAC-SHA256<br/>X-FlareDispatch-Signature| DSP
-  APP -.->|X-Hub-Signature-256<br/>Planned V1| DSP
+  APP -->|X-Hub-Signature-256<br/>opt-in: GITHUB_WEBHOOK_SECRET| DSP
   CRON[Cloudflare<br/>Cron Trigger] -->|internal scheduled<br/>no auth| DSP
 
   DSP -->|create instance| WF
@@ -54,26 +54,27 @@ flowchart LR
   API -->|installation token| WF
   WF -->|check-runs API| API
   WF --> SB
-  WF -.->|BROWSER_CDP_CONNECT_URL<br/>+ API token| BR
+  SB -->|wss /v1/browser/cdp<br/>BROWSER_CDP_API_TOKEN| DSP
+  DSP -->|env.BROWSER binding| BR
   WF --> KV
   WF --> D1
   WF --> R2
 
-  AWS[AWS<br/>Planned V3.5] -.->|OIDC JWT<br/>federated| WF
+  AWS[AWS] -->|OIDC JWT → STS<br/>federated, no static keys| WF
 ```
 
-Dashed arrows are **Planned**, not implemented at HEAD. Solid arrows are live.
+Every arrow here is live at HEAD. The dashed `wrangler secret put` arrow is the out-of-band provisioning path (not a request-time auth boundary); the admin arrow is **partially** live — the `ADMIN_TOKEN` bearer gate ships in repo, while the CF Access layer in front of it is operator-configured.
 
 | Arrow | Authentication | Live? |
 |---|---|---|
 | Caller workflow → Dispatcher | HMAC-SHA256 over raw request bytes, `X-FlareDispatch-Signature: sha256=<hex>` | Yes |
-| GitHub App webhook → Dispatcher | `X-Hub-Signature-256` over raw body, verified against `GITHUB_WEBHOOK_SECRET` | Planned (V1) |
+| GitHub App webhook → Dispatcher | `X-Hub-Signature-256` over raw body, verified against `GITHUB_WEBHOOK_SECRET` (`webhook.ts`) | Yes — **opt-in**: off until `GITHUB_WEBHOOK_SECRET` is set; the route 503s otherwise |
 | Cron Trigger → Dispatcher `scheduled()` | None — internal-to-Cloudflare; the runtime delivers `controller.cron` + `controller.scheduledTime` | Yes |
-| Operator → Dispatcher (admin) | Cloudflare Access JWT, re-verified Worker-side | Planned (V2/V3) |
+| Operator → Dispatcher (admin) | `ADMIN_TOKEN` bearer, constant-time compared Worker-side (`admin-events.ts`); CF Access in front is operator-configured | Partial — the bearer gate ships and 503s without `ADMIN_TOKEN`; the Access JWT layer is operator-deployed, not enforced in repo |
 | Operator → Dispatcher (secrets) | `wrangler` CLI authenticated against the operator's CF account | Yes |
 | Dispatcher → GitHub API | App JWT (RS256, ≤10 min) exchanged for installation token (1h TTL) | Yes |
-| Container → Browser Rendering CDP | API token query parameter on the `wss://` `/connect` endpoint (`BROWSER_CDP_*` Worker secrets) | Yes (V2 PR9) |
-| Workflow → AWS | OIDC JWT federation (no static AWS keys) | Planned (V3.5) |
+| Container → Dispatcher → Browser Rendering CDP | container dials `wss://…/v1/browser/cdp` with `BROWSER_CDP_API_TOKEN` (bearer or `?token=`); the Worker re-dials CF Browser Rendering over the `env.BROWSER` binding (`browser-cdp.ts`) | Yes |
+| Workflow → AWS | OIDC JWT federation → `sts:AssumeRoleWithWebIdentity` → short-lived STS creds (no static AWS keys); used by `multi-agent-review`'s `bedrock/*` route | Yes (#111) |
 
 The dispatch request lifecycle in detail:
 
@@ -103,7 +104,7 @@ sequenceDiagram
   end
 ```
 
-The 401 branch is the dominant failure mode the dispatch contract is shaped around — see [§ Compromised Action runner](#compromised-action-runner) for what an attacker who knows the HMAC secret can do, and [§ Controls in place](#controls-in-place) for the raw-bytes canonicalization that makes the contract verifiable.
+The 401 branch is the dominant failure mode the dispatch contract is shaped around — see [§ Compromised Action runner](#compromised-action-runner-leaked-hmac-secret) for what an attacker who knows the HMAC secret can do, and [§ Controls in place](#controls-in-place) for the raw-bytes canonicalization that makes the contract verifiable.
 
 ## Adversary catalog
 
@@ -174,7 +175,7 @@ Adversaries are concrete actors, not abstract STRIDE categories. Each entry name
 
 ### Hostile webhook source (forged GitHub webhook)
 
-**Has.** The Dispatcher's URL and the knowledge that `/v1/webhooks/github` will exist.
+**Has.** The Dispatcher's URL and the knowledge that `/v1/webhooks/github` exists (live and opt-in — see [§ Webhook receiver](#webhook-receiver--live-)).
 
 **Can attempt.** POST a crafted webhook payload to `/v1/webhooks/github` claiming a `pull_request.opened` event, hoping the Dispatcher fires a run with attacker-chosen `payload` values.
 
@@ -182,7 +183,7 @@ Adversaries are concrete actors, not abstract STRIDE categories. Each entry name
 
 - The receiver is live at `apps/dispatcher/src/routes/webhook.ts`. `X-Hub-Signature-256` HMAC over `GITHUB_WEBHOOK_SECRET` is the gate, verified with the same `crypto.subtle.verify` primitive as the dispatch HMAC; no shared secret with `HMAC_SECRET`. A deploy without `GITHUB_WEBHOOK_SECRET` returns 503 on the route rather than silently accepting unsigned deliveries.
 
-**Residual risk.** A leaked webhook secret lets an attacker fire Webhook-mode runs at will but does not let them read repos. Same comments as [§ Compromised Action runner](#compromised-action-runner) with `GITHUB_WEBHOOK_SECRET` substituted for `HMAC_SECRET`.
+**Residual risk.** A leaked webhook secret lets an attacker fire Webhook-mode runs at will but does not let them read repos. Same comments as [§ Compromised Action runner](#compromised-action-runner-leaked-hmac-secret) with `GITHUB_WEBHOOK_SECRET` substituted for `HMAC_SECRET`.
 
 ### Compromised GitHub App installation (leaked App private key)
 
@@ -304,6 +305,13 @@ Each control below is implemented at HEAD and pointed at the file that does the 
 
 **Audit hook.** A non-secret 8-hex-char fingerprint of `HMAC_SECRET` is surfaced in 401 responses; the same fingerprint is computed by the Action and printed on permanent-failure. The two sides can be diffed without revealing the secret (issue #24).
 
+**Binding-as-auth (no secret at all).** Two capabilities authenticate by *being in-account* rather than by carrying a secret, so there is no key to leak on those paths:
+
+- **Workers AI / `modelGateway`** (`packages/runtime-cf/src/model-gateway-cf.ts`). The `pr-review` / `multi-agent-review` engines reach Workers AI through the `env.AI` binding — `ai.run(model, …)` and the AI-Gateway universal route `env.AI.gateway(id).run(…)`. Workers AI is account-billed; the binding IS the auth, so no API key travels with `@cf/...` catalog calls. The BYOK provider route still routes through the binding — the AI Gateway holds the provider key and injects it upstream; the Worker never sees it. Only the Bedrock route bypasses the binding (AWS InvokeModel needs SigV4), and that route carries short-lived STS creds, not a long-lived AWS key.
+- **Browser Rendering** (`env.BROWSER`). The Worker→Browser-Rendering CDP hop is binding-mediated — no Cloudflare API token on that hop (see [§ `BROWSER_CDP_API_TOKEN`](#browser_cdp_api_token-is-a-long-lived-static-credential--medium)). The residual static token gates only the container→Worker entry into the proxy.
+
+A binding that requires no secret cannot leak a secret. The blast-radius reduction is structural: a compromised container or a misconfigured run cannot exfiltrate a Workers AI key or a Browser Rendering API token, because neither exists.
+
 ## Known gaps
 
 These are explicitly **un-defended today**. Each has a severity, a description, and a tracking pointer.
@@ -326,11 +334,11 @@ These are explicitly **un-defended today**. Each has a severity, a description, 
 
 ### Installation-ID map not populated — medium
 
-**Description.** Spec language in [05-byoc § GitHub App setup](05-byoc.md#github-app-setup) says "each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually." That auto-discovery rides on the [§ Webhook receiver](#webhook-receiver-not-implemented---high-deferred) above and so doesn't exist yet. Today the GHA Action accepts an explicit `installation-id` input (defaults to `0`); a run dispatched with `installation_id: 0` has no way to mint an installation token and the check-run callback fails silently (logged at `info`).
+**Description.** Spec language in [05-byoc § GitHub App setup](05-byoc.md#github-app-setup) says "each installation's `installation_id` is auto-discovered from webhooks; you don't have to record it manually." For **Webhook-mode** runs this is live — the receiver reads `installation.id` off every payload (`synthesizeGithubBlock`, [§ Webhook receiver](#webhook-receiver--live-)). For **Action-mode** runs there is no such payload, so the GHA Action still accepts an explicit `installation-id` input (defaults to `0`); a run dispatched with `installation_id: 0` has no way to mint an installation token and the check-run callback fails silently (logged at `info`).
 
-**Consequence.** Operators must pass `installation-id` explicitly through the GHA Action `with:` block until V1.
+**Consequence.** Operators must pass `installation-id` explicitly through the GHA Action `with:` block for Action-mode dispatch; Webhook-mode runs no longer need it.
 
-**Tracking.** Planned (V1), tied to the webhook receiver.
+**Tracking.** Webhook-mode auto-discovery ships at HEAD. A persistent installation-id map shared across Action-mode dispatches (so Action-mode runs can also drop the explicit input) is a future item.
 
 ### Per-installation tenancy isolation — medium
 
@@ -344,11 +352,11 @@ These are explicitly **un-defended today**. Each has a severity, a description, 
 
 ### Idempotency-key replay attack surface — low
 
-**Description.** The Dispatch body's `Idempotency-Key` (or, for App webhooks once V1 lands, `X-GitHub-Delivery`) is used for two-layer dedup. A replay attacker who captures a signed dispatch body can re-POST it; the **receiver-level** dedup (Planned V1) would absorb the replay, but the **Workflow-level** dedup (the semantic `instanceId`, live today) already collapses two identical dispatches onto one execution — so a replay is a no-op against the *intended* logical work.
+**Description.** The Dispatch body's `Idempotency-Key` (or, for App webhooks, `X-GitHub-Delivery`) is used for two-layer dedup. A replay attacker who captures a signed dispatch body can re-POST it; the **receiver-level** dedup absorbs the replay (`IDEMPOTENCY_KV` on both `dispatch.ts` and `webhook.ts`, when the binding is bound), and the **Workflow-level** dedup (the semantic `instanceId`, always on) collapses two identical dispatches onto one execution regardless — so a replay is a no-op against the *intended* logical work.
 
-**Consequence.** A replay attacker can confirm that a dispatch happened (by getting `202` back) but cannot cause double-execution of the intended work. They can, however, dispatch *new* `github.sha` values inside the same secret-and-installation if they can mutate the body and re-sign it — but they need the HMAC secret to re-sign, which makes this equivalent to the [§ Compromised Action runner](#compromised-action-runner) scenario.
+**Consequence.** A replay attacker can confirm that a dispatch happened (by getting `202` back) but cannot cause double-execution of the intended work. They can, however, dispatch *new* `github.sha` values inside the same secret-and-installation if they can mutate the body and re-sign it — but they need the HMAC secret to re-sign, which makes this equivalent to the [§ Compromised Action runner](#compromised-action-runner-leaked-hmac-secret) scenario.
 
-**Tracking.** Acceptable as designed. Receiver-level KV dedup (V1) closes the residual "spam the Dispatcher with replays" denial-of-service vector.
+**Tracking.** Acceptable as designed. Receiver-level KV dedup (live, gated on `IDEMPOTENCY_KV` being bound) closes the residual "spam the Dispatcher with replays" denial-of-service vector.
 
 ### Rate limiting / DoS posture — medium
 
@@ -368,13 +376,15 @@ These are explicitly **un-defended today**. Each has a severity, a description, 
 
 ### `BROWSER_CDP_API_TOKEN` is a long-lived static credential — medium
 
-**Description.** The `cdp-acceptance` run (V2 PR9) authenticates to Browser Rendering's `/connect` WebSocket endpoint with a Cloudflare API token carried as a query parameter (`BROWSER_CDP_API_TOKEN`). API tokens have no built-in TTL — they're static until the operator revokes them. The container, not the Worker, opens the WebSocket, so this token is exposed to the container process.
+**What's live.** The Worker→Browser-Rendering hop is now binding-mediated: `GET /v1/browser/cdp` (`apps/dispatcher/src/routes/browser-cdp.ts`) re-dials CF Browser Rendering over the `env.BROWSER` binding (`env.BROWSER.fetch(/v1/acquire)` → `/v1/devtools/browser/<sessionId>`), which is the only supported path to CF Browser Rendering CDP — it is not a public, token-dialable WebSocket. No Cloudflare API token authenticates that hop; the binding IS the auth. The legacy `BROWSER_CDP_CONNECT_URL` external-connect path it replaced is the dying stub.
 
-**Consequence.** A leaked `BROWSER_CDP_API_TOKEN` lets the leaker open Browser Rendering sessions against the operator's account until rotation.
+**What's still static.** The *container→Worker* hop into that proxy still authenticates with `BROWSER_CDP_API_TOKEN` — the container dials `wss://…/v1/browser/cdp` carrying it as a bearer token (or `?token=`), constant-time compared Worker-side. That value is a long-lived secret with no built-in TTL, and it IS exposed to the container process (the container opens the WebSocket). A deploy missing either `env.BROWSER` or `BROWSER_CDP_API_TOKEN` 503s the route rather than opening an unauthenticated bridge.
 
-**Defended by.** API tokens are scope-limited (the operator should provision a Browser-Rendering-only token, not an account-wide token). Token rotation is `wrangler secret put`.
+**Consequence.** A leaked `BROWSER_CDP_API_TOKEN` lets the leaker open Browser Rendering sessions through the operator's Dispatcher (and thus against the operator's account) until rotation — but only via the Dispatcher's binding, not by dialing Browser Rendering directly.
 
-**Tracking.** Acknowledged in `apps/dispatcher/src/env.ts` (the `BROWSER_CDP_API_TOKEN` field docstring). A future Browser Rendering binding (Planned, V2 — `RUNS_BROWSER`) would eliminate the static token in favor of a binding-mediated session, see [05-byoc § Wrangler config — Planned wrangler entries](05-byoc.md#planned-wrangler-entries-v1).
+**Defended by.** The token now scopes a single Worker route, not a Cloudflare API token's full surface; the route is fronted by the operator's TLS and the `env.BROWSER` binding does the actual account-billed work. Token rotation is `wrangler secret put`.
+
+**Tracking.** Acknowledged in `apps/dispatcher/src/env.ts` (the `BROWSER_CDP_API_TOKEN` field docstring). Eliminating even the container-facing static token (e.g. a per-run short-lived bridge token) is a future hardening; the account-scoped API-token exposure the original gap described is closed.
 
 ## Operator responsibilities
 

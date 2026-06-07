@@ -97,3 +97,14 @@ jobs:
           # apps/dispatcher/src/index.ts. Run from the root so wrangler picks
           # it up without --config.
           command: deploy
+          # Re-put the Worker's HMAC_SECRET from the SAME repo secret the
+          # flare-dispatch-action signs with, on every deploy. Rotation
+          # procedure = rotate FLAREDISPATCH_HMAC, then run this workflow
+          # (auto on main push, or workflow_dispatch). Before this, the two
+          # sides could drift: 2026-06-07 the repo secret was rotated without
+          # a worker-side put and every Action-mode dispatch 401'd ("HMAC
+          # drift", fingerprints f9df639a vs e1e715ed) until re-synced.
+          secrets: |
+            HMAC_SECRET
+        env:
+          HMAC_SECRET: ${{ secrets.FLAREDISPATCH_HMAC }}
