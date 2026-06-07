@@ -71,9 +71,64 @@ The engine selects a model backend from config — repoint it in seconds, no red
 
 Model ids are bare `@cf/...` for the Workers AI catalog, `anthropic/...` for the AI-Gateway universal endpoint, or `bedrock/...` for the AI-Gateway Bedrock forwarder. An AI Gateway can front Workers AI calls by setting the `AI_GATEWAY_ID` var on the Worker; the same `AI_GATEWAY_ID` is used for the `anthropic/` and `bedrock/` routes (required, not optional).
 
-The `bedrock` backend is the BYOC trust path — the engine mints short-lived STS creds via OIDC federation per execution (no long-lived AWS keys). See [the multi-agent-review recipe](../multi-agent-review/README.md#how-the-byoc-trust-path-works) for the AWS-side OIDC provider + IAM role setup.
-
 A misconfigured backend (no `model` key, or for `bedrock` no `roleArn`) fails fast — the run posts a PR comment naming the exact missing key.
+
+#### Bedrock backend — the BYOC trust path
+
+The `bedrock` backend mints short-lived AWS credentials per execution via OIDC federation — no long-lived AWS key in GHA or the Worker. The dispatcher signs an OIDC JWT, AWS STS exchanges it for short-lived creds, then the run SigV4-signs `bedrock:InvokeModel` and POSTs through the [AI Gateway Bedrock forwarder](https://developers.cloudflare.com/ai-gateway/usage/providers/bedrock/) (the gateway forwards the SigV4 `Authorization` header verbatim, never holds the creds).
+
+```mermaid
+flowchart LR
+  W[FlareDispatch Worker] -->|"oidc.sign({ aud: sts.amazonaws.com })"| JWT[Signed JWT<br/>iss = OIDC_ISSUER_URL<br/>sub = pr-review:&lt;exec&gt;]
+  JWT -->|AssumeRoleWithWebIdentity| STS[AWS STS]
+  STS -->|short-lived creds| W
+  W -->|"SigV4-signed POST"| AIG[AI Gateway<br/>aws-bedrock forwarder]
+  AIG -->|forwards verbatim| BR[bedrock-runtime:InvokeModel]
+```
+
+Two factors gate role assumption — the dispatch HMAC **and** the JWT signature — so a leaked HMAC alone cannot mint Bedrock creds. AWS-side setup:
+
+1. **Register the dispatcher as an OIDC provider in AWS** (the `--url` MUST equal the `OIDC_ISSUER_URL` Worker secret; AWS doesn't allow updating it later):
+
+   ```sh
+   aws iam create-open-id-connect-provider \
+     --url "https://<your-dispatcher>.workers.dev" \
+     --client-id-list sts.amazonaws.com \
+     --thumbprint-list <sha1-of-jwks-tls-leaf-cert>
+   ```
+
+2. **Create the IAM role**, trust policy pinned to a `Federated` principal + a `sub: pr-review:*` pattern, with a narrow `bedrock:InvokeModel` policy:
+
+   ```json5
+   {
+     "Effect": "Allow",
+     "Principal": { "Federated": "arn:aws:iam::<acct>:oidc-provider/<your-dispatcher>.workers.dev" },
+     "Action": "sts:AssumeRoleWithWebIdentity",
+     "Condition": {
+       "StringEquals": { "<your-dispatcher>.workers.dev:aud": "sts.amazonaws.com" },
+       "StringLike":   { "<your-dispatcher>.workers.dev:sub": "pr-review:*" }
+     }
+   }
+   ```
+
+3. **Set the Worker secrets + vars**: `OIDC_SIGNING_JWK` (secret — `pnpm cli oidc keygen`), `OIDC_ISSUER_URL` (secret — must equal the OIDC provider `--url`), `AI_GATEWAY_ID` (var), `CLOUDFLARE_ACCOUNT_ID` (var), and optionally `AI_GATEWAY_AUTH_TOKEN` (secret — only if [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/) is on). The matching public JWK is auto-served at `<issuer>/.well-known/jwks.json`.
+
+4. **Point the backend at Bedrock**: `pr-review.backend=bedrock`, `pr-review.bedrock.model=bedrock/us.anthropic.claude-opus-4-6-v1`, `pr-review.bedrock.roleArn=<the role ARN>` (and optionally `pr-review.bedrock.region`).
+
+See [05-byoc § AWS federation trust policy](../../specs/05-byoc.md#aws-federation-trust-policy) for the full trust model.
+
+### One reviewer or many — `pr-review.agents`
+
+The fan-out is configurable:
+
+- **`pr-review.agents=multi`** *(default)* — the tier-scaled per-domain personas above (1 / 4 / 7 reviewers by risk tier). The "multi-agent" reviewer.
+- **`pr-review.agents=single`** — one generalist reviewer covering every concern, through the same structured engine (same findings → annotations → verdict → consolidated comment). A leaner, cheaper pass; the historical `multi-agent-review` run collapsed into this mode.
+
+The risk tier is still classified either way (it sizes the diff cap and renders in the comment); in `single` mode it just doesn't scale the reviewer count.
+
+### Per-dispatch overrides — model bake-offs
+
+When dispatched in **Action mode** (a GHA workflow `POST`s the run), a single dispatch can override the CONFIG_KV defaults via the run inputs — `agents`, `backend`, `modelId`, `region`, `roleArn`, `focusArea`. Absent, the CONFIG_KV defaults apply (the Webhook path is unchanged). This is the **model-bake-off / per-PR-escalation** path: dispatch `backend: "bedrock"`, a `modelId` under test, and a `roleArn` to compare a model on a real PR without touching CONFIG_KV. These inputs ride the HMAC-authenticated dispatch (operator-trusted), never the diff.
 
 #### Output mode: `tools` vs `json`
 

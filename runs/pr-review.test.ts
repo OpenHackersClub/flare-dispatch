@@ -323,4 +323,122 @@ describe("pr-review", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  // ---- pr-review.agents: single vs multi-agent fan-out -----------------------
+  // The collapsed `multi-agent-review` run lives on as `agents: "single"` — one
+  // generalist reviewer through the same structured engine. `multi` (default)
+  // is the tier-scaled per-domain persona fan-out.
+
+  // A diff big enough to classify `full` (7 personas under multi) — proves the
+  // single-mode collapse is the agent COUNT, not a side effect of a small diff.
+  const bigFullDiff = [
+    "diff --git a/big.ts b/big.ts",
+    "+++ b/big.ts",
+    ...Array.from({ length: 300 }, (_, i) => `+const pad${i} = ${i};`),
+  ].join("\n");
+
+  it.effect(
+    "agents:\"single\" input → ONE generalist reviewer (overrides CONFIG_KV multi + full tier)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        // CONFIG_KV says multi; the per-dispatch input must still win.
+        config: { ...backendConfig, "pr-review.agents": "multi" },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: bigFullDiff },
+        modelGateway: { responses: Array(7).fill(emptyReport) },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run({ ...baseInput, agents: "single" }));
+        // Exactly one model call despite the full-tier diff + CONFIG_KV multi.
+        expect(handles.modelGateway.requests).toHaveLength(1);
+        expect(handles.modelGateway.requests[0]!.user).toContain(
+          "Review domain: general",
+        );
+        // The engagement line names the lone generalist reviewer.
+        expect(handles.github.pullReviewCalls[0]!.body).toContain("general");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("pr-review.agents=single (CONFIG_KV) → one generalist reviewer", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: { ...backendConfig, "pr-review.agents": "single" },
+      sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+      sandboxFiles: { [DIFF_FILE]: bigFullDiff },
+      modelGateway: { responses: Array(7).fill(emptyReport) },
+    });
+
+    return Effect.gen(function* () {
+      yield* Effect.exit(prReview.run(baseInput));
+      expect(handles.modelGateway.requests).toHaveLength(1);
+      expect(handles.modelGateway.requests[0]!.user).toContain(
+        "Review domain: general",
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  // ---- per-dispatch overrides (the former multi-agent-review use cases) ------
+
+  it.effect("modelId input overrides the resolved backend's model", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: backendConfig, // opencode.model = "@cf/test/model"
+      sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+      sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+      modelGateway: { responses: Array(7).fill(emptyReport) },
+    });
+
+    return Effect.gen(function* () {
+      yield* Effect.exit(
+        prReview.run({ ...baseInput, agents: "single", modelId: "@cf/bake-off/candidate" }),
+      );
+      // The bake-off model id rode the dispatch input, not CONFIG_KV.
+      expect(handles.modelGateway.requests[0]!.model).toBe("@cf/bake-off/candidate");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("backend input overrides the CONFIG_KV backend selection", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      // Default backend is opencode; seed an anthropic model too so the
+      // override resolves. The input must select anthropic.
+      config: {
+        ...backendConfig,
+        "pr-review.anthropic.model": "anthropic/claude-sonnet-4-6",
+      },
+      sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+      sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+      modelGateway: { responses: Array(7).fill(emptyReport) },
+    });
+
+    return Effect.gen(function* () {
+      yield* Effect.exit(
+        prReview.run({ ...baseInput, agents: "single", backend: "anthropic" }),
+      );
+      expect(handles.modelGateway.requests[0]!.model).toBe(
+        "anthropic/claude-sonnet-4-6",
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("focusArea input is appended to the reviewer system prompt", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: backendConfig,
+      sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+      sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+      modelGateway: { responses: Array(7).fill(emptyReport) },
+    });
+
+    return Effect.gen(function* () {
+      yield* Effect.exit(
+        prReview.run({
+          ...baseInput,
+          agents: "single",
+          focusArea: "concurrency safety",
+        }),
+      );
+      expect(handles.modelGateway.requests[0]!.system).toContain(
+        "Extra focus for this review: concurrency safety",
+      );
+    }).pipe(Effect.provide(layer));
+  });
 });

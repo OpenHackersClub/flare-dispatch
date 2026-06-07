@@ -58,10 +58,10 @@ export const recipes: Recipe[] = [
   {
     slug: "ai-code-review",
     label: "AI code review",
-    useCase: "Multi-agent agentic code review on every PR — plus a nightly sweep",
+    useCase: "Configurable single- or multi-agent code review on every PR — plus a nightly sweep",
     mode: "Webhook",
     blurb:
-      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR, findings deduplicated into one consolidated review. Fires on every push (Webhook mode) for zero GHA minutes; an optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
+      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR (`pr-review.agents=multi`), findings deduplicated into one consolidated review; or one generalist reviewer (`agents=single`) for a leaner pass. Backend is selectable from CONFIG_KV without redeploy (Workers AI, Anthropic-via-AI-Gateway BYOK, or Bedrock via the OIDC→STS→SigV4 BYOC trust path), and a dispatch can override the model/region/role per call for model bake-offs. Fires on every push (Webhook mode) for zero GHA minutes; an optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
     files: [
       { name: "pr-review.run.ts", lang: "ts" },
       { name: "pr-review-sweep.run.ts", lang: "ts" },
@@ -80,19 +80,6 @@ export const recipes: Recipe[] = [
       flare: "2 typed runs + dispatch",
       gha: "1 workflow · 5 jobs + matrix + REST glue",
     },
-    hasReadme: true,
-  },
-  {
-    slug: "multi-agent-review",
-    label: "Multi-agent review",
-    useCase: "Bedrock-pinned multi-agent PR review for QA and model bake-offs",
-    mode: "Action",
-    blurb:
-      "PR review on AWS Bedrock routed through Cloudflare AI Gateway — AWS credentials are minted per-execution via OIDC->STS->SigV4, so no long-lived AWS key lives in GHA or the Worker. Model + region are per-dispatch overrides (not CONFIG_KV) for model bake-offs, the system prompt is operator-overridable via the `multi-agent-review.prompt` CONFIG_KV key, and the review posts back as a `flare-dispatch` PR review comment when a `pr` + `installationId` are present.",
-    files: [
-      { name: "multi-agent-review.run.ts", lang: "ts" },
-      { name: "ci.yml", lang: "yaml" },
-    ],
     hasReadme: true,
   },
   {

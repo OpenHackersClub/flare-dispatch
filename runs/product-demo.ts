@@ -224,9 +224,9 @@ const Input = Schema.Struct({
   // threads them into demo-agent through `agentEnv`. Required for any
   // `product-demo.model.*` value with the `bedrock/` prefix; ignored
   // otherwise (the agent's compat path doesn't read AWS_*).
-  // Setup: same trust policy / IAM role that #111's `multi-agent-review`
-  // uses, with `sub` widened to also accept `product-demo:*`. See
-  // recipes/multi-agent-review/README.md § AWS federation.
+  // Setup: same trust policy / IAM role that `pr-review`'s `bedrock`
+  // backend uses, with `sub` widened to also accept `product-demo:*`. See
+  // recipes/ai-code-review/README.md § Bedrock backend — the BYOC trust path.
   bedrockRoleArn: Schema.optional(Schema.String),
   bedrockRegion: Schema.optional(Schema.String),
 });
@@ -414,7 +414,7 @@ export const productDemo = defineRun({
             roleArn: input.bedrockRoleArn!,
             region,
             // Audience is the same `sts.amazonaws.com` that #111's
-            // multi-agent-review uses; the trust policy keys off `sub`
+            // pr-review bedrock backend uses; the trust policy keys off `sub`
             // (run name + execution id) — adjust the trust policy to
             // also accept `product-demo:*`.
           }),
