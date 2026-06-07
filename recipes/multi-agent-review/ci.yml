@@ -1,0 +1,60 @@
+# Recipe: Multi-agent review — Action-mode dispatcher (Bedrock via Cloudflare AI Gateway)
+#
+# Use case: dispatch the shipped `multi-agent-review` run from a GitHub Actions
+# workflow. The run reviews the PR diff on AWS Bedrock, routed through Cloudflare
+# AI Gateway, with AWS credentials minted per-execution via OIDC -> STS -> SigV4 —
+# no long-lived AWS key in GHA or the Worker.
+#
+# Unlike `pr-review` (which reads model + region from CONFIG_KV), this run takes
+# `modelId` + `region` per-dispatch (handy for QA / model bake-offs). They are
+# omitted from the inputs blob below so the run's defaults apply — add them to
+# pin a model. Full setup (AWS OIDC provider, IAM trust policy, Worker secrets,
+# prompt override) is in ./README.md.
+#
+# Mode: Action mode, fire-and-forget. See specs/04-gha-integration.md.
+# Run:  multi-agent-review — defined in ./multi-agent-review.run.ts.
+
+name: multi-agent-review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    paths-ignore:
+      - "*.md"
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: openhackersclub/flare-dispatch-action@v1
+        with:
+          run: multi-agent-review
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          installation-id: ${{ vars.FLAREDISPATCH_INSTALLATION_ID }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.event.pull_request.head.sha }}",
+              "baseSha": "${{ github.event.pull_request.base.sha }}",
+              "pr": ${{ github.event.pull_request.number }},
+              "roleArn": "${{ secrets.FLAREDISPATCH_BEDROCK_ROLE_ARN }}",
+              "installationId": ${{ vars.FLAREDISPATCH_INSTALLATION_ID && fromJSON(vars.FLAREDISPATCH_INSTALLATION_ID) || 'null' }}
+            }
+
+# `roleArn` is the IAM role the dispatcher's OIDC identity assumes via
+# AssumeRoleWithWebIdentity (specs/05-byoc.md § AWS federation trust policy) —
+# pin the role's trust policy to `sub: multi-agent-review:*` so a leaked HMAC
+# alone can't assume it.
+#
+# `installationId` + `pr` are BOTH required for the run to post its review back
+# as a `flare-dispatch` PR review comment via `github.pullReview`
+# (runs/multi-agent-review.ts); without them the review still lands in the
+# check-run summary + R2 logs. The `&& … || 'null'` expression renders an unset
+# `FLAREDISPATCH_INSTALLATION_ID` var as JSON `null`, which the run's schema
+# treats as an omitted optional.

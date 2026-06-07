@@ -5,7 +5,7 @@ GitHub talks to FlareDispatch through **three trigger modes**. Pick whichever fi
 | Mode | How a run is triggered | GHA workflow file? | GHA minutes per execution | Shared secret to rotate? | Status |
 |---|---|---|---|---|---|
 | **Action mode** | A GHA workflow calls `openhackersclub/flare-dispatch-action`; or any external caller HMAC-signs and POSTs the dispatch endpoint | yes (or none, for direct POST) | ~10 s per dispatch | yes — `FLAREDISPATCH_HMAC` | Live |
-| **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret | **Live** |
+| **Webhook mode** | The `FlareDispatch` GitHub App webhook fires the Dispatcher directly | no | 0 | no — only the App's own webhook secret | **Live** — opt-in (needs `GITHUB_WEBHOOK_SECRET`; off → route `503`s) |
 | **Schedule mode** | A Cloudflare [Cron Trigger](https://developers.cloudflare.com/workers/configuration/cron-triggers/) fires the Dispatcher's `scheduled()` handler on a wall-clock cadence; the handler instantiates a durable scheduling Workflow | no | 0 | no — no GitHub-facing secret at all | Live |
 
 All three modes hit the same Dispatcher, share the same dedup discipline, and report results through the same check-run callback. The rest of this doc is **one section per mode**, then the parts they share (check-runs callback, dedup, secrets, failure handling). Trust boundaries and threats per mode are catalogued in [07-trust-model](07-trust-model.md).
@@ -127,7 +127,7 @@ Use **only** when a follow-up GHA step needs the result inline — e.g. a deploy
 
 ## Webhook mode
 
-> **Status: Live.** The `FlareDispatch` GitHub App manifest declares `/v1/webhooks/github` as its `hook_attributes.url` (`infra/github-app-manifest.json`, mirrored in `apps/dispatcher/src/routes/github.ts`). The receiver — `X-Hub-Signature-256` verify, `triggers` evaluation, `actions[]` filtering, `gate()`, `IDEMPOTENCY_KV` receiver-dedup, and `check_run.rerequested` handling — is wired at `apps/dispatcher/src/routes/webhook.ts`.
+> **Status: Live — opt-in, off by default.** The receiver — `X-Hub-Signature-256` verify, `triggers` evaluation, `actions[]` filtering, `gate()`, optional `IDEMPOTENCY_KV` receiver-dedup, and (via the generic event match) `check_run.rerequested` re-runs — is wired at `apps/dispatcher/src/routes/webhook.ts`. The `FlareDispatch` GitHub App manifest declares `/v1/webhooks/github` as its `hook_attributes.url` (`infra/github-app-manifest.json`, mirrored in `apps/dispatcher/src/routes/github.ts`). **The mode is opt-in:** a deploy without `GITHUB_WEBHOOK_SECRET` returns `503` on this route (`webhook.ts` refuses rather than accept unsigned bodies) — it does not fire on every push until you provision that secret.
 
 The `FlareDispatch` GitHub App webhook fires the Dispatcher's `/v1/webhooks/github` directly. No GHA workflow file is involved.
 
@@ -172,6 +172,8 @@ export const prReview = defineRun({
 ```
 
 On each delivery the receiver verifies the App webhook signature (`X-Hub-Signature-256`), evaluates every matching `triggers` entry across all registered runs, dedupes (see § Receiver dedup), and fires whichever runs' gates pass. Multiple runs may subscribe to the same event. The Dispatcher meets GitHub's 10-second webhook ack window with margin — all LLM calls, Octokit fetches, and container starts happen inside the Workflow, never on the receiver path.
+
+The agentic reviewer `pr-review` is the headline Webhook-mode consumer: it subscribes to `pull_request` (its `triggers` block in [`runs/pr-review.ts`](../runs/pr-review.ts)) and runs its model calls in-Worker through the `modelGateway` capability (backend selectable from `CONFIG_KV` without redeploy — Workers AI, Anthropic-via-AI-Gateway, reasonix/DeepSeek, Bedrock-via-AI-Gateway). Its sibling `multi-agent-review` shares the same in-Worker model path but is dispatched per-call (Action mode / `workflow_dispatch`, with a per-dispatch model override) rather than via a `pull_request` trigger. Either way the LLM work stays inside the Workflow, so the receiver still acks within the 10-second window.
 
 ---
 
@@ -250,7 +252,7 @@ Schedule mode's heartbeat is recurring, but a run sometimes needs a **one-off** 
 
 ## Check-runs callback (shared by all modes)
 
-Whatever triggered the execution, the Dispatcher reports the result through the `FlareDispatch` App's check-runs API. App credentials are exchanged for short-lived installation tokens (1-hour TTL). At V0 the token is cached in **Worker memory only** (`packages/github-app/src/installation-token.ts`); the KV-backed `INSTALL_TOKEN_KV` cache that survives Worker recycles is **Planned (V1)** and lands with the Webhook-mode receiver.
+Whatever triggered the execution, the Dispatcher reports the result through the `FlareDispatch` App's check-runs API. App credentials are exchanged for short-lived installation tokens (1-hour TTL). The token is cached in **Worker memory only** (`packages/github-app/src/installation-token.ts`); the KV-backed `INSTALL_TOKEN_KV` cache that survives Worker recycles is **Planned (V1)** — `INSTALL_TOKEN_KV` is declared (commented-out, optional) in `wrangler.jsonc`, and on a recycle the next check-run write simply does a fresh JWT exchange (one extra round-trip, never a failure).
 
 ```mermaid
 sequenceDiagram
@@ -317,9 +319,9 @@ This keeps the single-surface model intact — the check-run is still the only t
 
 ### Re-running
 
-> **Status: Planned (V1)** — `check_run.rerequested` / `check_run.created` handling rides on the Webhook-mode receiver, which is not yet implemented.
+> **Status: Live** (opt-in, like all of Webhook mode — needs `GITHUB_WEBHOOK_SECRET`). The receiver is event-generic (`triggersByEvent`, `apps/dispatcher/src/routes/webhook.ts`), so re-run handling is a run-config matter, not a bespoke handler: a run declares a `check_run` trigger with `actions: ["rerequested"]` (or `["created"]`) and the existing fan-out path dispatches it.
 
-Once Webhook mode lands, the App will listen for `check_run.rerequested` and `check_run.created`. Clicking "Re-run failed checks" on a PR fires `POST /v1/webhooks/github`, which the Dispatcher routes to a new Workflow execution with the same inputs. The run re-executes in place — no GHA workflow re-runs, regardless of which mode originally triggered it.
+Clicking "Re-run failed checks" on a PR fires `check_run.rerequested` to `POST /v1/webhooks/github`. The receiver matches it against any run subscribing to the `check_run` event, filters on `payload.action`, and routes to a new Workflow execution with the same inputs. The run re-executes in place — no GHA workflow re-runs, regardless of which mode originally triggered it.
 
 ---
 
@@ -350,7 +352,7 @@ Setup: see [`specs/05-byoc.md` § Secrets](./05-byoc.md) and the commented `send
 
 All three modes share the same two-layer dedup discipline so a redelivery storm, a double-click on "Re-run failed checks," a GHA retry, or a duplicate cron delivery doesn't produce parallel work or duplicate check-runs.
 
-1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, the caller-supplied `Idempotency-Key` for direct dispatch, or the `schedules[].idempotencyKey` value for a cron tick (Cloudflare may deliver a Cron Trigger more than once). A repeat returns `202` immediately — Workflows is never touched. **Status: Planned (V1)** — `IDEMPOTENCY_KV` is not yet declared in `wrangler.jsonc`; receiver-level dedup lands with the Webhook-mode receiver. Today, the Workflow-level key below is the only dedup layer (Schedule mode passes its `idempotencyKey(ctx)` as the Workflow `instanceId`, so duplicate cron deliveries already collapse at layer 2).
+1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, the caller-supplied `Idempotency-Key` for direct dispatch, or the `schedules[].idempotencyKey` value for a cron tick (Cloudflare may deliver a Cron Trigger more than once). A repeat returns `202` immediately — Workflows is never touched. `apps/dispatcher/src/routes/webhook.ts` does this today, guarded on the **optional** `IDEMPOTENCY_KV` binding: it is declared (commented-out) in `wrangler.jsonc`, so this layer is on once you bind the namespace. Absent the binding, receiver dedup falls back to the Workflow-level key below (Schedule mode passes its `idempotencyKey(ctx)` as the Workflow `instanceId`, so duplicate cron deliveries already collapse at layer 2 regardless).
 2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo}:{pr}:{head_sha}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`, and for a scheduling Workflow the cron-window key `pr-review-sweep:{iso_date}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same logical work collapse onto one execution. A scheduling Workflow's fan-out children are themselves keyed semantically, so a sweep is idempotent against both itself and the other modes.
 
 ---

@@ -1,0 +1,28 @@
+# FlareDispatch docs — open-source, AI crawls are wanted.
+
+User-agent: *
+Allow: /
+
+# AI / LLM-search crawlers — explicitly allowed (OSS docs; citations welcome).
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+Sitemap: https://flare-dispatch.openhackers.club/sitemap-index.xml

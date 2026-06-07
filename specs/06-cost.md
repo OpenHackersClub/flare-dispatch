@@ -17,10 +17,22 @@ A FlareDispatch deploy is a single Worker plus its bindings. The cost components
 | **D1** | 5 GB storage free tier; generous read/write free tier | within free tier for execution metadata |
 | **Queues** | 1M operations/month | within free tier for fan-out backpressure |
 | **Workflows** | billed as the underlying Worker requests + CPU-ms | — (no separate Workflows line item) |
+| **Model inference** (Workers AI / AI Gateway) | Workers AI Neurons free allocation; AI Gateway has no per-call fee | Workers AI per-Neuron beyond the allocation; gateway-routed BYOK/Bedrock calls bill at the upstream provider's rate |
+| **Email** (Email Routing `send_email`) | included with Email Routing | within free tier — Email Routing send has no per-message charge |
 
-The dominant variable cost is **Containers** — that's where test commands actually execute. Everything else tends to stay within the included quotas for small-to-medium volume.
+The dominant variable cost is **Containers** — that's where test commands actually execute — for the test-running runs (`offload-test`, `matrix-fanout`, `playwright-e2e`, …). The **model-calling** runs (`pr-review`, `multi-agent-review`) invert that: their marginal cost is **model inference**, not container compute (see [Per-execution cost anatomy](#per-execution-cost-anatomy)). Everything else tends to stay within the included quotas for small-to-medium volume.
 
-*Source:* [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Containers pricing](https://developers.cloudflare.com/containers/pricing/), [Browser Rendering pricing](https://developers.cloudflare.com/browser-rendering/platform/pricing/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
+**Model inference.** The `pr-review` and `multi-agent-review` runs call a model through the `modelGateway` capability ([`packages/core/src/services/model-gateway.ts`](../packages/core/src/services/model-gateway.ts)), backed by the Cloudflare Workers AI binding (`env.AI`) routed through an AI Gateway. The selectable backend ([`packages/review-agent/src/backend.ts`](../packages/review-agent/src/backend.ts)) decides what those calls cost:
+
+- **`opencode` / `reasonix`** — Workers AI catalog models (`@cf/...`). The binding is the auth (account-billed, no API key) — these bill as **Workers AI Neurons** on your Cloudflare account, not a third party.
+- **`anthropic`** — Claude via the AI Gateway universal endpoint (BYOK). Billed at **Anthropic's** rate against your key stored in the gateway; the gateway itself adds no per-call fee.
+- **`bedrock`** — AWS Bedrock `InvokeModel` via the AI Gateway forwarder (OIDC → STS → SigV4, no long-lived AWS key). Adds **AWS Bedrock per-token cost + the AI Gateway hop** on top — the only backend that bills outside your Cloudflare account *and* incurs an AWS line item.
+
+`pr-review` fans out one reviewer per domain (up to seven domain-specific agents), each embedding the whole diff — so its inference cost is roughly the per-reviewer token spend × reviewer count. `multi-agent-review` is single-agent at HEAD (one model call against the chosen backend; the multi-domain fan-out its name anticipates is not yet wired). Either way the diff is capped to the chosen model's context window (`CATALOG_MAX_DIFF_CHARS` ≈ 60 KB for catalog models, `ANTHROPIC_MAX_DIFF_CHARS` / `BEDROCK_MAX_DIFF_CHARS` ≈ 240 KB for the 200k-context backends) to bound per-review token spend.
+
+**Email.** Run-authored failure summaries on red checks ship over the `email` capability ([`packages/core/src/services/email.ts`](../packages/core/src/services/email.ts)), backed by Cloudflare Email Routing's `send_email` binding. This is **opt-in** — a logged no-op (`skipped: true`) until `send_email` is configured, gated by an `EMAIL_ALLOWED_RECIPIENTS` allowlist. Email Routing send carries no per-message charge, so this stays within the free tier.
+
+*Source:* [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Containers pricing](https://developers.cloudflare.com/containers/pricing/), [Browser Rendering pricing](https://developers.cloudflare.com/browser-rendering/platform/pricing/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/), [AI Gateway](https://developers.cloudflare.com/ai-gateway/), [Email Routing](https://developers.cloudflare.com/email-routing/).
 
 ## Per-execution cost anatomy
 
@@ -31,18 +43,37 @@ A single `offload-test`-shaped execution (clone → install → test → upload 
 - **R2** — log NDJSON is kilobytes; a Playwright report archive is single-digit MB. Storage cost rounds to zero; egress is free.
 - **D1** — two row writes per step. Free tier.
 
-Rule of thumb: **container compute ≈ (vCPU-s + GiB-s) × wall-time**, and that's ~95% of the marginal cost of a run. Browser-heavy runs (`playwright-e2e`, `cdp-acceptance`) add Browser Rendering hours on top — see the trade-off table in [02-runs § playwright-e2e](02-runs.md#3-playwright-e2e).
+Rule of thumb for the **test-running** runs: **container compute ≈ (vCPU-s + GiB-s) × wall-time**, and that's ~95% of the marginal cost of a run. Browser-heavy runs (`playwright-e2e`, `cdp-acceptance`) add Browser Rendering hours on top — see the trade-off table in [02-runs § playwright-e2e](02-runs.md#3-playwright-e2e).
 
 ```mermaid
 pie showData
-  title Marginal cost of one execution
+  title Marginal cost of one test-running execution
   "Container compute (vCPU-s + memory)" : 95
   "R2 + D1 + Worker CPU" : 5
 ```
 
+### The model-calling review path — model inference, not container compute
+
+`pr-review` and `multi-agent-review` break the ~95%-container rule because the review runs **in the Worker, not in a container CLI** ([`runs/pr-review.ts`](../runs/pr-review.ts) header). The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` — checkout + `git diff` — a few seconds of vCPU; every model call happens in the Worker against the `modelGateway` backend. So the marginal-cost stack shifts:
+
+- **Model inference** — the dominant line. For a Workers-AI backend (`opencode`/`reasonix`) it's account-billed Neurons; for `anthropic` it's BYOK token cost at Anthropic's rate; for `bedrock` it's AWS Bedrock token cost + the AI Gateway hop. `pr-review` multiplies this by its reviewer count when it fans out one reviewer per domain (each embeds the whole diff); `multi-agent-review` is single-agent at HEAD — one model call.
+- **Container vCPU-seconds** — now a *small* line: a short-lived lean container just long enough to clone the repo and produce the diff. No test suite runs in it.
+- **Worker / Workflow CPU** — the diff is capped to the model's context window and the model round-trips are I/O-bound waits; still negligible against the 30M CPU-ms quota.
+- **R2 / D1** — unchanged: kilobytes of metadata, free tier.
+
+```mermaid
+pie showData
+  title Marginal cost of one model-calling review execution
+  "Model inference (Neurons / BYOK / Bedrock tokens)" : 80
+  "Container compute (clone + diff only)" : 15
+  "R2 + D1 + Worker CPU" : 5
+```
+
+The split is illustrative, not metered — the inference share grows with diff size, reviewer count, and a pricier backend (`bedrock`/`anthropic` > Workers AI catalog); the container share shrinks to near-zero on a cached checkout. The point stands: for these runs, **container compute is no longer the thing to budget for** — model inference is.
+
 ## Worked estimate — small team
 
-Assumptions: 200 PRs/month, ~8 min average run wall time, 4-shard matrices, `standard-2` containers. Matrix fan-out is **Planned (V1)** — see [02-runs § matrix-fanout](02-runs.md#2-matrix-fanout); the 4-shard figure is the shape this estimate models once it lands. At HEAD the live runs are single-container; substitute `× 1` for the matrix factor to project current cost.
+Assumptions: 200 PRs/month, ~8 min average run wall time, 4-shard matrices, `standard-2` containers. Matrix fan-out is **live at HEAD** — `matrix-fanout` ([02-runs § matrix-fanout](02-runs.md#2-matrix-fanout)) runs one container per shard concurrently (via the `sharded` primitive; `limits.maxConcurrency` is declared but not yet enforced at the run level, so all shards launch at once), so the 4-shard figure is the real shape of a sharded run. For a single-container run, substitute `× 1` for the matrix factor.
 
 | Line item | Estimate |
 |---|---|
