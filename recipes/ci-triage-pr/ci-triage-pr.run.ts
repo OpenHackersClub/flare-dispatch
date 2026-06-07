@@ -34,6 +34,13 @@
 //
 // Mode: Schedule mode — specs/04-gha-integration.md § Schedule mode. The cron
 // MUST also be in wrangler.jsonc `triggers.crons`.
+//
+// ALSO Action-mode dispatchable (`POST /v1/dispatch/ci-triage-pr`): a consumer
+// that owns its own scheduling can dispatch daily with optional caller-supplied
+// `signals` — observability errors collected from systems the dispatcher's read
+// capabilities don't reach (APM/tracing SaaS, Workers runtime exception logs,
+// health probes). Signals are folded into the same triage + report, and count
+// as failures for the green-day check.
 
 import { Effect, Schema } from "effect";
 import {
@@ -66,6 +73,37 @@ const WINDOW_KEY = key("window-hours");
 const DEFAULT_WINDOW_HOURS = 24;
 const TRIAGE_MAX_TOKENS = 3072;
 
+// Caps on caller-supplied signals — bound the dispatch body well under the CF
+// Workflows params ceiling (50 × ~2 KB ≈ 100 KB worst case) and turn an
+// oversized dispatch into a clean 400 at the dispatch gate (dispatch.ts decodes
+// `inputs` against this schema) instead of a silent overflow downstream.
+const MAX_SIGNALS = 50;
+const MAX_SIGNAL_SOURCE_CHARS = 120;
+const MAX_SIGNAL_TITLE_CHARS = 200;
+const MAX_SIGNAL_DETAIL_CHARS = 2_000;
+const MAX_SIGNAL_URL_CHARS = 1_000;
+
+/**
+ * A caller-supplied observability signal — an error the dispatching system
+ * observed somewhere the dispatcher's own read capabilities don't reach
+ * (an APM/tracing SaaS, Workers runtime exception logs, health probes, …).
+ * The caller collects + summarizes; the run folds the signals into the same
+ * daily triage as the Actions/deploy failures.
+ */
+const Signal = Schema.Struct({
+  /** Which system produced the signal — e.g. "workers-observability:my-api". */
+  source: Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_SOURCE_CHARS)),
+  /** Short title naming the error. */
+  title: Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_TITLE_CHARS)),
+  /** Enough detail for the model to triage (message, context, window). */
+  detail: Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_DETAIL_CHARS)),
+  /** Optional deep link into the producing system. */
+  url: Schema.optional(Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_URL_CHARS))),
+  /** Optional occurrence count over the caller's window. */
+  count: Schema.optional(Schema.Number),
+});
+type SignalT = typeof Signal.Type;
+
 /** The model's triage of the day's failures. */
 const TriageReport = Schema.Struct({
   /** A 1–2 sentence overview of the day's CI health. */
@@ -96,11 +134,19 @@ write-up for humans, not an automated fix.`;
 
 const Input = Schema.Struct({
   firedAt: Schema.Number,
+  /**
+   * Optional caller-supplied observability signals (Action-mode dispatch).
+   * Schedule mode sends none — the Workflow's decode defaults to `[]`.
+   */
+  signals: Schema.optionalWith(Schema.Array(Signal).pipe(Schema.maxItems(MAX_SIGNALS)), {
+    default: () => [],
+  }),
 });
 
 const Output = Schema.Struct({
   actionsFailures: Schema.Number,
   deployFailures: Schema.Number,
+  signalsCount: Schema.Number,
   prOpened: Schema.Boolean,
   prUpdated: Schema.Boolean,
   prNumber: Schema.Number,
@@ -117,7 +163,9 @@ export const ciTriagePr = defineRun({
     {
       cron: "0 6 * * *",
       idempotencyKey: ({ firedAt }) => `ci-triage-pr:${isoDate(firedAt)}`,
-      inputs: ({ firedAt }) => ({ firedAt }),
+      // Cron has no caller to supply signals — schedule days triage only what
+      // the read capabilities see.
+      inputs: ({ firedAt }) => ({ firedAt, signals: [] }),
     },
   ],
 
@@ -129,9 +177,13 @@ export const ciTriagePr = defineRun({
   run: (input) =>
     Effect.gen(function* () {
       const day = isoDate(input.firedAt);
+      // Direct `run()` callers (tests) may bypass the Workflow's Schema decode
+      // that applies the `[]` default — normalize here.
+      const signals = input.signals ?? [];
       const empty = {
         actionsFailures: 0,
         deployFailures: 0,
+        signalsCount: signals.length,
         prOpened: false,
         prUpdated: false,
         prNumber: 0,
@@ -142,11 +194,11 @@ export const ciTriagePr = defineRun({
       const projects = parseList(
         yield* step("resolve-projects", () => config.get(PROJECTS_KEY)),
       );
-      if (repos.length === 0 && projects.length === 0) {
+      if (repos.length === 0 && projects.length === 0 && signals.length === 0) {
         yield* step("log-empty", () =>
           io.log(
             "warn",
-            `ci-triage-pr: neither ${REPOS_KEY} nor ${PROJECTS_KEY} is set — nothing to triage`,
+            `ci-triage-pr: neither ${REPOS_KEY} nor ${PROJECTS_KEY} is set and the dispatch carried no signals — nothing to triage`,
           ),
         );
         return empty;
@@ -196,9 +248,15 @@ export const ciTriagePr = defineRun({
               }),
             );
 
-      if (actionFailures.length === 0 && deployFailures.length === 0) {
+      // Signals count as failures for the green-day check: a day with zero
+      // CI/deploy failures but real caller-observed runtime errors must still
+      // open the triage PR.
+      if (actionFailures.length === 0 && deployFailures.length === 0 && signals.length === 0) {
         yield* step("log-green", () =>
-          io.log("info", "ci-triage-pr: no CI failures in window — nothing to triage"),
+          io.log(
+            "info",
+            "ci-triage-pr: no CI failures or signals in window — nothing to triage",
+          ),
         );
         return empty;
       }
@@ -230,7 +288,7 @@ export const ciTriagePr = defineRun({
           model: resolved.model,
           mode: resolved.mode,
           system: systemPrompt,
-          userBody: renderUserBody({ actionFailures, deployFailures }),
+          userBody: renderUserBody({ actionFailures, deployFailures, signals }),
           jsonContract: TRIAGE_JSON_CONTRACT,
           schema: TriageReport,
           toolName: "report_triage",
@@ -258,12 +316,12 @@ export const ciTriagePr = defineRun({
           baseBranch,
           headBranch: `flare-dispatch/ci-triage-${day}`,
           title: `chore(ci): triage ${day} CI failures`,
-          body: renderPrBody(report, actionFailures.length, deployFailures.length),
+          body: renderPrBody(report, actionFailures.length, deployFailures.length, signals.length),
           commitMessage: `chore(ci): CI failure triage for ${day}\n\nGenerated by flare-dispatch ci-triage-pr.`,
           files: [
             {
               path: `.flare-dispatch/ci-triage-${day}.md`,
-              content: renderReportFile(report, actionFailures, deployFailures, day),
+              content: renderReportFile(report, actionFailures, deployFailures, signals, day),
             },
           ],
         }),
@@ -277,6 +335,7 @@ export const ciTriagePr = defineRun({
       return {
         actionsFailures: actionFailures.length,
         deployFailures: deployFailures.length,
+        signalsCount: signals.length,
         prOpened: result.created,
         prUpdated: !result.created,
         prNumber: result.number,
@@ -304,15 +363,29 @@ const failureLines = (
   return [...a, ...d].join("\n");
 };
 
+/** One line per caller-supplied signal, mirroring `failureLines`' shape. */
+const signalLines = (signals: readonly SignalT[]): string =>
+  signals
+    .map((s) => {
+      const count = s.count !== undefined ? ` ×${s.count}` : "";
+      const url = s.url !== undefined ? ` (${s.url})` : "";
+      return `- [${s.source}] ${s.title}${count}${url}\n  ${s.detail}`;
+    })
+    .join("\n");
+
 /** The domain body of the user message (the engine appends the per-mode framing). */
 const renderUserBody = (ctx: {
   actionFailures: readonly WorkflowRunRef[];
   deployFailures: readonly DeploymentRef[];
+  signals: readonly SignalT[];
 }): string =>
   [
     "Recent CI failures to triage:",
     "",
     failureLines(ctx.actionFailures, ctx.deployFailures),
+    ...(ctx.signals.length > 0
+      ? ["", "Observability signals to triage (caller-supplied):", "", signalLines(ctx.signals)]
+      : []),
   ].join("\n");
 
 const MARKER = "<!-- flare-dispatch: ci-triage-pr -->";
@@ -321,9 +394,10 @@ const renderPrBody = (
   report: typeof TriageReport.Type,
   actions: number,
   deploys: number,
+  signals: number,
 ): string =>
   [
-    `### CI triage — ${actions} Actions + ${deploys} deploy failure(s)`,
+    `### CI triage — ${actions} Actions + ${deploys} deploy failure(s)${signals > 0 ? ` + ${signals} signal(s)` : ""}`,
     "",
     "> 🤖 Draft opened by `flare-dispatch/ci-triage-pr`. A model-written triage of recent CI failures — review the suggested next steps; this is a diagnosis, not an automated fix.",
     "",
@@ -341,6 +415,7 @@ const renderReportFile = (
   report: typeof TriageReport.Type,
   actions: readonly WorkflowRunRef[],
   deploys: readonly DeploymentRef[],
+  signals: readonly SignalT[],
   day: string,
 ): string =>
   [
@@ -358,5 +433,6 @@ const renderReportFile = (
     ]),
     "## Raw failures",
     failureLines(actions, deploys),
+    ...(signals.length > 0 ? ["", "## Raw signals", signalLines(signals)] : []),
     "",
   ].join("\n");
