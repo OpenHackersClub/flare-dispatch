@@ -46,9 +46,11 @@ import {
   defineRun,
   github,
   io,
+  SignalArray,
   StepFailed,
   step,
   type DeploymentRef,
+  type SignalT,
   type WorkflowRunRef,
 } from "@flare-dispatch/core";
 import { isoDate, parseList } from "@flare-dispatch/core/primitives";
@@ -70,36 +72,10 @@ const WINDOW_KEY = key("window-hours");
 const DEFAULT_WINDOW_HOURS = 24;
 const TRIAGE_MAX_TOKENS = 3072;
 
-// Caps on caller-supplied signals — bound the dispatch body well under the CF
-// Workflows params ceiling (50 × ~2 KB ≈ 100 KB worst case) and turn an
-// oversized dispatch into a clean 400 at the dispatch gate (dispatch.ts decodes
-// `inputs` against this schema) instead of a silent overflow downstream.
-const MAX_SIGNALS = 50;
-const MAX_SIGNAL_SOURCE_CHARS = 120;
-const MAX_SIGNAL_TITLE_CHARS = 200;
-const MAX_SIGNAL_DETAIL_CHARS = 2_000;
-const MAX_SIGNAL_URL_CHARS = 1_000;
-
-/**
- * A caller-supplied observability signal — an error the dispatching system
- * observed somewhere the dispatcher's own read capabilities don't reach
- * (an APM/tracing SaaS, Workers runtime exception logs, health probes, …).
- * The caller collects + summarizes; the run folds the signals into the same
- * daily triage as the Actions/deploy failures.
- */
-const Signal = Schema.Struct({
-  /** Which system produced the signal — e.g. "workers-observability:my-api". */
-  source: Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_SOURCE_CHARS)),
-  /** Short title naming the error. */
-  title: Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_TITLE_CHARS)),
-  /** Enough detail for the model to triage (message, context, window). */
-  detail: Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_DETAIL_CHARS)),
-  /** Optional deep link into the producing system. */
-  url: Schema.optional(Schema.String.pipe(Schema.maxLength(MAX_SIGNAL_URL_CHARS))),
-  /** Optional occurrence count over the caller's window. */
-  count: Schema.optional(Schema.Number),
-});
-type SignalT = typeof Signal.Type;
+// The caller-supplied observability signal contract (`signals/v1`) — the
+// `Signal` shape, `SignalArray` (the capped array runs accept), and the caps —
+// is the canonical `@flare-dispatch/core` contract. This run is one consumer
+// of it; see packages/core/src/signals.ts and specs/02-runs.md § Signals.
 
 /** The model's triage of the day's failures. */
 const TriageReport = Schema.Struct({
@@ -135,7 +111,7 @@ const Input = Schema.Struct({
    * Optional caller-supplied observability signals (Action-mode dispatch).
    * Schedule mode sends none — the Workflow's decode defaults to `[]`.
    */
-  signals: Schema.optionalWith(Schema.Array(Signal).pipe(Schema.maxItems(MAX_SIGNALS)), {
+  signals: Schema.optionalWith(SignalArray, {
     default: () => [],
   }),
 });

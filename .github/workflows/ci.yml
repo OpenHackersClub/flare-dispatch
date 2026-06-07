@@ -81,6 +81,12 @@ jobs:
       - name: Verify recipe mirrors match their runs
         run: node scripts/sync-recipes.mjs --check
 
+      # The language-agnostic JSON Schema artifact for `signals/v1` is generated
+      # from `scripts/emit-signals-schema.mjs`. Fail if the committed
+      # `schemas/signals.v1.schema.json` is stale (run `pnpm emit-signals-schema`).
+      - name: Verify signals JSON Schema is in sync
+        run: node scripts/emit-signals-schema.mjs --check
+
   dispatch-test:
     name: dispatch offload-test
     runs-on: ubuntu-latest
