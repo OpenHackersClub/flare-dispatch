@@ -11,6 +11,13 @@
 //                      § sandbox)
 //   (c) timeout     — fake `exec` raises ExecTimeout → the run Effect *fails*
 //                      with the `ExecTimeout` tag, re-failed unchanged
+//   (d) secrets     — config-store secrets are resolved by `loadSecrets` and
+//                      injected into the exec env (per-dispatch `env` wins on
+//                      a key collision); a named-but-unset key fails the run
+//                      with `SecretsMissing` before the exec
+//   (e) install     — `install: true` runs the R2-cached dependency install
+//                      inside the checkout step; the `image` override reaches
+//                      the container acquire
 //
 // Plus a determinism guard: the run body must not call `Date.now()` /
 // `crypto.randomUUID()` directly — non-determinism flows only through `io`,
@@ -32,6 +39,8 @@ const baseInput = {
   repo: "owner/name",
   sha: "abc123",
   command: "pnpm test",
+  secrets: [] as readonly string[],
+  install: false,
 } as const;
 
 describe("offload-test", () => {
@@ -132,6 +141,104 @@ describe("offload-test", () => {
       return Effect.gen(function* () {
         const result = yield* offloadTest.run(baseInput);
         expect(result.durationMs).toBe(4242);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "install — runs the cached dependency install in the checkout, image override reaches acquire",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0 } },
+      });
+      const input = { ...baseInput, install: true, image: "custom/image:1" };
+
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(input);
+        expect(result.exitCode).toBe(0);
+
+        // The container acquire honours the `image` override (previously the
+        // input was declared but never threaded).
+        expect(handles.sandbox.acquired[0]).toEqual({ image: "custom/image:1" });
+
+        // `installCached` detected pnpm from the lockfile probe and — the test
+        // Cache fake always misses — ran the real install before the command.
+        const commands = handles.sandbox.execs.map((e) => e.command);
+        expect(commands).toContain("pnpm install --frozen-lockfile");
+        expect(commands.indexOf("pnpm install --frozen-lockfile")).toBeLessThan(
+          commands.indexOf("pnpm test"),
+        );
+
+        // Still exactly the three run steps — the install lives inside
+        // `checkout`, not a fourth step.
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "exec",
+          "upload-log",
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "secrets — config-store values are injected into the exec env, per-dispatch env wins",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0 } },
+        config: {
+          "secret/SOME_API_KEY": "key_from_store",
+          "secret/SOME_BASE_URL": "https://store.example.com",
+        },
+      });
+      const input = {
+        ...baseInput,
+        secrets: ["SOME_API_KEY", "SOME_BASE_URL"],
+        secretPrefix: "secret/",
+        // Collides with the config-store key — the per-dispatch value (the
+        // more specific source) must win.
+        env: { SOME_BASE_URL: "https://dispatch.example.com" },
+      };
+
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(input);
+        expect(result.exitCode).toBe(0);
+
+        const exec = handles.sandbox.execs.find(
+          (e) => e.command === "pnpm test",
+        );
+        expect(exec?.env).toEqual({
+          SOME_API_KEY: "key_from_store",
+          SOME_BASE_URL: "https://dispatch.example.com",
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "secrets — a named-but-unset secret fails the run with SecretsMissing before the exec",
+    () => {
+      // No `config` seed — the named secret resolves to nothing. `loadSecrets`
+      // runs with `required: true`, so the run fails fast instead of executing
+      // the command without the credential.
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0 } },
+      });
+      const input = { ...baseInput, secrets: ["SOME_API_KEY"] };
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(offloadTest.run(input));
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        const tag = Exit.isFailure(exit)
+          ? Option.match(Cause.failureOption(exit.cause), {
+              onSome: (f) => (f as { _tag?: string })._tag,
+              onNone: () => undefined,
+            })
+          : undefined;
+        expect(tag).toBe("SecretsMissing");
+
+        // Fail-fast: the command never ran.
+        expect(handles.sandbox.execs).toHaveLength(0);
       }).pipe(Effect.provide(layer));
     },
   );
