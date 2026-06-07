@@ -100,6 +100,45 @@ export const fingerprint = async (secret: string): Promise<string> => {
 };
 
 /**
+ * Constant-time equality of two strings — for comparing a presented bearer
+ * token against a configured one (signal ingress, `routes/signals-webhook.ts`).
+ *
+ * Workers has no `crypto.timingSafeEqual`. We HMAC BOTH strings under the same
+ * freshly-minted random key, then compare the fixed-width (32-byte) MACs via
+ * `crypto.subtle.verify` (which IS constant-time). This is timing-safe AND
+ * length-safe: a length difference no longer short-circuits, because both
+ * inputs collapse to a 32-byte MAC before any comparison, and the per-call
+ * random key means an attacker can't precompute or correlate the MAC of a guess
+ * across calls. Returns `false` for any nullish/empty input (fail closed).
+ */
+export const constantTimeEqual = async (
+  a: string | null | undefined,
+  b: string | null | undefined,
+): Promise<boolean> => {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length === 0 || b.length === 0) return false;
+  const keyBytes = crypto.getRandomValues(new Uint8Array(32));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+  const macA = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(a) as BufferSource,
+  );
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    macA as BufferSource,
+    encoder.encode(b) as BufferSource,
+  );
+};
+
+/**
  * Constant-time verify of a `X-FlareDispatch-Signature` header value against
  * the raw request body bytes.
  *
