@@ -668,6 +668,92 @@ describe("runDispatch", () => {
     };
     expect(body.github.installation_id).toBe(999);
   });
+
+  // --- collect-command (consumer-side signal collection) --------------------
+
+  /** A signal JSON literal a `collect-command` shell can `printf`. */
+  const COLLECTED = JSON.stringify([
+    {
+      source: "workers-observability:my-api",
+      title: "Unhandled exception",
+      detail: "TypeError: cannot read properties of undefined",
+    },
+  ]);
+
+  it("collect-command: collected signals are merged into the dispatched inputs", async () => {
+    const { fetch, calls } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "01COL" }) },
+    ]);
+    const env = baseEnv({
+      INPUT_RUN: "ci-triage-pr",
+      INPUT_INPUTS: "{}",
+      "INPUT_COLLECT-COMMAND": `printf '%s' '${COLLECTED}'`,
+    });
+
+    const result = await Effect.runPromise(runDispatch({ env, fetch }));
+    expect(result.executionId).toBe("01COL");
+
+    const body = JSON.parse(calls[0]?.body ?? "{}") as {
+      inputs: { signals: { source: string }[]; firedAt: number };
+    };
+    expect(body.inputs.signals).toHaveLength(1);
+    expect(body.inputs.signals[0]?.source).toBe("workers-observability:my-api");
+    // firedAt defaulted because the caller didn't supply it and we now carry signals.
+    expect(typeof body.inputs.firedAt).toBe("number");
+  });
+
+  it("collect-command: appends to caller-provided signals (caller first)", async () => {
+    const { fetch, calls } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "01COL2" }) },
+    ]);
+    const env = baseEnv({
+      INPUT_RUN: "ci-triage-pr",
+      INPUT_INPUTS: JSON.stringify({
+        firedAt: 42,
+        signals: [{ source: "caller", title: "from-caller", detail: "d" }],
+      }),
+      "INPUT_COLLECT-COMMAND": `printf '%s' '${COLLECTED}'`,
+    });
+
+    await Effect.runPromise(runDispatch({ env, fetch }));
+    const body = JSON.parse(calls[0]?.body ?? "{}") as {
+      inputs: { firedAt: number; signals: { source: string }[] };
+    };
+    expect(body.inputs.firedAt).toBe(42); // caller's value preserved
+    expect(body.inputs.signals.map((s) => s.source)).toEqual([
+      "caller",
+      "workers-observability:my-api",
+    ]);
+  });
+
+  it("collect-command: a non-zero exit fails the dispatch BEFORE signing", async () => {
+    const { fetch, calls } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "never" }) },
+    ]);
+    const env = baseEnv({
+      INPUT_RUN: "ci-triage-pr",
+      "INPUT_COLLECT-COMMAND": "echo boom >&2; exit 7",
+    });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+    expect(Exit.isFailure(exit)).toBe(true);
+    // Nothing was POSTed — the failure is pre-network.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("collect-command: malformed output fails the dispatch BEFORE signing", async () => {
+    const { fetch, calls } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "never" }) },
+    ]);
+    const env = baseEnv({
+      INPUT_RUN: "ci-triage-pr",
+      "INPUT_COLLECT-COMMAND": "printf 'not json'",
+    });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("reportFailure — workflow-command injection escape (security H2)", () => {
