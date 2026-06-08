@@ -265,9 +265,25 @@ const completeWorkersAi = (
       output.tool_calls ?? []
     ).map((c) => ({ name: c.name, arguments: c.arguments }));
 
+    // Some Workers AI models occasionally return `response` as a *parsed
+    // object* instead of a string (e.g. JSON-shaped completions, or some
+    // versions of llama-3.x with structured-output prompts). The downstream
+    // engine's `parseStructured` rejects non-string `text` with
+    // `StructuredOutputInvalid: got object` — but an honest non-string at
+    // this boundary should be JSON-stringified so the engine has something
+    // to parse, instead of dying with a generic "got object". This mirrors
+    // the same defensive coercion `parseToolArguments` already does for
+    // tool-call args returned as objects vs JSON strings.
+    const text =
+      typeof output.response === "string"
+        ? output.response
+        : output.response === undefined || output.response === null
+          ? ""
+          : JSON.stringify(output.response);
+
     return {
       toolCalls,
-      text: output.response ?? "",
+      text,
     } satisfies ModelCompletionResult;
   });
 

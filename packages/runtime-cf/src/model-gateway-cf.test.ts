@@ -121,6 +121,36 @@ describe("makeModelGatewayLive", () => {
     );
     expect(exit._tag).toBe("Failure");
   });
+
+  it("coerces a non-string `response` (some catalog models return parsed objects) to JSON text", async () => {
+    // Some Workers AI models occasionally return `response` as a parsed
+    // object instead of a string. Without coercion here, the downstream
+    // engine's parseStructured fires `StructuredOutputInvalid: got object`
+    // — a generic-sounding error that obscures the cause. The route must
+    // hand parseStructured a string so it has something concrete to
+    // JSON.parse + Schema-decode.
+    const { ai } = stubAi({
+      response: { findings: [] } as unknown as string,
+    });
+    const result = await run(ai, undefined, {
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      system: "s",
+      user: "u",
+    });
+    expect(typeof result.text).toBe("string");
+    expect(result.text).toBe('{"findings":[]}');
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it("coerces a missing `response` to empty string (back-compat)", async () => {
+    const { ai } = stubAi({});
+    const result = await run(ai, undefined, {
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      system: "s",
+      user: "u",
+    });
+    expect(result.text).toBe("");
+  });
 });
 
 // ---------------------------------------------------------------------------
