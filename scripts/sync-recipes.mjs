@@ -47,12 +47,54 @@ const render = (runPath) => {
   return [...banner(title, runBase), ...lines.slice(1)].join("\n");
 };
 
+// `pr-review` ALSO ships as both a deployed run and a copy-paste recipe, but its
+// run carries an elaborate shared header (CONFIG_KV docs, v3 rationale) rather
+// than the one-line `// Run:` banner the `render` swap above expects — so it
+// can't ride `PAIRS`. The recipe is the run VERBATIM save two recipe-only header
+// edits: the design-doc pointer (`recipes/ai-code-review` → `./README.md`) and a
+// "drop this into runs/" note. Encoding that as a transform OF THE RUN keeps the
+// rest of the header (and the whole body) in sync automatically. Until this was
+// added, the `--check` gate had a blind spot here and the v3.0.0→v3.1.0
+// single/multi-agent collapse silently left the recipe stale.
+const PR_REVIEW_HEADER_ANCHOR =
+  "// https://blog.cloudflare.com/ai-code-review/ — see recipes/ai-code-review for\n// how the blog's design maps onto this run.";
+const PR_REVIEW_RECIPE_HEADER =
+  "// https://blog.cloudflare.com/ai-code-review/ — see ./README.md for how the\n// blog's design maps onto this run.\n//\n// Drop this file into your repo's `runs/`; it is identical to the deployed\n// `runs/pr-review.ts`. The review engine (`@flare-dispatch/review-agent`) runs\n// in the Worker — no `review-agent` CLI in the container image.";
+
+/** Each deployed run whose recipe is a verbatim mirror + a header transform. */
+const MIRRORS = [
+  {
+    run: "runs/pr-review.ts",
+    recipe: "recipes/ai-code-review/pr-review.run.ts",
+    transform: (src) => {
+      if (!src.includes(PR_REVIEW_HEADER_ANCHOR)) {
+        throw new Error(
+          "runs/pr-review.ts: recipe header anchor not found — update PR_REVIEW_HEADER_ANCHOR in sync-recipes.mjs",
+        );
+      }
+      return src.replace(PR_REVIEW_HEADER_ANCHOR, PR_REVIEW_RECIPE_HEADER);
+    },
+  },
+];
+
 const check = process.argv.includes("--check");
 const root = process.cwd();
 let drift = false;
 
-for (const { run, recipe } of PAIRS) {
-  const expected = render(resolve(root, run));
+const jobs = [
+  ...PAIRS.map(({ run, recipe }) => ({
+    run,
+    recipe,
+    expected: render(resolve(root, run)),
+  })),
+  ...MIRRORS.map(({ run, recipe, transform }) => ({
+    run,
+    recipe,
+    expected: transform(readFileSync(resolve(root, run), "utf8")),
+  })),
+];
+
+for (const { run, recipe, expected } of jobs) {
   const recipePath = resolve(root, recipe);
   if (check) {
     const actual = readFileSync(recipePath, "utf8");

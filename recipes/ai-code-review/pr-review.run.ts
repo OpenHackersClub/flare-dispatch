@@ -23,20 +23,35 @@
 //
 // --- CONFIG the operator sets (out of band) ---------------------------------
 //
-//   CONFIG_KV  pr-review.backend         "opencode" | "reasonix" | "anthropic"  (default opencode)
-//   CONFIG_KV  pr-review.prompt          (optional) override the per-domain reviewer system prompt
+//   CONFIG_KV  pr-review.agents         "single" (one generalist reviewer) | "multi" (tier-scaled per-domain personas)  (default "multi")
+//   CONFIG_KV  pr-review.backend        "opencode" | "reasonix" | "anthropic" | "bedrock"  (default opencode)
+//   CONFIG_KV  pr-review.prompt          (optional) override the reviewer system prompt
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.reasonix.model  bare Workers AI model id (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b)
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
 //   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
 //   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
+//   CONFIG_KV  pr-review.bedrock.model   `bedrock/`-prefixed model id (e.g. bedrock/us.anthropic.claude-opus-4-6-v1) — BYOC via AI Gateway
+//   CONFIG_KV  pr-review.bedrock.region  AWS region (default us-east-1)
+//   CONFIG_KV  pr-review.bedrock.roleArn IAM role to AssumeRoleWithWebIdentity into — trust policy MUST pin `sub: pr-review:*`
+//   CONFIG_KV  pr-review.style           "default" (verbose verdict-table) | "compact" (LGTM-header + 3-col emoji table)
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
 // silently drops tool-calling still produces a review.
 //
-// Mode: Webhook mode — fires on every pull_request push, zero GHA minutes.
+// --- Per-dispatch overrides (Action mode) -----------------------------------
+//
+// A dispatch MAY override the CONFIG_KV defaults per call via the run inputs —
+// `agents`, `backend`, `modelId`, `region`, `roleArn`, `focusArea`. Absent, the
+// CONFIG_KV defaults apply, so the everyday Webhook path is unchanged. This is
+// the model-bake-off / per-PR-escalation path the former `multi-agent-review`
+// run served: dispatch `backend: "bedrock"`, a `modelId` under test, and a
+// `roleArn` to compare a model on a real PR without touching CONFIG_KV.
+//
+// Mode: Webhook mode (fires on every pull_request push, zero GHA minutes) AND
+//       Action mode (a GHA workflow dispatches it with per-call overrides).
 // DSL:  see specs/03-dsl.md (uses `config` + `github`).
 
 import { Effect, Schema, Match } from "effect";
@@ -47,17 +62,23 @@ import {
   config,
   io,
   github,
+  type ReadFileFailed,
   StepFailed,
   type Container,
   type WebhookPayload,
 } from "@flare-dispatch/core";
-import { workspace } from "@flare-dispatch/core/primitives";
+import { awsAssumeRole, workspace } from "@flare-dispatch/core/primitives";
 import {
   type BackendUnconfigured,
+  backendConfigKey,
   capDiff,
   coordinate as engineCoordinate,
+  DEFAULT_NAMESPACE,
+  DEFAULT_REVIEW_SYSTEM_PROMPT,
   type Finding,
   type ModelCallFailed,
+  namespacedKeys,
+  parseBackend,
   resolveBackend,
   reviewDomain,
   riskTier,
@@ -86,6 +107,24 @@ const FULL_AGENTS = [
 const LITE_AGENTS = ["security", "code-quality", "performance", "documentation"] as const;
 const TRIVIAL_AGENTS = ["code-quality"] as const;
 
+// Agent fan-out mode. `multi` (the default) fans out to the tier-scaled
+// per-domain personas above — the historical behaviour. `single` runs ONE
+// generalist reviewer covering every concern (the collapsed `multi-agent-review`
+// run's single-agent shape, now through the same structured engine). The
+// operator picks the mode via `pr-review.agents` CONFIG_KV; a dispatch overrides
+// it per call via the `agents` input.
+const GENERAL_AGENT = ["general"] as const;
+const AGENT_MODES = ["single", "multi"] as const;
+type AgentMode = (typeof AGENT_MODES)[number];
+const DEFAULT_AGENT_MODE: AgentMode = "multi";
+
+/** Narrow an arbitrary config string to a known agent mode, or the default. */
+const parseAgentMode = (raw: string | undefined): AgentMode =>
+  AGENT_MODES.includes(raw as AgentMode) ? (raw as AgentMode) : DEFAULT_AGENT_MODE;
+
+/** Config namespace this run's backend + prompt keys live under (`pr-review.*`). */
+const NS = DEFAULT_NAMESPACE;
+
 // The run's output. `findings` becomes the check-run annotation set; the rest
 // renders in the summary. Imported from the engine package so the run's
 // `outputs` schema and the engine's return type are one source of truth. Each
@@ -96,9 +135,16 @@ const ReviewOutput = ReviewOutputSchema;
 /** Footer marker on every PR comment this run posts — for idempotent updates. */
 const COMMENT_MARKER = "<!-- flare-dispatch: pr-review -->";
 
+/**
+ * Where `prepare-diff` writes the unified diff inside the container. Read back
+ * in full via `sandbox.readFile` — `ExecResult.stdout` inlines only a 16KB
+ * tail, which silently reviewed a sliver of any sizeable PR.
+ */
+const DIFF_FILE = "/tmp/pr-review.diff";
+
 export const prReview = defineRun({
   name: "pr-review",
-  version: "3.0.0",
+  version: "3.1.0",
   image: "registry.cloudflare.com/openhackersclub/flare-dispatch-review:latest",
 
   triggers: [
@@ -129,6 +175,21 @@ export const prReview = defineRun({
     // Webhook mode maps it from `payload.installation.id`; Action mode omits
     // it. The run threads it to `github.pullReview` to authenticate the comment.
     installationId: Schema.optional(Schema.Number),
+    // --- Per-dispatch overrides (Action mode) — all optional. When absent the
+    //     CONFIG_KV defaults apply, so the Webhook path is unchanged. These ride
+    //     the HMAC-authenticated dispatch (operator-trusted), never the diff. ---
+    /** Override `pr-review.agents` — one generalist reviewer vs the persona fan-out. */
+    agents: Schema.optional(Schema.Literal("single", "multi")),
+    /** Override `pr-review.backend` — pin a backend for this dispatch (e.g. a bake-off). */
+    backend: Schema.optional(Schema.String),
+    /** Override the resolved backend's model id (e.g. the model under test). */
+    modelId: Schema.optional(Schema.String),
+    /** Override the bedrock backend's AWS region. */
+    region: Schema.optional(Schema.String),
+    /** Override the bedrock backend's IAM role ARN to AssumeRoleWithWebIdentity into. */
+    roleArn: Schema.optional(Schema.String),
+    /** Extra focus line appended to the reviewer system prompt for this dispatch. */
+    focusArea: Schema.optional(Schema.String),
   }),
 
   outputs: ReviewOutput,
@@ -176,48 +237,128 @@ export const prReview = defineRun({
 
 const reviewBody = (input: RunInput) =>
   Effect.gen(function* () {
-    // 1. Check out the PR head. `git` is in the image; no dependency install.
+    // 1. Resolve the configurable backend (model id + output mode + diff cap)
+    //    from CONFIG_KV, with any per-dispatch input overrides layered on top —
+    //    FIRST, before paying for a container, so a misconfigured backend fails
+    //    fast → the error boundary posts a PR comment naming the missing key. No
+    //    API key — the model is called through the `modelGateway` capability
+    //    (Workers AI binding via an AI Gateway), which the runtime provides
+    //    ambiently.
+    const resolved = yield* step("resolve-backend", () =>
+      resolveEffectiveBackend(input),
+    );
+
+    // 2. Check out the PR head. `git` is in the image; no dependency install.
     const { container, dir: repoDir } = yield* step("checkout", () =>
       workspace({ repo: input.repo, sha: input.sha }),
     );
 
-    // 2. Build the reviewable diff with plain `git` (no `review-agent` CLI).
+    // 3. Build the reviewable diff with plain `git` (no `review-agent` CLI).
     //    A non-zero exit FAILS the step (honest red check) — see `execOrFail`.
-    //    Noise (lockfiles / minified / generated) is stripped in-Worker.
-    const rawDiff = yield* step("prepare-diff", () =>
+    //
+    //    The diff is written to a FILE and read back with `sandbox.readFile`
+    //    — NOT taken from `ExecResult.stdout`, which inlines only a bounded
+    //    16KB tail (the rest streams to R2). Reading stdout silently reviewed
+    //    just the last sliver of any sizeable PR: the risk tier under-counted
+    //    (a huge PR classified `lite`/`trivial`), sensitive paths escaped the
+    //    `full` escalation, and the reviewers "found nothing" because they
+    //    never saw the change.
+    //
+    //    Noise-strip + backend-sized cap happen INSIDE the step so the value
+    //    the Workflow checkpoints is bounded by `maxDiffChars`, never the raw
+    //    multi-MB diff. One global cap sized for a frontier model would
+    //    overflow a catalog model's context invisibly (the model goes
+    //    needle-blind and "finds nothing") — hence the RESOLVED backend's cap.
+    //
+    //    THREE-dot diff (`base...head`), never two-dot: `baseSha` is the base
+    //    branch TIP at event time (`pull_request.base.sha`), not the fork
+    //    point. A two-dot endpoint diff on any PR behind its base reviewed
+    //    `base-tip → head`, presenting everything merged to the base since
+    //    the fork as DELETIONS — reviewers flagged phantom removals of files
+    //    the PR never touched. Three-dot diffs from `merge-base(base, head)`,
+    //    matching the PR diff GitHub itself renders.
+    const diff = yield* step("prepare-diff", () =>
       execOrFail({
         container,
         cwd: repoDir,
-        command: ["git", "diff", "--unified=3", input.baseSha, input.sha],
-      }).pipe(Effect.map((r) => r.stdout)),
+        command: [
+          "git",
+          "diff",
+          "--unified=3",
+          `--output=${DIFF_FILE}`,
+          `${input.baseSha}...${input.sha}`,
+        ],
+      }).pipe(
+        Effect.andThen(sandbox.readFile({ container, path: DIFF_FILE })),
+        Effect.map((raw) => capDiff(stripDiffNoise(raw), resolved.maxDiffChars)),
+      ),
     );
-    // Strip noise (lockfiles / generated) before sizing decisions.
-    const stripped = stripDiffNoise(rawDiff);
-
-    // 3. Resolve the configurable backend (model id + output mode + diff cap)
-    //    from CONFIG_KV. No API key — the model is called through the
-    //    `modelGateway` capability (Workers AI binding via an AI Gateway), which
-    //    the runtime provides ambiently. A misconfigured backend fails here →
-    //    the error boundary posts a PR comment naming the missing key.
-    const resolved = yield* step("resolve-backend", () =>
-      resolveBackend((key) => config.get(key)),
-    );
-
-    // Cap the diff to the RESOLVED backend's context budget — one global cap
-    // sized for a frontier model would overflow a catalog model's context
-    // invisibly (the model goes needle-blind and "finds nothing").
-    const diff = capDiff(stripped, resolved.maxDiffChars);
 
     // 4. Risk tier — a pure heuristic on diff size + touched paths (no model
-    //    call). The tier IS the plan: which agents run + the coordinator model.
+    //    call). The tier is always classified (it sizes the diff cap + renders
+    //    in the comment); the agent MODE decides whether it also scales the
+    //    persona fan-out.
     const tier = yield* step("classify-risk", () => riskTier({ diff }));
-    const plan = planForTier(tier);
 
-    // 5. The per-domain reviewer system prompt — operator override or the
-    //    engine's generic default (never a project-specific rubric here).
+    // 4b. Agent fan-out mode — `single` (one generalist reviewer) vs `multi`
+    //     (the tier-scaled per-domain personas). Input override > CONFIG_KV >
+    //     default. The plan's agent set follows from the mode.
+    const agentMode: AgentMode =
+      input.agents ??
+      parseAgentMode(
+        yield* step("resolve-agents", () => config.get("pr-review.agents")),
+      );
+    const plan = planForMode(agentMode, tier);
+
+    // 5. The reviewer system prompt — operator override or the engine's generic
+    //    default — plus an optional per-dispatch focus line. Composed here (not
+    //    threaded through the engine) so `focusArea` rides the trusted dispatch
+    //    input, never the attacker-controllable diff. The model's OUTPUT is still
+    //    sanitized before it renders in the public comment regardless.
     const promptOverride = yield* step("resolve-prompt", () =>
       config.get("pr-review.prompt"),
     );
+    const basePrompt = promptOverride ?? DEFAULT_REVIEW_SYSTEM_PROMPT;
+    const focus = input.focusArea?.trim();
+    const systemPrompt =
+      focus !== undefined && focus !== ""
+        ? `${basePrompt}\n\nExtra focus for this review: ${focus}`
+        : basePrompt;
+
+    // 5b. Comment style preset — operator picks the comment layout. Both
+    //     presets are hard-coded server-side (so model-authored text can't
+    //     inject layout). See `parseStyle` + `renderReviewComment`.
+    const style = parseStyle(
+      yield* step("resolve-style", () => config.get("pr-review.style")),
+    );
+
+    // 5c. When the resolved backend is `bedrock`, mint short-lived AWS creds via
+    //     OIDC federation — the modelGateway Bedrock route SigV4-signs each call
+    //     with these. The role's trust policy SHOULD pin `sub: pr-review:*` so
+    //     a leaked HMAC alone can't assume the role; `awsAssumeRole`'s default
+    //     subject is `<run>:<execution-id>`, which matches that pattern. Other
+    //     backends skip this step entirely.
+    const bedrockCreds =
+      resolved.backend === "bedrock" &&
+      resolved.roleArn !== undefined &&
+      resolved.region !== undefined
+        ? yield* step("assume-bedrock-role", () =>
+            awsAssumeRole({
+              roleArn: resolved.roleArn as string,
+              region: resolved.region as string,
+              sessionName: `pr-review-${input.sha.slice(0, 12)}`,
+            }),
+          )
+        : undefined;
+    const awsCreds =
+      bedrockCreds !== undefined && resolved.region !== undefined
+        ? {
+            accessKeyId: bedrockCreds.accessKeyId,
+            secretAccessKey: bedrockCreds.secretAccessKey,
+            sessionToken: bedrockCreds.sessionToken,
+            region: resolved.region,
+          }
+        : undefined;
 
     // 6. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
     //    agents this tier calls for. Each calls the model via the `modelGateway`
@@ -234,7 +375,8 @@ const reviewBody = (input: RunInput) =>
             model: resolved.model,
             backend: resolved.backend,
             mode: resolved.mode,
-            ...(promptOverride !== undefined ? { systemPrompt: promptOverride } : {}),
+            systemPrompt,
+            ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
           }),
         { concurrency: plan.agents.length },
       ),
@@ -259,7 +401,7 @@ const reviewBody = (input: RunInput) =>
     //    land as check-run annotations via the run output). Best-effort — a
     //    comment failure must not turn a green review red.
     yield* step("post-comment", () =>
-      postComment(input, renderReviewComment(input, output, domainCounts)).pipe(
+      postComment(input, renderReviewComment(input, output, domainCounts, style)).pipe(
         Effect.catchAll((e) =>
           io.log("warn", `pr-review: posting PR comment failed — ${describeError(e)}`),
         ),
@@ -278,6 +420,13 @@ type RunInput = {
   readonly baseSha: string;
   readonly pr: number;
   readonly installationId?: number;
+  // Per-dispatch overrides (Action mode) — see the `inputs` schema.
+  readonly agents?: AgentMode;
+  readonly backend?: string;
+  readonly modelId?: string;
+  readonly region?: string;
+  readonly roleArn?: string;
+  readonly focusArea?: string;
 };
 
 type Plan = {
@@ -294,6 +443,45 @@ const planForTier = (tier: Tier): Plan =>
     Match.when("full", () => ({ tier: "full" as const, agents: FULL_AGENTS })),
     Match.exhaustive,
   );
+
+/** Map the resolved agent mode + risk tier to the reviewer plan. `single` runs
+ *  ONE generalist reviewer (the tier still renders in the comment); `multi` runs
+ *  the tier-scaled per-domain personas. */
+const planForMode = (mode: AgentMode, tier: Tier): Plan =>
+  mode === "single" ? { tier, agents: GENERAL_AGENT } : planForTier(tier);
+
+/**
+ * Resolve the active backend, layering per-dispatch input overrides over
+ * CONFIG_KV. An override-aware `getConfig` shim feeds the engine's
+ * `resolveBackend` the input values where present — so a single dispatch can
+ * fully specify a backend (e.g. a Bedrock model bake-off: `backend: "bedrock"`,
+ * `modelId`, `roleArn`, `region`) with NO CONFIG_KV keys set, while an everyday
+ * webhook review with no overrides resolves exactly as before. The shim only
+ * shadows the keys an override targets; everything else still reads CONFIG_KV.
+ */
+const resolveEffectiveBackend = (input: RunInput) =>
+  Effect.gen(function* () {
+    // The effective backend names which `<backend>.*` keys an override targets.
+    const backend = parseBackend(
+      input.backend ?? (yield* config.get(backendConfigKey(NS))),
+    );
+    const keys = namespacedKeys(NS)[backend];
+    const overrides = new Map<string, string>();
+    if (input.backend !== undefined)
+      overrides.set(backendConfigKey(NS), input.backend);
+    if (input.modelId !== undefined) overrides.set(keys.modelKey, input.modelId);
+    if (input.region !== undefined && keys.regionKey !== undefined)
+      overrides.set(keys.regionKey, input.region);
+    if (input.roleArn !== undefined && keys.roleArnKey !== undefined)
+      overrides.set(keys.roleArnKey, input.roleArn);
+    return yield* resolveBackend(
+      (key) =>
+        overrides.has(key)
+          ? Effect.succeed<string | undefined>(overrides.get(key))
+          : config.get(key),
+      { namespace: NS },
+    );
+  });
 
 /**
  * Run a container command and FAIL the Effect when it exits non-zero. The core
@@ -349,7 +537,8 @@ type DescribableError =
   | BackendUnconfigured
   | ModelCallFailed
   | StructuredOutputInvalid
-  | ExecNonZero;
+  | ExecNonZero
+  | ReadFileFailed;
 
 /** Human-readable one-liner for any error the boundary catches. */
 const describeError = (err: unknown): string =>
@@ -370,6 +559,10 @@ const describeError = (err: unknown): string =>
     Match.tag(
       "ExecNonZero",
       (e) => `\`${e.command}\` exited ${e.exitCode}`,
+    ),
+    Match.tag(
+      "ReadFileFailed",
+      (e) => `reading the diff file \`${e.path}\` failed: ${e.message}`,
     ),
     Match.orElse(() =>
       err instanceof Error ? err.message : JSON.stringify(err),
@@ -449,10 +642,40 @@ const findingLoc = (f: Finding): string => {
  *  split the row. */
 const tableCell = (s: string): string => sanitizeModelText(s).replace(/\|/g, "\\|");
 
-/** Render the consolidated review as a markdown PR comment: a summary table of
- *  every required change up front, then one heading per finding. Locations are
- *  blob links into the codebase at the reviewed SHA, not quoted paths. */
+/** Comment style preset — operator selects the layout via `pr-review.style`
+ *  CONFIG_KV. Hard-coded presets only; never an arbitrary template (model-
+ *  authored text would otherwise be able to inject layout). */
+const STYLES = ["default", "compact"] as const;
+type Style = (typeof STYLES)[number];
+const DEFAULT_STYLE: Style = "default";
+
+/** Narrow an arbitrary config string to a known style, or fall back to default. */
+const parseStyle = (raw: string | undefined): Style =>
+  STYLES.includes(raw as Style) ? (raw as Style) : DEFAULT_STYLE;
+
+/** How many findings the `compact` style lists (mirrors typical "leaderboard"
+ *  PR-review bots — 7 most-critical first). The full set is still emitted as
+ *  check-run annotations regardless of style. */
+const COMPACT_MAX_LISTED = 7;
+
+/** Render the consolidated review as a markdown PR comment. `style` picks the
+ *  layout: `default` is the verbose verdict-table for power users; `compact` is
+ *  the lean leaderboard-bot format ("`## ✅ LGTM`" + 3-col emoji table). */
 const renderReviewComment = (
+  input: Pick<RunInput, "repo" | "sha">,
+  output: Schema.Schema.Type<typeof ReviewOutput>,
+  domainCounts: ReadonlyArray<DomainCount>,
+  style: Style = DEFAULT_STYLE,
+): string =>
+  Match.value(style).pipe(
+    Match.when("compact", () => renderCompact(input, output)),
+    Match.when("default", () => renderDefault(input, output, domainCounts)),
+    Match.exhaustive,
+  );
+
+/** Verbose verdict-table layout: summary table + per-finding details + per-domain
+ *  engagement line. Full reviewer transparency — the historical default. */
+const renderDefault = (
   input: Pick<RunInput, "repo" | "sha">,
   output: Schema.Schema.Type<typeof ReviewOutput>,
   domainCounts: ReadonlyArray<DomainCount>,
@@ -510,4 +733,51 @@ const renderReviewComment = (
         ];
 
   return [...header, ...findingsBlock, "", COMMENT_MARKER].join("\n");
+};
+
+/** Compact "leaderboard-bot" layout — verdict header (`## ✅ LGTM` /
+ *  `⚠️ Minor Issues` / `🚫 Changes Requested`) + 3-col emoji table, max 7 rows.
+ *  Built to match the format teams already get from in-house reviewers like
+ *  opencode-agent so a FlareDispatch comment lands without a layout cliff. */
+const renderCompact = (
+  input: Pick<RunInput, "repo" | "sha">,
+  output: Schema.Schema.Type<typeof ReviewOutput>,
+): string => {
+  const verdictHeader = Match.value(output.verdict).pipe(
+    Match.when("approve", () => "## ✅ LGTM"),
+    Match.when("comment", () => "## ⚠️ Minor Issues"),
+    Match.when("request-changes", () => "## 🚫 Changes Requested"),
+    Match.exhaustive,
+  );
+
+  if (output.findings.length === 0) {
+    return [verdictHeader, "", "No issues found.", "", COMMENT_MARKER].join("\n");
+  }
+
+  const compactSeverity = (level: Finding["level"]): string =>
+    Match.value(level).pipe(
+      Match.when("failure", () => "🔴"),
+      Match.when("warning", () => "🟡"),
+      Match.when("notice", () => "🔵"),
+      Match.exhaustive,
+    );
+
+  const rendered = output.findings.slice(0, COMPACT_MAX_LISTED);
+  const overflow = output.findings.length - rendered.length;
+
+  return [
+    verdictHeader,
+    "",
+    "| Severity | Location | Issue |",
+    "| --- | --- | --- |",
+    ...rendered.map(
+      (f) =>
+        `| ${compactSeverity(f.level)} | [${tableCell(findingLoc(f))}](${findingUrl(input.repo, input.sha, f)}) | ${tableCell(f.message)} |`,
+    ),
+    ...(overflow > 0
+      ? ["", `_…and ${overflow} more (see check annotations)._`]
+      : []),
+    "",
+    COMMENT_MARKER,
+  ].join("\n");
 };
