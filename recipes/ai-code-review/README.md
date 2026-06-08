@@ -61,7 +61,7 @@ The engine selects a model backend from config — repoint it in seconds, no red
 | `pr-review.prompt` | *(optional)* override the generic per-domain reviewer system prompt |
 | `pr-review.opencode.model` | bare Workers AI model id for the **opencode** backend, e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 | `pr-review.opencode.mode` | `tools` (default) or `json` — how structured output is coaxed (see below) |
-| `pr-review.reasonix.model` | bare Workers AI model id for the **reasonix** backend, e.g. `@cf/deepseek-ai/deepseek-r1-distill-qwen-32b` |
+| `pr-review.reasonix.model` | reasoning-model id for the **reasonix** backend. Either a bare Workers AI distill (`@cf/deepseek-ai/deepseek-r1-distill-qwen-32b`, account-billed, no key) **or** a `deepseek/`-prefixed hosted reasoner (`deepseek/deepseek-reasoner`, the real model — routes via the AI Gateway universal endpoint with a BYOK DeepSeek key stored in the gateway; requires `AI_GATEWAY_ID`) |
 | `pr-review.reasonix.mode` | `tools` or `json` (**default `json`** — DeepSeek-class reasoning models ignore tool-calls) |
 | `pr-review.anthropic.model` | `anthropic/`-prefixed model id, e.g. `anthropic/claude-sonnet-4-6`. Routes via the AI Gateway universal endpoint (BYOK Anthropic key stored in the gateway). Requires `AI_GATEWAY_ID`. |
 | `pr-review.anthropic.mode` | `tools` (default) or `json` |
@@ -69,7 +69,7 @@ The engine selects a model backend from config — repoint it in seconds, no red
 | `pr-review.bedrock.region` | AWS region (default `us-east-1`) |
 | `pr-review.bedrock.roleArn` | IAM role ARN to AssumeRoleWithWebIdentity into. Trust policy MUST pin `sub: pr-review:*`. |
 
-Model ids are bare `@cf/...` for the Workers AI catalog, `anthropic/...` for the AI-Gateway universal endpoint, or `bedrock/...` for the AI-Gateway Bedrock forwarder. An AI Gateway can front Workers AI calls by setting the `AI_GATEWAY_ID` var on the Worker; the same `AI_GATEWAY_ID` is used for the `anthropic/` and `bedrock/` routes (required, not optional).
+Model ids are bare `@cf/...` for the Workers AI catalog, `anthropic/...` or `deepseek/...` for the AI-Gateway universal endpoint (BYOK), or `bedrock/...` for the AI-Gateway Bedrock forwarder. An AI Gateway can front Workers AI calls by setting the `AI_GATEWAY_ID` var on the Worker; the same `AI_GATEWAY_ID` is used for the `anthropic/`, `deepseek/` and `bedrock/` routes (required, not optional).
 
 A misconfigured backend (no `model` key, or for `bedrock` no `roleArn`) fails fast — the run posts a PR comment naming the exact missing key.
 

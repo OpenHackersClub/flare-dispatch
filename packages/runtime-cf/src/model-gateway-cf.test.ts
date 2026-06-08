@@ -266,6 +266,114 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The deepseek/* universal route (OpenAI-compatible chat/completions).
+
+describe("makeModelGatewayLive — deepseek universal route", () => {
+  it("routes deepseek/* through gateway.run as OpenAI chat/completions and maps content → text", async () => {
+    const { ai, seen } = stubGatewayAi({
+      choices: [{ message: { content: '{"findings":[]}' } }],
+      usage: { prompt_tokens: 321, completion_tokens: 12 },
+    });
+    const result = await run(ai, "my-gateway", {
+      model: "deepseek/deepseek-reasoner",
+      system: "you are a reviewer",
+      user: "review this",
+      maxTokens: 1024,
+    });
+
+    // json-mode (reasonix default): answer comes back as `text`, no tool calls.
+    expect(result.text).toBe('{"findings":[]}');
+    expect(result.toolCalls).toEqual([]);
+    // usage maps onto the token fields.
+    expect(result.inputTokens).toBe(321);
+    expect(result.outputTokens).toBe(12);
+
+    expect(seen.gatewayId).toBe("my-gateway");
+    expect(seen.request?.provider).toBe("deepseek");
+    expect(seen.request?.endpoint).toBe("chat/completions");
+    const query = seen.request?.query as Record<string, unknown>;
+    // The `deepseek/` prefix is stripped — the provider gets its own naming.
+    expect(query.model).toBe("deepseek-reasoner");
+    expect(query.max_tokens).toBe(1024);
+    // OpenAI wire shape: system + user as `messages`, no top-level `system`.
+    expect(query.messages).toEqual([
+      { role: "system", content: "you are a reviewer" },
+      { role: "user", content: "review this" },
+    ]);
+    // No tools sent in json mode.
+    expect("tools" in query).toBe(false);
+  });
+
+  it("maps OpenAI tool_calls (JSON-string arguments) to toolCalls and defaults max_tokens", async () => {
+    const { ai, seen } = stubGatewayAi({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                type: "function",
+                function: { name: "report", arguments: '{"findings":[]}' },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const result = await run(ai, "g", {
+      model: "deepseek/deepseek-chat",
+      system: "s",
+      user: "u",
+      tools: [
+        { name: "report", description: "d", parameters: { type: "object" } },
+      ],
+    });
+
+    // Arguments pass through verbatim as a JSON string — the engine parses it.
+    expect(result.toolCalls).toEqual([
+      { name: "report", arguments: '{"findings":[]}' },
+    ]);
+    // content === null → empty text (not the literal "null").
+    expect(result.text).toBe("");
+    const query = seen.request?.query as Record<string, unknown>;
+    // Tools map to the OpenAI function-tool shape with forced tool use.
+    expect(query.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "report",
+          description: "d",
+          parameters: { type: "object" },
+        },
+      },
+    ]);
+    expect(query.tool_choice).toBe("required");
+    // DeepSeek accepts max_tokens — defaulted when the caller didn't set one.
+    expect(query.max_tokens).toBe(2048);
+  });
+
+  it("maps a non-2xx provider response to ModelGatewayError by status", async () => {
+    const { ai } = stubGatewayAi({ error: { message: "rate limited" } }, 429);
+    const exit = await Effect.runPromiseExit(
+      modelGateway
+        .complete({ model: "deepseek/deepseek-reasoner", system: "s", user: "u" })
+        .pipe(Effect.provide(makeModelGatewayLive(ai, "g"))),
+    );
+    expect(exit._tag).toBe("Failure");
+  });
+
+  it("fails with an operator-facing error when no gateway id is configured", async () => {
+    const { ai } = stubGatewayAi({ choices: [] });
+    const exit = await Effect.runPromiseExit(
+      modelGateway
+        .complete({ model: "deepseek/deepseek-reasoner", system: "s", user: "u" })
+        .pipe(Effect.provide(makeModelGatewayLive(ai, undefined))),
+    );
+    expect(exit._tag).toBe("Failure");
+  });
+});
+
 // --- The Bedrock-via-AI-Gateway route ---------------------------------------
 
 describe("makeModelGatewayLive — bedrock-via-AI-Gateway route", () => {

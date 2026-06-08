@@ -79,7 +79,7 @@ auth** (shown here for `pr-review`):
 | Backend | CONFIG_KV keys |
 |---|---|
 | `opencode` (a tool-calling-capable Workers AI model) | `pr-review.opencode.model` (bare `@cf/...`), `pr-review.opencode.mode` (default `tools`) |
-| `reasonix` (a reasoning model that ignores tool-calls) | `pr-review.reasonix.model` (bare `@cf/...`), `pr-review.reasonix.mode` (default `json`) |
+| `reasonix` (a reasoning model that ignores tool-calls) | `pr-review.reasonix.model` (bare `@cf/...` distill, **or** a `deepseek/`-prefixed hosted reasoner like `deepseek/deepseek-reasoner` — BYOK via AI Gateway), `pr-review.reasonix.mode` (default `json`) |
 
 `pr-review.prompt` optionally overrides the per-domain reviewer system prompt;
 otherwise the engine's generic default is used (no project-specific rubric is
