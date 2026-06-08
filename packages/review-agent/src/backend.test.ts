@@ -77,6 +77,21 @@ describe("resolveBackend", () => {
     expect(resolved.mode).toBe("json");
   });
 
+  it("resolves the reasonix backend pointed at the real hosted DeepSeek reasoner", async () => {
+    // The model id is opaque to the backend resolver — it travels to the
+    // modelGateway, where the `deepseek/` prefix selects the universal-endpoint
+    // route to the real hosted reasoner (vs the weaker `@cf/...` distill).
+    const store = {
+      "pr-review.backend": "reasonix",
+      [BACKEND_KEYS.reasonix.modelKey]: "deepseek/deepseek-reasoner",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.backend).toBe("reasonix");
+    expect(resolved.model).toBe("deepseek/deepseek-reasoner");
+    // Still json mode — the reasoner emits no tool calls.
+    expect(resolved.mode).toBe("json");
+  });
+
   it("resolves the anthropic backend (BYOK via AI Gateway)", async () => {
     const store = {
       "pr-review.backend": "anthropic",

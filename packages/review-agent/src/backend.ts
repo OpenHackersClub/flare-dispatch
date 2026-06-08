@@ -30,9 +30,17 @@
 //     CONFIG_KV  pr-review.opencode.mode    "tools" | "json"  (default "tools")
 //
 //   backend "reasonix"  (a reasoning model that doesn't honour tool-calls)
-//     CONFIG_KV  pr-review.reasonix.model   bare Workers AI model id
-//                                            e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+//     CONFIG_KV  pr-review.reasonix.model   model id — either:
+//                  • a bare Workers AI distill (account-billed, no key):
+//                        @cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+//                  • a `deepseek/`-prefixed hosted reasoner (BYOK via AI
+//                    Gateway — the real, far stronger model):
+//                        deepseek/deepseek-reasoner
 //     CONFIG_KV  pr-review.reasonix.mode    "tools" | "json"  (default "json")
+//     A `deepseek/` model routes via the AI Gateway universal endpoint (like
+//     `anthropic/`): requires AI_GATEWAY_ID on the deploy + a DeepSeek key
+//     stored in that gateway (BYOK). Still no key in config — the gateway
+//     injects it. A bare `@cf/...` model needs neither.
 //
 //   backend "anthropic" (Claude via the AI Gateway universal endpoint — BYOK)
 //     CONFIG_KV  pr-review.anthropic.model  `anthropic/`-prefixed model id
@@ -56,8 +64,9 @@
 //
 // NOTE: Workers AI model ids are bare `@cf/...` (the binding's own naming) —
 // NOT the AI-Gateway-compat `workers-ai/@cf/...` prefix the old HTTP path used.
-// Anthropic model ids carry the `anthropic/` prefix; the runtime routes them
-// via `env.AI.gateway(id).run(...)` (see runtime-cf's model-gateway-cf.ts).
+// Anthropic and DeepSeek model ids carry the `anthropic/` / `deepseek/` prefix;
+// the runtime routes them via `env.AI.gateway(id).run(...)` against the AI
+// Gateway universal endpoint (see runtime-cf's model-gateway-cf.ts).
 //
 // --- Output mode: "tools" vs "json" -----------------------------------------
 //

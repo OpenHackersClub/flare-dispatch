@@ -27,7 +27,7 @@
 //   CONFIG_KV  pr-review.prompt          (optional) override the per-domain reviewer system prompt
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
-//   CONFIG_KV  pr-review.reasonix.model  bare Workers AI model id (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b)
+//   CONFIG_KV  pr-review.reasonix.model  reasoning-model id — a bare Workers AI distill (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b) OR a `deepseek/`-prefixed hosted reasoner (e.g. deepseek/deepseek-reasoner) — BYOK via AI Gateway, the real model
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
 //   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
 //   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
