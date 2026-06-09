@@ -13,9 +13,11 @@
 # Cloudflare Containers pulls only from registry.cloudflare.com, docker.io, or
 # Amazon ECR; docker.io is in scope (specs/05-byoc.md § Wrangler config).
 #
-# This ONE Dockerfile builds two images via the `WITH_BROWSER` build arg (see
-# the gated layer at the bottom + wrangler.jsonc § containers): a lean default
-# and a chromium-baked variant. Issue #68.
+# This ONE Dockerfile builds its image variants via build args (see the gated
+# layers below + wrangler.jsonc § containers): `WITH_BROWSER` bakes a chromium
+# variant (Issue #68), and `WITH_BUILD_TOOLS` bakes a native C/C++ toolchain
+# (gcc/cc + make) so suites that compile native code in the sandbox — Rust
+# `cargo`, node-gyp addons — can link. Both default off → a lean image.
 #
 # Spec: specs/pm/plan.md § 6 "Sandbox / Containers binding API".
 
@@ -101,6 +103,39 @@ COPY --from=demo-agent-builder \
      /usr/local/bin/demo-agent
 RUN chmod +x /usr/local/bin/demo-agent \
  && demo-agent --help > /dev/null
+
+# ── Optional native build toolchain (gated by the WITH_BUILD_TOOLS build arg) ─
+#
+# The base image is deliberately lean: Node + git + curl, but NO C compiler.
+# That's enough for pure-JS runs, but any `offload-test` suite that compiles
+# native code in the sandbox needs a `cc`/linker — most commonly:
+#
+#   * Rust (`cargo test` / `cargo build`): rustc shells out to `cc` to link
+#     every binary and to build `cc`-crate build scripts, so without it the run
+#     dies at link with `error: linker 'cc' not found` — green on the author's
+#     machine, red in the sandbox, deterministically.
+#   * node-gyp native addons: `pnpm install` of any package with a binding.gyp
+#     invokes make + g++.
+#
+# Gated exactly like WITH_BROWSER so the default image stays lean (most runs are
+# pure JS): consumers that compile native code flip it on per container in
+# wrangler.jsonc — `image_vars: { "WITH_BUILD_TOOLS": "true" }`. `build-essential`
+# pulls gcc/g++/make/libc6-dev (the `cc` the linker needs); `pkg-config` is the
+# tiny, near-universal gateway for `*-sys` crates. apt lists are removed in the
+# same layer, so the disabled (default) path adds nothing and the enabled path
+# stays as small as apt allows. A suite needing a specific system lib (e.g.
+# `libssl-dev` for `openssl-sys`) appends it in its own run command.
+ARG WITH_BUILD_TOOLS=false
+RUN if [ "$WITH_BUILD_TOOLS" = "true" ]; then \
+      set -eux; \
+      export DEBIAN_FRONTEND=noninteractive; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends build-essential pkg-config; \
+      rm -rf /var/lib/apt/lists/*; \
+      cc --version; \
+    else \
+      echo "WITH_BUILD_TOOLS=false — no native toolchain baked. Lean image."; \
+    fi
 
 # ── Optional Playwright browser layer (gated by the WITH_BROWSER build arg) ──
 #
