@@ -137,6 +137,26 @@ const statusBadge = (status: NotifyStatus): { label: string; color: string } =>
     ? { label: "✓ Succeeded", color: "#1a7f37" }
     : { label: "✗ Failed", color: "#cf222e" };
 
+/**
+ * For runs whose output carries a per-item `stories` array (`product-demo`),
+ * a bare "succeeded" hides partial success: a 3/5 run reads identically to a
+ * clean 5/5 in the inbox, even though two chapters failed. Derive the
+ * passed/total tally so the subject can lead with the overall status ("3/5
+ * passed") instead. Returns `undefined` for runs with no `stories` array — their
+ * subject is left unchanged.
+ */
+const storyTally = (
+  output: unknown,
+): { passed: number; total: number } | undefined => {
+  if (output === null || typeof output !== "object" || Array.isArray(output)) {
+    return undefined;
+  }
+  const stories = (output as Record<string, unknown>)["stories"];
+  if (!isObjectArray(stories)) return undefined;
+  const passed = stories.filter((s) => s["status"] === "passed").length;
+  return { passed, total: stories.length };
+};
+
 export const renderResultEmail = (
   input: RenderResultEmailInput,
 ): RenderedEmail => {
@@ -153,7 +173,18 @@ export const renderResultEmail = (
       ? input.failureDisplay
       : undefined;
 
-  const subject = `[FlareDispatch] ${input.run} — ${input.status === "success" ? "✓ succeeded" : "✗ failed"}`;
+  // Lead the subject with the overall status. For a `stories`-bearing run a
+  // partial pass still resolves to `success` (product-demo only fails when
+  // ZERO chapters pass), so surface the passed/total tally — "3/5 passed" —
+  // rather than a flat "succeeded" that hides the two that didn't.
+  const tally = input.status === "success" ? storyTally(input.output) : undefined;
+  const verdict =
+    tally !== undefined
+      ? `✓ ${tally.passed}/${tally.total} passed`
+      : input.status === "success"
+        ? "✓ succeeded"
+        : "✗ failed";
+  const subject = `[FlareDispatch] ${input.run} — ${verdict}`;
 
   // --- HTML body --------------------------------------------------------------
   const metaRows: [string, string][] = [

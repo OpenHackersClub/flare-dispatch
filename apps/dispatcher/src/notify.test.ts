@@ -38,7 +38,7 @@ describe("renderResultEmail", () => {
   });
 
   it("renders an array-of-objects output (product-demo stories) as per-item clickable links", () => {
-    const { html, text } = renderResultEmail({
+    const { subject, html, text } = renderResultEmail({
       ...base,
       run: "product-demo",
       status: "success",
@@ -64,6 +64,9 @@ describe("renderResultEmail", () => {
       },
     });
 
+    // A partial pass (1 of 2) is still an overall success — the subject leads
+    // with the passed/total tally so the inbox shows it, not a flat "succeeded".
+    expect(subject).toBe("[FlareDispatch] product-demo — ✓ 1/2 passed");
     // Each story renders as its own block with CLICKABLE links — not one
     // escaped JSON blob.
     expect(html).toContain("sign-in-and-home");
@@ -82,6 +85,22 @@ describe("renderResultEmail", () => {
     );
     // Empty fields skipped in text too.
     expect(text).not.toContain("Replay Json:");
+  });
+
+  it("leads the subject with the story tally even on a clean all-pass run", () => {
+    const { subject } = renderResultEmail({
+      ...base,
+      run: "product-demo",
+      status: "success",
+      output: {
+        stories: [
+          { name: "a", status: "passed" },
+          { name: "b", status: "passed" },
+          { name: "c", status: "passed" },
+        ],
+      },
+    });
+    expect(subject).toBe("[FlareDispatch] product-demo — ✓ 3/3 passed");
   });
 
   it("renders a failure without output", () => {
