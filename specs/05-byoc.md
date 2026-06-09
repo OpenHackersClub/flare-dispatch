@@ -141,6 +141,9 @@ The shape at HEAD (`wrangler.jsonc` on `main`) ships the **live** bindings — i
     {
       "class_name": "RunSandbox",
       "image": "./infra/Dockerfile.sandbox",
+      // Lean by default. To compile native code in this sandbox (Rust `cargo`,
+      // node-gyp addons), bake a C/C++ toolchain by adding:
+      //   "image_vars": { "WITH_BUILD_TOOLS": "true" }
       // Instance types (2026-05): lite (1/16 vCPU, 256 MiB) | basic (1/4, 1 GiB) |
       //   standard-1 (1/2, 4 GiB) | standard-2 (1, 6 GiB) | standard-3 (2, 8 GiB) | standard-4 (4, 12 GiB).
       "instance_type": "standard-2",
