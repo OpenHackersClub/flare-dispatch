@@ -25,11 +25,32 @@
 import { Sandbox } from "@cloudflare/sandbox";
 import type { Env } from "./env";
 
+/**
+ * Idle window before a finished container is put to sleep.
+ *
+ * The SDK default is 10 minutes — and the Container DO bills wall-clock
+ * *duration* (DO + container vCPU/memory) the whole time, so every execution
+ * paid a 10-minute idle tail after its last command. Across a CI-shaped
+ * workload (hundreds of short runs a day) that tail was ~45% of total spend.
+ *
+ * 2 minutes is safe: `isActivityExpired()` never fires while a request is
+ * in-flight (a long quiet `exec` keeps the container awake regardless), and
+ * the window restarts when the last request completes — this only trims the
+ * *idle* tail. The primary teardown is the explicit `destroy()` at the
+ * workflow's finalize boundary (workflow.ts); this is the backstop for paths
+ * that die before reaching it (Worker eviction, deploy mid-run).
+ */
+const SANDBOX_SLEEP_AFTER = "2m";
+
 /** The Durable Object class backing the lean `RUNS_SANDBOX` Container binding. */
-export class RunSandbox extends Sandbox<Env> {}
+export class RunSandbox extends Sandbox<Env> {
+  override sleepAfter = SANDBOX_SLEEP_AFTER;
+}
 
 /**
  * The Durable Object class backing the chromium-baked `RUNS_SANDBOX_BROWSER`
  * Container binding. Identical to `RunSandbox` — only the bound image differs.
  */
-export class RunSandboxBrowser extends Sandbox<Env> {}
+export class RunSandboxBrowser extends Sandbox<Env> {
+  override sleepAfter = SANDBOX_SLEEP_AFTER;
+}
