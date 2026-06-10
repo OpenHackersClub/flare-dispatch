@@ -152,8 +152,11 @@ export const prReview = defineRun({
     {
       event: "pull_request",
       actions: ["opened", "synchronize", "ready_for_review"],
+      // Matches Action mode's semantic instanceId (`{run}:{repo_}:{sha12}`) so
+      // webhook- and Action-mode dispatches of the same logical work collapse
+      // to one execution at the `create({id})` layer.
       idempotencyKey: ({ payload }) =>
-        `pr-review:${payload.repository.full_name}:${payload.pull_request.number}:${payload.pull_request.head.sha}`,
+        `pr-review:${payload.repository.full_name.replace(/\//g, "_")}:${payload.pull_request.head.sha.slice(0, 12)}`,
       gate: ({ payload }) =>
         // skip drafts unless explicitly labelled, skip dependabot
         (!payload.pull_request.draft || hasLabel(payload, "request-ai-review"))
