@@ -32,6 +32,7 @@
 // `RUNS_WORKFLOW.create`); all real work — LLM calls, Octokit fetches,
 // container starts — lives inside the Workflow.
 
+import { checkAndArmCooldown } from "../cooldown";
 import { verify } from "../hmac";
 import { triggersByEvent } from "../registry";
 import type { Env } from "../env";
@@ -189,6 +190,12 @@ export const handleGithubWebhook = async (
   }
 
   const dispatched: Array<{ run: string; executionId: string }> = [];
+  const skipped: Array<{
+    run: string;
+    executionId: string;
+    reason: "cooldown";
+    retryAfterSec: number;
+  }> = [];
   for (const { run, trigger } of matches) {
     if (
       trigger.actions !== undefined &&
@@ -201,6 +208,29 @@ export const handleGithubWebhook = async (
 
     const id = trigger.idempotencyKey(ctx);
     const inputs = trigger.inputs(ctx);
+
+    // Run cooldown (when declared) — same check-and-arm Action mode applies,
+    // so the cap holds across BOTH dispatch paths. A skipped trigger is
+    // reported (not silently dropped) with the execution it collapsed into.
+    const cooldownVerdict = await checkAndArmCooldown({
+      kv: env.IDEMPOTENCY_KV,
+      runName: run.name,
+      cooldown: run.cooldown,
+      repo: synthesizeGithubBlock(payload).repo,
+      inputs,
+      executionId: id,
+      now: Date.now(),
+    });
+    if (cooldownVerdict.state === "cooling") {
+      skipped.push({
+        run: run.name,
+        executionId: cooldownVerdict.priorExecutionId,
+        reason: "cooldown",
+        retryAfterSec: cooldownVerdict.retryAfterSec,
+      });
+      continue;
+    }
+
     const params = {
       executionId: id,
       run: run.name,
@@ -234,5 +264,14 @@ export const handleGithubWebhook = async (
     });
   }
 
-  return json({ event, deliveryId, dispatched }, 202);
+  return json(
+    {
+      event,
+      deliveryId,
+      dispatched,
+      // Shape-stable: `skipped` appears only when a cooldown actually fired.
+      ...(skipped.length > 0 ? { skipped } : {}),
+    },
+    202,
+  );
 };

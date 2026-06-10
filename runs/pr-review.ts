@@ -199,6 +199,14 @@ export const prReview = defineRun({
 
   limits: { maxDurationSec: 1500, maxConcurrency: FULL_AGENTS.length },
 
+  // At most one review per PR per 30 minutes, across BOTH dispatch paths
+  // (webhook + Action). A rapid push sequence on an active PR collapses to
+  // the first dispatch of the window; the skipped pushes answer 202 with the
+  // prior execution's id, so CI stays green. The LAST state of a busy PR
+  // still gets reviewed on its next dispatch after the window — and a review
+  // can always be forced by re-running the CI job ≥30 min later.
+  cooldown: { seconds: 1800, scope: (input) => `pr-${input.pr}` },
+
   run: (input) =>
     Effect.gen(function* () {
       // The whole review is wrapped in an error boundary that ALWAYS posts a PR

@@ -17,6 +17,28 @@ export type RunLimits = {
   readonly requiresBrowser?: boolean;
 };
 
+/**
+ * A dispatch-rate cap: at most one execution per `seconds` within a `scope`.
+ *
+ * `scope` derives the rate-limit bucket from the run's (validated) inputs —
+ * e.g. `pr-review` scopes per pull request (`pr-<number>`), so a rapid push
+ * sequence on one PR collapses to one review per window while other PRs are
+ * unaffected. The full cooldown key is `{run}:{repo}:{scope}`, so scopes never
+ * collide across repos or runs.
+ *
+ * Enforced at BOTH dispatch entry points (Action-mode `/v1/dispatch` and the
+ * webhook receiver) using `IDEMPOTENCY_KV`; without that binding the cooldown
+ * is not enforced (best-effort, like receiver-level dedup). A dispatch landing
+ * inside the window is acknowledged (202) with the prior execution's id and
+ * `skipped: "cooldown"` — never an error, so a gating CI step stays green.
+ */
+export type CooldownSpec<I> = {
+  /** Window length in seconds. Effective floor is 60 (KV's minimum TTL). */
+  readonly seconds: number;
+  /** Rate-limit bucket within `{run}:{repo}` — e.g. ``pr-${input.pr}``. */
+  readonly scope: (input: I) => string;
+};
+
 /** The raw GitHub webhook delivery; a run narrows it per-event itself. */
 export type WebhookPayload = Record<string, any>;
 
@@ -114,6 +136,12 @@ export type RunSpec<I, O, IEnc, OEnc> = {
    * contents within the envelope this spec allows. See `./writeback`.
    */
   readonly writeback?: WritebackSpec;
+  /**
+   * Optional dispatch-rate cap — at most one execution per window per scope.
+   * See `CooldownSpec`. Applies to Action-mode AND webhook-mode dispatches;
+   * Schedule mode is exempt (crons self-pace).
+   */
+  readonly cooldown?: CooldownSpec<I>;
   readonly run: (input: I) => Effect.Effect<O, RunError, RunContext>;
 };
 
@@ -152,6 +180,14 @@ export const defineRun = <I, O, IEnc, OEnc>(
   ) {
     throw new Error(
       `defineRun: \`limits.maxDurationSec\` must be a positive number, got ${spec.limits.maxDurationSec} for run "${spec.name}"`,
+    );
+  }
+  if (
+    spec.cooldown !== undefined &&
+    (!Number.isFinite(spec.cooldown.seconds) || spec.cooldown.seconds <= 0)
+  ) {
+    throw new Error(
+      `defineRun: \`cooldown.seconds\` must be a positive number, got ${spec.cooldown.seconds} for run "${spec.name}"`,
     );
   }
   if (spec.writeback !== undefined) {

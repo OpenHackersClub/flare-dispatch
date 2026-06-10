@@ -239,3 +239,95 @@ describe("POST /v1/webhooks/github — receiver dedup", () => {
     expect(workflow.calls).toHaveLength(1);
   });
 });
+
+describe("POST /v1/webhooks/github — run cooldown", () => {
+  /** A pull_request payload passing pr-review's trigger gate. */
+  const prPayload = (sha: string) => ({
+    action: "synchronize",
+    pull_request: {
+      number: 7,
+      draft: false,
+      labels: [],
+      user: { login: "octocat" },
+      head: { sha },
+      base: { sha: "base000000000000" },
+    },
+    repository: { full_name: "owner/test-repo" },
+    installation: { id: 99999 },
+  });
+
+  it("second pr-review dispatch for the same PR inside the window → skipped", async () => {
+    const { env, workflow } = fixture({ withKv: true });
+
+    const res1 = await handleRequest(
+      await webhookRequest(prPayload("aaaa111122223333"), {
+        event: "pull_request",
+        deliveryId: "delivery-pr-1",
+      }),
+      env,
+    );
+    expect(res1.status).toBe(202);
+    const body1 = (await res1.json()) as {
+      dispatched: Array<{ run: string; executionId: string }>;
+    };
+    expect(body1.dispatched.map((d) => d.run)).toContain("pr-review");
+    const firstId = body1.dispatched.find((d) => d.run === "pr-review")!.executionId;
+    const createsAfterFirst = workflow.calls.length;
+
+    // A new push (different sha, different delivery) on the SAME PR, inside
+    // the 30-min window: pr-review must be skipped, not re-dispatched.
+    const res2 = await handleRequest(
+      await webhookRequest(prPayload("bbbb444455556666"), {
+        event: "pull_request",
+        deliveryId: "delivery-pr-2",
+      }),
+      env,
+    );
+    expect(res2.status).toBe(202);
+    const body2 = (await res2.json()) as {
+      dispatched: Array<{ run: string }>;
+      skipped?: Array<{
+        run: string;
+        executionId: string;
+        reason: string;
+        retryAfterSec: number;
+      }>;
+    };
+    expect(body2.dispatched.map((d) => d.run)).not.toContain("pr-review");
+    expect(body2.skipped).toHaveLength(1);
+    expect(body2.skipped![0]).toMatchObject({
+      run: "pr-review",
+      executionId: firstId,
+      reason: "cooldown",
+    });
+    expect(body2.skipped![0]!.retryAfterSec).toBeGreaterThan(0);
+    expect(workflow.calls).toHaveLength(createsAfterFirst);
+  });
+
+  it("a different PR is unaffected by another PR's window", async () => {
+    const { env, workflow } = fixture({ withKv: true });
+    await handleRequest(
+      await webhookRequest(prPayload("aaaa111122223333"), {
+        event: "pull_request",
+        deliveryId: "delivery-pr-3",
+      }),
+      env,
+    );
+    const other = prPayload("cccc777788889999");
+    other.pull_request.number = 8;
+    const res = await handleRequest(
+      await webhookRequest(other, {
+        event: "pull_request",
+        deliveryId: "delivery-pr-4",
+      }),
+      env,
+    );
+    const body = (await res.json()) as {
+      dispatched: Array<{ run: string }>;
+      skipped?: unknown[];
+    };
+    expect(body.dispatched.map((d) => d.run)).toContain("pr-review");
+    expect(body.skipped).toBeUndefined();
+    expect(workflow.calls).toHaveLength(2);
+  });
+});

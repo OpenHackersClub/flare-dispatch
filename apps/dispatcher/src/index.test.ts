@@ -644,6 +644,103 @@ describe("POST /v1/dispatch/:run — dedup", () => {
   });
 });
 
+describe("POST /v1/dispatch/:run — cooldown", () => {
+  /** A well-formed `pr-review` dispatch body for the given head sha. */
+  const prReviewBody = (sha: string, pr = 7) => ({
+    run: "pr-review",
+    github: {
+      repo: "owner/test-repo",
+      ref: "refs/heads/feature",
+      sha,
+      pr_number: pr,
+      actor: "octocat",
+      installation_id: 99999,
+    },
+    inputs: {
+      repo: "owner/test-repo",
+      sha,
+      baseSha: "base000000000000",
+      pr,
+    },
+    trigger: {},
+  });
+
+  it("second dispatch for the same PR inside the window → 202 skipped with the prior id", async () => {
+    const { env, workflow } = fixture({ withIdempotencyKv: true });
+
+    const res1 = await handleRequest(
+      await dispatchRequest(
+        "pr-review",
+        JSON.stringify(prReviewBody("aaaa111122223333")),
+      ),
+      env,
+    );
+    expect(res1.status).toBe(202);
+    const id1 = ((await res1.json()) as { executionId: string }).executionId;
+    expect(workflow.calls).toHaveLength(1);
+
+    // A new push (different sha) on the SAME PR, inside the 30-min window.
+    const res2 = await handleRequest(
+      await dispatchRequest(
+        "pr-review",
+        JSON.stringify(prReviewBody("bbbb444455556666")),
+      ),
+      env,
+    );
+    expect(res2.status).toBe(202);
+    const body2 = (await res2.json()) as {
+      executionId: string;
+      skipped?: string;
+      retryAfterSec?: number;
+    };
+    expect(body2.skipped).toBe("cooldown");
+    expect(body2.executionId).toBe(id1);
+    expect(body2.retryAfterSec).toBeGreaterThan(0);
+    // No second Workflow.create.
+    expect(workflow.calls).toHaveLength(1);
+  });
+
+  it("a different PR dispatches normally inside another PR's window", async () => {
+    const { env, workflow } = fixture({ withIdempotencyKv: true });
+    await handleRequest(
+      await dispatchRequest(
+        "pr-review",
+        JSON.stringify(prReviewBody("aaaa111122223333", 7)),
+      ),
+      env,
+    );
+    const res = await handleRequest(
+      await dispatchRequest(
+        "pr-review",
+        JSON.stringify(prReviewBody("cccc777788889999", 8)),
+      ),
+      env,
+    );
+    expect(res.status).toBe(202);
+    expect(((await res.json()) as { skipped?: string }).skipped).toBeUndefined();
+    expect(workflow.calls).toHaveLength(2);
+  });
+
+  it("without IDEMPOTENCY_KV the cooldown is not enforced (best-effort)", async () => {
+    const { env, workflow } = fixture();
+    await handleRequest(
+      await dispatchRequest(
+        "pr-review",
+        JSON.stringify(prReviewBody("aaaa111122223333")),
+      ),
+      env,
+    );
+    await handleRequest(
+      await dispatchRequest(
+        "pr-review",
+        JSON.stringify(prReviewBody("bbbb444455556666")),
+      ),
+      env,
+    );
+    expect(workflow.calls).toHaveLength(2);
+  });
+});
+
 describe("unmatched routes", () => {
   it("404s an unknown path", async () => {
     const { env } = fixture();
