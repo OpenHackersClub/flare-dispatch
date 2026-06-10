@@ -45,6 +45,7 @@
 
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
+import { getSandbox } from "@cloudflare/sandbox";
 import { Duration, Effect, Exit, Schedule, Schema } from "effect";
 import {
   admissionAcquireAttempts,
@@ -595,6 +596,42 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       // thrown infra error.
       const containerId = previewSafeSandboxId(payload.executionId);
       const leaseStore = makeContainerLeaseD1(db);
+
+      // --- Container teardown (cost) ----------------------------------------
+      //
+      // Destroy the container the moment the run body is done — success,
+      // failure, defect, or interrupt. Everything the finalize path still
+      // needs (artifacts, writeback manifest, exec logs) is already in R2,
+      // never read back from the container. Without this, the container idles
+      // for the full `sleepAfter` window after its last command, and the
+      // Container DO bills wall-clock duration (DO + container vCPU/memory)
+      // the entire time — on a CI-shaped workload that idle tail measured
+      // ~45% of total container spend.
+      //
+      // MUST run inside the lease window (before `lease.release()`): runs
+      // whose execution ids normalise to the same container id are serialized
+      // by the lease, and a destroy fired after release could race a peer
+      // that just acquired it and kill the peer's container mid-run. As an
+      // `ensuring` attached INSIDE `acquire`'s scope it also only ever fires
+      // when WE held the lease — a failed acquire destroys nothing.
+      //
+      // Best-effort + bounded: container RPCs can hang (every container wait
+      // needs a timeout), and a teardown failure must never flip the verdict
+      // the run already earned — log and move on; `sleepAfter` is the
+      // backstop reaper for this and for paths that die before reaching the
+      // finalizer at all (Worker eviction, deploy mid-run).
+      const destroySandbox: Effect.Effect<void> = Effect.tryPromise(() =>
+        getSandbox(sandboxNs, containerId).destroy(),
+      ).pipe(
+        Effect.timeout(Duration.seconds(30)),
+        Effect.asVoid,
+        Effect.catchAllCause((cause) =>
+          Effect.logWarning(
+            `sandbox teardown failed (sleepAfter reaps) — ${cause}`,
+          ),
+        ),
+      );
+
       const leased: Effect.Effect<unknown, RunError, RunContext> = Effect.gen(
         function* () {
           const lease = yield* leaseStore.acquire(
@@ -618,9 +655,15 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
               Effect.asVoid,
             );
           yield* Effect.forkScoped(heartbeatLoop);
+          // Finalizer order matters: `ensuring`s run inner-first, so the
+          // container is destroyed BEFORE the lease is released — a waiting
+          // peer never sees its freshly-acquired container torn down.
           return yield* run
             .run(input)
-            .pipe(Effect.ensuring(lease.release().pipe(Effect.ignore)));
+            .pipe(
+              Effect.ensuring(destroySandbox),
+              Effect.ensuring(lease.release().pipe(Effect.ignore)),
+            );
         },
       ).pipe(Effect.scoped);
 
