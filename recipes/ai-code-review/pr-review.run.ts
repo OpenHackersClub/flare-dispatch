@@ -151,8 +151,15 @@ export const prReview = defineRun({
     {
       event: "pull_request",
       actions: ["opened", "synchronize", "ready_for_review"],
+      // MUST match Action mode's semantic instanceId — `{run}:{repo_}:{sha12}`
+      // (dispatch.ts `semanticInstanceId`) — so a repo that BOTH installs the
+      // App (webhook mode) and dispatches from its own CI (Action mode)
+      // collapses to ONE review per head SHA at the `create({id})` layer
+      // instead of paying two sandbox runs. The PR number adds nothing to the
+      // identity: the dispatcher's dedup contract is "same {run, repo, sha} →
+      // same execution", and the number still rides in `inputs`.
       idempotencyKey: ({ payload }) =>
-        `pr-review:${payload.repository.full_name}:${payload.pull_request.number}:${payload.pull_request.head.sha}`,
+        `pr-review:${payload.repository.full_name.replace(/\//g, "_")}:${payload.pull_request.head.sha.slice(0, 12)}`,
       gate: ({ payload }) =>
         (!payload.pull_request.draft || hasLabel(payload, "request-ai-review")) &&
         !hasLabel(payload, "skip-ai-review") &&
