@@ -55,8 +55,14 @@ jobs:
                 {"name":"create-project", "prose":"From the dashboard, create a new project called Demo, confirm the empty-state CTA appears."},
                 {"name":"invite-member",  "prose":"Open the new project, invite a teammate by email, confirm the pending-invite chip shows."}
               ]' }},
-              "viewportPreset": "desktop"
+              "viewportPreset": "desktop"${{ github.event.pull_request.number && format(', "pr": {0}', github.event.pull_request.number) || '' }}
             }
+          # `pr` is what enables the GIF-on-completion comment: on a `pull_request`
+          # the run posts the holistic summary + an inline walkthrough GIF to the
+          # PR. On `workflow_dispatch` there is no PR, so it is omitted and the
+          # run reports via the `flare-dispatch/product-demo` check-run only. For
+          # the GIF to render inline, the deploy's `/v1/artifacts/...` route must
+          # be public (GitHub's image proxy fetches it server-side).
           # Prefer authoring the script as markdown? Keep it in a tracked
           # `demo-stories.md` (each `## ` heading = one story; see the README §
           # "Authoring stories") and swap the `"stories"` line above for:

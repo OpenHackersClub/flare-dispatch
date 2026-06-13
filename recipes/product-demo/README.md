@@ -60,7 +60,7 @@ flowchart LR
   SUM -->|pr number present| CMT["PR comment<br/>summary + inline GIF"]
 ```
 
-Each story's play also captures pixel frames (the key screenshots + periodic CDP screenshots at ~1 fps) — the GIF's frame source, since the rrweb stream is DOM events, not pixels. The comment is best-effort: a GIF or comment failure annotates the check-run summary but never fails the run, and a Schedule-mode firing (no PR) skips it entirely. See [specs/02-runs.md § PR comment on completion](../../specs/02-runs.md#pr-comment-on-completion-gif--summary) for the full contract.
+Each story's play captures a pixel frame after every action into a shared frames dir — the GIF's source, since the rrweb stream is DOM events, not pixels. The `render gif` step is the bundled `demo-agent gif` subcommand (pure-JS `pngjs` + `gifenc`, no ffmpeg in the image); it downscales to ≤ 800 px and drops frames evenly to stay under GitHub's ~10 MB image-proxy limit. The comment is best-effort: a GIF or comment failure logs but never fails the run, and a firing with no PR (Schedule mode, or a `workflow_dispatch` with no PR) skips it entirely. See [specs/02-runs.md § PR comment on completion](../../specs/02-runs.md#pr-comment-on-completion-gif--summary) for the full contract, and [`.github/workflows/product-demo-logviewer.yml`](../../.github/workflows/product-demo-logviewer.yml) for the worked dogfood that demos this repo's own log viewer.
 
 ## Why this lives on FlareDispatch
 
