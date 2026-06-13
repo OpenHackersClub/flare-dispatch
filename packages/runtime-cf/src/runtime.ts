@@ -155,6 +155,15 @@ export type CFRuntimeLiveOptions = {
    */
   readonly publicOrigin?: string;
   /**
+   * The tokened log-viewer base URL for this execution
+   * (`https://<origin>/logs/<id>?t=<token>`). Threaded into the `Sandbox`
+   * Layer so the inline-truncation breadcrumb in a checkpointed `ExecResult`
+   * deep-links to the readable viewer instead of the dead-end "full log in R2".
+   * Built by the dispatcher (it owns the log-token secret); `undefined` keeps
+   * the historical message.
+   */
+  readonly logsViewerBase?: string;
+  /**
    * OIDC signing config for the `oidc` capability — the ES256 private JWK
    * (`OIDC_SIGNING_JWK` secret) + the issuer URL the IdP's trust policy
    * pins. `undefined` selects `OidcDeferred`: a run that calls `oidc.sign`
@@ -229,6 +238,7 @@ export const makeCFRuntimeLive = (
     opts.executionId,
     opts.checks,
     opts.sandboxPreviewHostname,
+    opts.logsViewerBase,
   );
   const stepRunner = makeStepRunnerCloudflare(
     opts.workflowStep,

@@ -14,6 +14,18 @@ export interface Env {
    */
   readonly HMAC_SECRET: string;
 
+  /**
+   * Optional dedicated keying material for the per-execution log-viewer
+   * capability tokens (apps/dispatcher/src/log-token.ts). A Worker secret. When
+   * unset, log tokens derive from `HMAC_SECRET` instead (every Action-mode
+   * deploy has one, and the deploy workflow re-syncs it), so the viewer is
+   * tokened-by-default with no extra secret. Set a dedicated value on a
+   * webhook-only deploy that omits `HMAC_SECRET`, or to rotate log links
+   * independently of the dispatch HMAC. Absent AND `HMAC_SECRET` absent → the
+   * per-execution log routes default-deny (`503`).
+   */
+  readonly LOG_LINK_SECRET?: string;
+
   /** Workflow binding — instantiates RunWorkflow executions. */
   readonly RUNS_WORKFLOW: Workflow;
 
