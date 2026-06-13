@@ -306,12 +306,26 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .ln.err .t{color:#f85149}
   .empty{padding:24px 16px;color:#8b949e}
   #status{padding:6px 16px;color:#8b949e;font-size:12px}
+  .steps{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px;border-bottom:1px solid #21262d}
+  .step{display:inline-flex;align-items:center;gap:6px;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:3px 8px;font-size:12px}
+  .step .dot{width:7px;height:7px;border-radius:50%;background:#8b949e;flex:none}
+  .step.success .dot{background:#3fb950}
+  .step.failure .dot{background:#f85149}
+  .step.running .dot{background:#58a6ff}
+  .step .sd{color:#8b949e;font-size:11px}
+  .summary{padding:8px 16px;border-bottom:1px solid #21262d}
+  .summary .verdict{font-weight:600;color:#3fb950}
+  .summary details{border:none}
+  .summary summary{position:static;background:none;padding:0;top:auto;color:#8b949e;font-size:12px;cursor:pointer}
+  .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:#0b0f14;border:1px solid #21262d;border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
 </style></head>
 <body>
 <header>
   <div class="title"><b>FlareDispatch</b> logs · <span id="run"></span></div>
   <div class="meta" id="sub"></div>
 </header>
+<div id="summary" class="summary" hidden></div>
+<div id="steps" class="steps" hidden></div>
 <div class="controls">
   <input type="search" id="filter" placeholder="filter lines…" autocomplete="off">
   <label><input type="checkbox" id="stderrOnly"> stderr only</label>
@@ -358,6 +372,45 @@ const viewerPage = (nonce: string): string => `<!doctype html>
       a.href=ex.dashboardUrl; a.textContent="Cloudflare ↗"; a.rel="noreferrer";
       sub.appendChild(a);
     }
+  }
+  // Render the D1 step timeline — a run's shape even when it has sparse exec
+  // logs (e.g. a mostly-Worker-side run like pr-review: one container exec,
+  // the rest model/GitHub calls). Each chip = step name + status dot + duration.
+  function fmtMs(ms){ return ms >= 1000 ? Math.round(ms/1000) + "s" : ms + "ms"; }
+  function renderSteps(steps){
+    var el = document.getElementById("steps");
+    if (!steps || !steps.length){ el.hidden = true; return; }
+    el.hidden = false; el.textContent = "";
+    steps.forEach(function(s){
+      var chip = document.createElement("span"); chip.className = "step " + (s.status||"");
+      var dot = document.createElement("span"); dot.className = "dot";
+      var nm = document.createElement("span"); nm.textContent = s.name;
+      chip.appendChild(dot); chip.appendChild(nm);
+      if (s.completedAt && s.startedAt){
+        var sd = document.createElement("span"); sd.className = "sd";
+        sd.textContent = fmtMs(s.completedAt - s.startedAt);
+        chip.appendChild(sd);
+      }
+      el.appendChild(chip);
+    });
+  }
+  // Render the run's own terminal output (run-agnostic): a verdict badge when
+  // present, plus a collapsible pretty-printed JSON. Always via textContent.
+  function renderSummary(summary){
+    var el = document.getElementById("summary");
+    if (summary == null || typeof summary !== "object"){ el.hidden = true; return; }
+    el.hidden = false; el.textContent = "";
+    if (typeof summary.verdict === "string"){
+      var v = document.createElement("span"); v.className = "verdict";
+      v.textContent = "verdict: " + clean(summary.verdict);
+      el.appendChild(v); el.appendChild(document.createTextNode("  "));
+    }
+    var det = document.createElement("details");
+    var sm = document.createElement("summary"); sm.textContent = "run summary (JSON)";
+    var pre = document.createElement("pre");
+    try { pre.textContent = JSON.stringify(summary, null, 2); }
+    catch(e){ pre.textContent = String(summary); }
+    det.appendChild(sm); det.appendChild(pre); el.appendChild(det);
   }
   function applyFilter(){
     var q = document.getElementById("filter").value.toLowerCase();
@@ -445,6 +498,8 @@ const viewerPage = (nonce: string): string => `<!doctype html>
       return r.json();
     }).then(function(detail){
       setHeader(detail.execution);
+      renderSteps(detail.steps);
+      renderSummary(detail.summary);
       var st = detail.execution.status;
       var terminal = (st !== "running" && st !== "queued");
       return syncSections(detail, terminal).then(function(){
