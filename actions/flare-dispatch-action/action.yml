@@ -57,6 +57,12 @@ outputs:
       Cloudflare Workflows instance URL for this execution (the run's
       steps/logs), surfaced for BOTH success and failure. Empty when the
       Dispatcher runs BYOC (no CLOUDFLARE_ACCOUNT_ID) or predates this field.
+  logs-url:
+    description: >-
+      Tokened log-viewer URL on the Dispatcher's own origin — the full,
+      untruncated stdout/stderr of every command, live-refreshing while the
+      run executes. Empty when the Dispatcher has no log-link key material
+      (neither LOG_LINK_SECRET nor HMAC_SECRET) or predates this field.
 
 runs:
   using: node20

@@ -28691,12 +28691,18 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
   });
   const executionId = stringField(parsed, "executionId");
   const detailsUrl = stringField(parsed, "detailsUrl");
+  const logsUrl = stringField(parsed, "logsUrl");
   yield* Console_exports.log(
     `FlareDispatch: dispatched '${safeForCmd(run3)}' \u2014 executionId=${safeForCmd(executionId)}`
   );
   if (detailsUrl !== "") {
     yield* Console_exports.log(
       `FlareDispatch: Cloudflare Workflows run \u2014 ${safeForCmd(detailsUrl)}`
+    );
+  }
+  if (logsUrl !== "") {
+    yield* Console_exports.log(
+      `FlareDispatch: full logs \u2014 ${safeForCmd(logsUrl)}`
     );
   }
   const outputFile = env.GITHUB_OUTPUT;
@@ -28706,11 +28712,12 @@ var runDispatch = (deps) => Effect_exports.gen(function* () {
         outputFile,
         `execution-id=${executionId}
 details-url=${detailsUrl}
+logs-url=${logsUrl}
 `
       )
     );
   }
-  return { executionId, detailsUrl };
+  return { executionId, detailsUrl, logsUrl };
 });
 var reportFailure = (e) => Match_exports.value(e).pipe(
   Match_exports.tag(

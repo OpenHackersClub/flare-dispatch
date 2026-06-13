@@ -363,6 +363,27 @@ describe("runDispatch", () => {
     expect(written).toContain(`details-url=${detailsUrl}\n`);
   });
 
+  it("HTTP 202 with logsUrl → returns it AND writes the logs-url GITHUB_OUTPUT", async () => {
+    const logsUrl = "https://disp.example/logs/01HXYZ?t=AAAAAAAAAAAAAAAAAAAAAA";
+    const { fetch } = mockFetch([
+      { status: 202, body: JSON.stringify({ executionId: "01HXYZ", logsUrl }) },
+    ]);
+    const outFile = join(
+      mkdtempSync(join(tmpdir(), "flare-out-")),
+      "github_output",
+    );
+    writeFileSync(outFile, "");
+    const env = baseEnv({ GITHUB_OUTPUT: outFile });
+
+    const exit = await Effect.runPromiseExit(runDispatch({ env, fetch }));
+
+    expect(Exit.isSuccess(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value.logsUrl).toBe(logsUrl);
+    }
+    expect(readFileSync(outFile, "utf8")).toContain(`logs-url=${logsUrl}\n`);
+  });
+
   it("HTTP 202 without detailsUrl (BYOC / older dispatcher) → detailsUrl is ''", async () => {
     const { fetch } = mockFetch([
       { status: 202, body: JSON.stringify({ executionId: "01OLD" }) },

@@ -419,7 +419,7 @@ const postOnce = (
 export const runDispatch = (
   deps: DispatchDeps,
 ): Effect.Effect<
-  { executionId: string; detailsUrl: string },
+  { executionId: string; detailsUrl: string; logsUrl: string },
   | BadMode
   | MissingInput
   | InvalidEndpoint
@@ -553,11 +553,16 @@ export const runDispatch = (
     // Empty when the dispatcher runs BYOC (no CLOUDFLARE_ACCOUNT_ID) — older
     // dispatchers that predate this field also yield "" and degrade cleanly.
     const detailsUrl = stringField(parsed, "detailsUrl");
+    // The readable, tokened log-viewer URL on the Dispatcher's own origin
+    // (apps/dispatcher/src/routes/logs.ts) — the full untruncated stdout/stderr
+    // of every command, live-refreshing while the run executes. Empty when the
+    // Dispatcher has no log-link key material, or predates this field.
+    const logsUrl = stringField(parsed, "logsUrl");
 
-    // `safeForCmd` keeps a hostile `run` / `executionId` / `detailsUrl` from
-    // injecting a second workflow command into the runner log (security review
-    // H2/L1). The link works for BOTH a passing and a failing run — it points
-    // at the Workflow instance, not the run's (success-only) output.
+    // `safeForCmd` keeps a hostile `run` / `executionId` / `detailsUrl` /
+    // `logsUrl` from injecting a second workflow command into the runner log
+    // (security review H2/L1). The links work for BOTH a passing and a failing
+    // run — they point at the execution, not the run's (success-only) output.
     yield* Console.log(
       `FlareDispatch: dispatched '${safeForCmd(run)}' — executionId=${safeForCmd(executionId)}`,
     );
@@ -566,18 +571,23 @@ export const runDispatch = (
         `FlareDispatch: Cloudflare Workflows run — ${safeForCmd(detailsUrl)}`,
       );
     }
+    if (logsUrl !== "") {
+      yield* Console.log(
+        `FlareDispatch: full logs — ${safeForCmd(logsUrl)}`,
+      );
+    }
 
     const outputFile = env.GITHUB_OUTPUT;
     if (outputFile) {
       yield* Effect.sync(() =>
         appendFileSync(
           outputFile,
-          `execution-id=${executionId}\ndetails-url=${detailsUrl}\n`,
+          `execution-id=${executionId}\ndetails-url=${detailsUrl}\nlogs-url=${logsUrl}\n`,
         ),
       );
     }
 
-    return { executionId, detailsUrl };
+    return { executionId, detailsUrl, logsUrl };
   });
 
 /**
