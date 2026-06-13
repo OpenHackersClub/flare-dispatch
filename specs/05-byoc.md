@@ -59,10 +59,13 @@ flare-dispatch/                                    your fork of the template
 │           ├── routes/
 │           │   ├── dispatch.ts                POST /v1/dispatch/:run (HMAC verify)
 │           │   ├── artifacts.ts               GET /v1/artifacts/:execution/:name
+│           │   ├── executions.ts              GET /v1/executions (admin) + /:id (token)
+│           │   ├── logs.ts                     GET /v1/executions/:id/logs[/:file] + /logs/:execution (viewer)
 │           │   ├── github.ts                  GET /v1/github/install/new + /installed
 │           │   ├── health.ts                  GET /health
 │           │   └── scheduled.ts               Cron Trigger → scheduling Workflow
 │           ├── hmac.ts                        constant-time HMAC verify (raw-bytes contract)
+│           ├── log-token.ts                   per-execution log-viewer capability tokens (HKDF+HMAC)
 │           ├── workflow.ts                    RunWorkflow class (extends WorkflowEntrypoint)
 │           ├── sandbox.ts                     RunSandbox DO (container binding class)
 │           ├── registry.ts                    run-name → Run map; schedulesByCron()
@@ -283,6 +286,45 @@ CREATE INDEX steps_execution ON steps(execution_id);
 
 D1's 10 GB per-database limit is plenty for metadata — logs and artifacts live in R2, and D1 holds only pointers.
 
+## Log viewing
+
+The full, untruncated stdout/stderr of every command a run executes is written to
+R2 at `logs/<execution-id>/exec[-N].ndjson` (one `{stream,line}` / `{stream:"meta",
+command}` record per line). The Dispatcher serves it back readably so you never have
+to read the truncated, JSON-escaped blob the Cloudflare Workflows instance explorer
+shows:
+
+| Endpoint | Auth | What |
+|---|---|---|
+| `GET /logs/:execution` | capability token | Self-hosted single-page HTML viewer (per-file sections, stderr tinting, filter, live-refresh while running). The check-run summary's **"view full logs"** link and the inline-truncation breadcrumb both point here. |
+| `GET /v1/executions/:id` | capability token | Execution metadata + steps + R2 log-file index (no `input_json`). |
+| `GET /v1/executions/:id/logs/:file` | capability token | One exec log — raw NDJSON, or `?format=text` for rendered plain text. |
+| `GET /v1/executions/:id/logs` | capability token | All exec logs, concatenated as streaming plain text. |
+| `GET /v1/executions` | `ADMIN_TOKEN` bearer | List executions (`run`/`repo`/`status`/`limit`/`before` filters). Enumerates repos + activity, so it is bearer-gated, not token-gated; the viewer never calls it. |
+
+**Capability tokens.** Per-execution surfaces require a token bound to the execution
+id: `token = base64url(HMAC-SHA256(k_logs, executionId))[0..22)`, where `k_logs` is
+HKDF-derived (label `flare-dispatch/log-link/v1`) from `LOG_LINK_SECRET` — or, when
+that is unset, from `HMAC_SECRET`. The HKDF label domain-separates the log key from
+the dispatch HMAC, so the fallback is safe; an Action-mode deploy therefore gets
+tokened log links with **no extra secret**. When neither secret is set, the
+per-execution routes **default-deny** (`503`) — they are never silently open. The
+token rides in the `logsUrl` the dispatch `202` returns, the check-run summary, and
+the truncation breadcrumb.
+
+**Why a token and not just the id.** Execution ids are *derivable* (`{run}:{owner_
+repo}:{sha12}` — run names are public, repo+sha are public GitHub data), and the logs
+are the *complete* raw output of every command (which can contain secrets), not the
+operator-curated subset the `/v1/artifacts` route serves. The token stops derivation
+and retroactive enumeration. **Residual risk:** a token embedded in a *public* repo's
+check-run is itself public — that is a per-run disclosure you make by publishing the
+link; private-repo executions and never-linked executions stay closed. For a stricter
+posture, put Cloudflare Access in front of `/logs` and `/v1/executions` as well.
+
+**What to monitor.** `forbidden` (token) and `admin_not_configured`/`unauthorized`
+(listing) responses indicate scanning or misconfiguration; `logs_not_configured`
+(`503`) means no key material is set.
+
 ## Secrets
 
 Set via `wrangler secret put` — never committed.
@@ -294,6 +336,7 @@ Set via `wrangler secret put` — never committed.
 | `GITHUB_APP_PRIVATE_KEY` | PEM key for App auth | From "Generate a private key" on the App page | Always |
 | `GITHUB_WEBHOOK_SECRET` | Verifies inbound App webhooks (`X-Hub-Signature-256`) | `openssl rand -base64 32`; configured in App settings | App-webhook trigger path |
 | `OIDC_SIGNING_JWK` | The Dispatcher's OIDC issuer key (private JWK, ES256). Public half is auto-served at `/.well-known/jwks.json` | `pnpm cli oidc keygen` (writes a fresh P-256 private JWK to stdout) — **the `oidc keygen` subcommand is Planned (V3.5); see [§ CLI](#cli)**, generate the JWK out-of-band until it lands | Any run that uses the `oidc` capability or the `awsAssumeRole` primitive. Skip if no run federates. |
+| `LOG_LINK_SECRET` | **Optional.** Dedicated key material for the per-execution log-viewer capability tokens (see [§ Log viewing](#log-viewing)). | `openssl rand -base64 32` | Nothing by default — when unset, log tokens derive from `HMAC_SECRET`. Set it only on a webhook-only deploy (no `HMAC_SECRET`), or to rotate log links independently. |
 
 ```sh
 wrangler secret put HMAC_SECRET                    # skip if you don't use the GHA Action / direct POST
@@ -301,6 +344,7 @@ wrangler secret put GITHUB_APP_ID
 wrangler secret put GITHUB_APP_PRIVATE_KEY < ./github-app-private-key.pem
 wrangler secret put GITHUB_WEBHOOK_SECRET
 wrangler secret put OIDC_SIGNING_JWK < ./oidc-signing.jwk.json    # only if you federate to AWS/GCP/Vault
+wrangler secret put LOG_LINK_SECRET                # optional — falls back to HMAC_SECRET when unset
 ```
 
 `GITHUB_APP_PRIVATE_KEY` is large; pipe it from a file rather than typing it. After upload, delete the local PEM.

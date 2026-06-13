@@ -70,7 +70,7 @@ It is invoked two ways — the Worker's `fetch()` handler serves the HTTP surfac
 | **Health** | `fetch()` | `/health` — liveness + registered-run list. | Live |
 | **Webhook** | `fetch()` | Start an execution from a `FlareDispatch` GitHub App webhook (Webhook mode). | **Live** |
 | **Schedule** | `scheduled()` | A Cloudflare Cron Trigger fires on a wall-clock cadence; the handler instantiates a scheduling Workflow (Schedule mode). See [§ Schedule-mode dispatch](#schedule-mode-dispatch). | Live |
-| **Inspection** | `fetch()` | Return execution metadata; redirect to signed artifact / log URLs. | **Planned (V1)** — `/v1/executions/:id` for `await`-mode polling. |
+| **Inspection** | `fetch()` | Return execution metadata + step + log-file index; serve readable per-exec logs. | **Live** — `GET /v1/executions/:id` (capability-token gated) + `GET /v1/executions/:id/logs[/:file]` + `GET /logs/:execution` (self-hosted HTML viewer); `GET /v1/executions` listing is `ADMIN_TOKEN`-gated. Live-tail (a per-execution `LogTail` Durable Object) is Planned (V1+). |
 | **Admin** | `fetch()` | Operator surface — signal a Workflow paused on `step.waitForEvent` via `POST /v1/admin/events/:wf_id` (`routes/admin-events.ts`, wired in `router.ts`). Gated by Cloudflare Access; opt-in bearer fallback — refuses `503` unless `ADMIN_TOKEN` is set. Execution list / force-cancel / replay remain Planned. | Live (opt-in) |
 | **OIDC issuer** | `fetch()` | Public, unauthenticated `/.well-known/openid-configuration` + `/.well-known/jwks.json`. The Dispatcher self-issues OIDC tokens runs federate against AWS STS / GCP STS / Vault — see [03-dsl § `oidc`](03-dsl.md#oidc) and [05-byoc § AWS federation trust policy](05-byoc.md#aws-federation-trust-policy). Public by design: IdPs fetch the JWKS unauthenticated to verify token signatures. | **Live** |
 
@@ -282,4 +282,4 @@ The architecture is shaped by Cloudflare platform limits. The ones that matter, 
 - **Traces** — each step is an OpenTelemetry span; the execution is the root span. Traces export to whatever OTel collector the user configures.
 - **Execution inspection** — the PR's Checks tab shows status; the check-run detail page links to logs, artifacts, and the trace.
 
-There is intentionally no custom web UI in v0–v2 — the GitHub check-run page is the operator surface.
+There is no custom *dashboard* in v0–v2 — the GitHub check-run page is the primary operator surface. Two self-hosted, single-page viewers complement it, each served from the Dispatcher's own origin and linked from the check-run: the rrweb session replay player (`/replay/:sessionId`) and the log viewer (`/logs/:execution`, capability-token gated) — the readable replacement for the truncated, JSON-escaped step output the Cloudflare Workflows instance explorer shows.

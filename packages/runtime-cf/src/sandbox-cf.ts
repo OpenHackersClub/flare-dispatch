@@ -82,10 +82,12 @@ const asCommand = (command: string | readonly string[]): string =>
  * `ExecResult.stdout` contract: "last N KB inlined; full log streamed to R2".
  */
 const INLINE_TAIL_CHARS = 16 * 1024;
-const inlineTail = (s: string): string =>
+const inlineTail = (s: string, viewerUrl?: string): string =>
   s.length <= INLINE_TAIL_CHARS
     ? s
-    : `…[${s.length - INLINE_TAIL_CHARS} chars truncated — full log in R2]…\n${s.slice(s.length - INLINE_TAIL_CHARS)}`;
+    : `…[${s.length - INLINE_TAIL_CHARS} chars truncated — ${
+        viewerUrl !== undefined ? `full log: ${viewerUrl}` : "full log in R2"
+      }]…\n${s.slice(s.length - INLINE_TAIL_CHARS)}`;
 
 /** The subset of the SDK's `ExecResult` this layer consumes. */
 interface RawExecResult {
@@ -197,6 +199,15 @@ export const makeSandboxCloudflareLive = (
   executionId: string,
   githubAuth?: ChecksGithubConfig,
   previewHostname?: string,
+  /**
+   * The tokened log-viewer base URL for this execution
+   * (`https://<origin>/logs/<id>?t=<token>`). When set, the inline-truncation
+   * breadcrumb in a checkpointed `ExecResult` points at the readable viewer
+   * (deep-linked to the specific log file) instead of the dead-end "full log
+   * in R2". `undefined` (no public origin / no log-link secret) keeps the
+   * historical message. Built by the dispatcher (it owns the token secret).
+   */
+  logsViewerBase?: string,
 ): Layer.Layer<SandboxTag> => {
   // The Durable Object / sandbox id. `getSandbox` routes the DO by this id AND
   // the SDK embeds it in the `exposePort` preview URL's DNS label, which must
@@ -321,13 +332,20 @@ export const makeSandboxCloudflareLive = (
           // FULL output → R2 (the durable log the artifact step promotes).
           await writeLog(logPath, cmd, result.stdout, result.stderr);
           // Only a bounded TAIL is inlined in the step's return value, so the
-          // Workflow checkpoint stays small (see `inlineTail`).
+          // Workflow checkpoint stays small (see `inlineTail`). When a viewer
+          // base is configured, the truncation breadcrumb deep-links to this
+          // exec's log file in the readable viewer.
+          const file = logPath.slice(logPath.lastIndexOf("/") + 1);
+          const viewerUrl =
+            logsViewerBase !== undefined
+              ? `${logsViewerBase}#${file}`
+              : undefined;
           return {
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             logPath,
-            stdout: inlineTail(result.stdout),
-            stderr: inlineTail(result.stderr),
+            stdout: inlineTail(result.stdout, viewerUrl),
+            stderr: inlineTail(result.stderr, viewerUrl),
           };
         },
         catch: (cause): ExecFailed | ExecTimeout => {

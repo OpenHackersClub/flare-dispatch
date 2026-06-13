@@ -127,6 +127,76 @@ export const makeFakeR2 = (): FakeR2 => {
   };
 };
 
+/** A seedable in-memory D1 stand-in for the read-side queries. */
+export interface FakeD1 {
+  readonly binding: Env["RUNS_METADATA"];
+  readonly executions: Record<string, unknown>[];
+  readonly steps: Record<string, unknown>[];
+}
+
+/**
+ * A minimal `D1Database` fake for the executions/logs read routes. It does not
+ * parse arbitrary SQL — it interprets the handful of statement shapes
+ * `executions-read.ts` emits: a `WHERE col = ?` / `col < ?` chain (binds in
+ * column order) plus an optional trailing `LIMIT ?`. Seed rows with snake_case
+ * columns matching the schema.
+ */
+export const makeFakeD1 = (seed?: {
+  executions?: Record<string, unknown>[];
+  steps?: Record<string, unknown>[];
+}): FakeD1 => {
+  const executions = seed?.executions ?? [];
+  const steps = seed?.steps ?? [];
+
+  const matches = (
+    row: Record<string, unknown>,
+    col: string,
+    op: string,
+    val: unknown,
+  ): boolean => {
+    const cell = row[col];
+    if (op === "=") return String(cell) === String(val);
+    if (op === "<") return cell != null && Number(cell) < Number(val);
+    return true;
+  };
+
+  const query = (sql: string, binds: unknown[]): Record<string, unknown>[] => {
+    const conditions = [...sql.matchAll(/(\w+)\s*(=|<)\s*\?/g)].map((m) => ({
+      col: m[1]!,
+      op: m[2]!,
+    }));
+    const hasLimit = /LIMIT\s*\?/.test(sql);
+    const limit = hasLimit ? Number(binds[conditions.length]) : Infinity;
+
+    const source = /FROM\s+steps/.test(sql) ? steps : executions;
+    let rows = source.filter((row) =>
+      conditions.every((c, i) => matches(row, c.col, c.op, binds[i])),
+    );
+    if (/FROM\s+executions/.test(sql)) {
+      rows = [...rows].sort(
+        (a, b) => Number(b["started_at"] ?? 0) - Number(a["started_at"] ?? 0),
+      );
+    } else {
+      rows = [...rows].sort(
+        (a, b) => Number(a["started_at"] ?? 0) - Number(b["started_at"] ?? 0),
+      );
+    }
+    return Number.isFinite(limit) ? rows.slice(0, limit) : rows;
+  };
+
+  const binding = {
+    prepare: (sql: string) => ({
+      bind: (...binds: unknown[]) => ({
+        all: async () => ({ results: query(sql, binds), success: true }),
+        first: async () => query(sql, binds)[0] ?? null,
+        run: async () => ({ success: true }),
+      }),
+    }),
+  } as unknown as Env["RUNS_METADATA"];
+
+  return { binding, executions, steps };
+};
+
 /** A fake KV namespace backed by an in-memory Map — get/put/delete only. */
 export interface FakeKv {
   readonly binding: KVNamespace;
@@ -161,6 +231,10 @@ export const makeFakeEnv = (opts: {
   idempotencyKv?: KVNamespace;
   githubWebhookSecret?: string;
   adminToken?: string;
+  logLinkSecret?: string;
+  metadata?: FakeD1;
+  publicOrigin?: string;
+  cloudflareAccountId?: string;
 }): Env =>
   ({
     HMAC_SECRET: opts.hmacSecret,
@@ -173,7 +247,16 @@ export const makeFakeEnv = (opts: {
       ? { GITHUB_WEBHOOK_SECRET: opts.githubWebhookSecret }
       : {}),
     ...(opts.adminToken !== undefined ? { ADMIN_TOKEN: opts.adminToken } : {}),
+    ...(opts.logLinkSecret !== undefined
+      ? { LOG_LINK_SECRET: opts.logLinkSecret }
+      : {}),
+    ...(opts.publicOrigin !== undefined
+      ? { PUBLIC_ORIGIN: opts.publicOrigin }
+      : {}),
+    ...(opts.cloudflareAccountId !== undefined
+      ? { CLOUDFLARE_ACCOUNT_ID: opts.cloudflareAccountId }
+      : {}),
     // Not exercised by PR5 routes — cast away.
     RUNS_SANDBOX: {} as Env["RUNS_SANDBOX"],
-    RUNS_METADATA: {} as Env["RUNS_METADATA"],
+    RUNS_METADATA: (opts.metadata?.binding ?? {}) as Env["RUNS_METADATA"],
   }) satisfies Env;

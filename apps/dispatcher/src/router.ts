@@ -25,8 +25,17 @@ import { handleArtifact } from "./routes/artifacts";
 import { handleBrowserCdp } from "./routes/browser-cdp";
 import { handleReplay } from "./routes/replay";
 import { handleDispatch } from "./routes/dispatch";
+import {
+  handleExecutionDetail,
+  handleExecutionsList,
+} from "./routes/executions";
 import { handleHealth } from "./routes/health";
 import { handleInstallNew, handleInstalled } from "./routes/github";
+import {
+  handleLogFile,
+  handleLogsAggregate,
+  handleLogViewer,
+} from "./routes/logs";
 import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
 import { handleGithubWebhook } from "./routes/webhook";
 
@@ -60,6 +69,16 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleReplay(env, decodeURIComponent(segments[1]!));
+  }
+
+  // GET /logs/:execution — the self-contained HTML log viewer (capability
+  // token in `?t=`). The readable replacement for the truncated, JSON-escaped
+  // blob the Cloudflare Workflows instance explorer shows.
+  if (segments.length === 2 && segments[0] === "logs") {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleLogViewer(env, decodeURIComponent(segments[1]!), url);
   }
 
   // OIDC issuer endpoints — public, unauthenticated (IdPs fetch them).
@@ -137,6 +156,43 @@ export const handleRequest = async (
     }
     const requestId = request.headers.get("cf-ray") ?? "no-ray";
     return handleBrowserCdp(request, env, requestId);
+  }
+
+  // GET /v1/executions — ADMIN_TOKEN-gated listing of executions.
+  if (
+    segments.length === 2 &&
+    segments[0] === "v1" &&
+    segments[1] === "executions"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleExecutionsList(request, env, url);
+  }
+
+  // GET /v1/executions/:id[...]  — per-execution detail + logs (token-gated).
+  if (
+    segments.length >= 3 &&
+    segments[0] === "v1" &&
+    segments[1] === "executions"
+  ) {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    const executionId = decodeURIComponent(segments[2]!);
+    // GET /v1/executions/:id
+    if (segments.length === 3) {
+      return handleExecutionDetail(env, executionId, url);
+    }
+    // GET /v1/executions/:id/logs — aggregated text roll-up.
+    if (segments.length === 4 && segments[3] === "logs") {
+      return handleLogsAggregate(env, executionId, url);
+    }
+    // GET /v1/executions/:id/logs/:file — one exec log (ndjson | ?format=text).
+    if (segments.length === 5 && segments[3] === "logs") {
+      return handleLogFile(env, executionId, decodeURIComponent(segments[4]!), url);
+    }
+    return json({ error: "not_found" }, 404);
   }
 
   // GET /v1/artifacts/:execution/:name[/...path]

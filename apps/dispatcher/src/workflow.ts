@@ -82,6 +82,7 @@ import { queuedSummary } from "./admission-summary";
 import { appendFailureSummary, failureSummaryMd } from "./failure-summary";
 import { renderResultEmail } from "./notify";
 import { workflowDashboardUrl } from "./dashboard-url";
+import { buildLogsUrl, resolveLogLinkSecret, signLogToken } from "./log-token";
 import type { Env } from "./env";
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */
@@ -310,6 +311,21 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     // origin (captured by the route) wins; `PUBLIC_ORIGIN` covers payloads
     // that predate the field or came from the cron path.
     const publicOrigin = payload.origin ?? this.env.PUBLIC_ORIGIN;
+    // The tokened log-viewer base URL for this execution — the readable
+    // full-log surface. Used for (a) the inline-truncation breadcrumb the
+    // sandbox layer writes into each checkpointed ExecResult, and (b) a "view
+    // full logs" link on the check-run summary. `undefined` when there is no
+    // public origin or no log-link key material (then both fall back to their
+    // historical, link-less forms).
+    const logSecret = resolveLogLinkSecret(this.env);
+    const logsBaseUrl =
+      publicOrigin !== undefined && logSecret !== undefined
+        ? buildLogsUrl(
+            publicOrigin,
+            payload.executionId,
+            await signLogToken(logSecret, payload.executionId),
+          )
+        : undefined;
     const runtime = makeCFRuntimeLive({
       db,
       bucket: this.env.RUNS_STORAGE,
@@ -354,6 +370,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         : {}),
       sandboxPreviewHostname: this.env.SANDBOX_PREVIEW_HOSTNAME,
       ...(publicOrigin !== undefined ? { publicOrigin } : {}),
+      ...(logsBaseUrl !== undefined ? { logsViewerBase: logsBaseUrl } : {}),
       // Wire the live OIDC signing Layer when both the JWK + issuer URL are
       // configured. Subject defaults to `<run>:<execution-id>` so an IAM
       // trust policy can scope a role to a single run+execution.
@@ -801,11 +818,16 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         }
       }
 
-      // Complete the check-run with the run's verdict.
-      const logsSuffix =
+      // Complete the check-run with the run's verdict. Two log links: the
+      // Cloudflare Workflows instance page (step timeline) and the readable
+      // full-log viewer on the dispatcher's own origin.
+      const cfLogsSuffix =
         detailsUrl !== undefined
           ? ` — [view step logs in Cloudflare ↗](${detailsUrl})`
           : "";
+      const viewLogsSuffix =
+        logsBaseUrl !== undefined ? ` — [view full logs ↗](${logsBaseUrl})` : "";
+      const logsSuffix = `${cfLogsSuffix}${viewLogsSuffix}`;
       const writebackSuffix =
         writebackLine !== undefined ? `\n\n${writebackLine}` : "";
       yield* checks.update({

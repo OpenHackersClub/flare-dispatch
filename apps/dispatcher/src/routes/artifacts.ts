@@ -39,44 +39,10 @@
 //       specs/05-byoc.md § R2 layout.
 
 import type { Env } from "../env";
+import { artifactKey, jsonError, streamObject } from "../r2-object";
 
-/** R2 key for a per-execution artifact — matches `R2ArtifactLive.upload`. */
-const artifactKey = (execution: string, name: string): string =>
-  `artifacts/${execution}/${name}`;
-
-/** JSON error helper. */
-const jsonError = (
-  error: string,
-  message: string,
-  status: number,
-): Response =>
-  new Response(JSON.stringify({ error, message }), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-
-/** Stream one stored R2 object with its metadata, or `null` if absent. */
-const streamObject = async (
-  env: Env,
-  key: string,
-): Promise<Response | null> => {
-  const object = await env.RUNS_STORAGE.get(key);
-  if (object === null) return null;
-
-  // R2 writes the object's stored metadata onto a `Headers` for us; layer the
-  // content-type on top (defaulting when the upload didn't set one).
-  const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  headers.set(
-    "content-type",
-    object.httpMetadata?.contentType ?? "application/octet-stream",
-  );
-  headers.set("etag", object.httpEtag);
-  // Artifacts are immutable per execution+name — safe to cache hard.
-  headers.set("cache-control", "private, max-age=31536000, immutable");
-
-  return new Response(object.body, { status: 200, headers });
-};
+/** Artifacts are immutable per execution+name — safe to cache hard. */
+const ARTIFACT_CACHE = "private, max-age=31536000, immutable";
 
 const escapeHtml = (s: string): string =>
   s
@@ -145,8 +111,9 @@ export const handleArtifact = async (
 ): Promise<Response> => {
   if (wantsIndex && subPath === "") {
     const index = await streamObject(
-      env,
+      env.RUNS_STORAGE,
       `${artifactKey(execution, name)}/index.html`,
+      { cacheControl: ARTIFACT_CACHE },
     );
     if (index !== null) return index;
     const listing = await directoryIndex(env, execution, name);
@@ -162,7 +129,9 @@ export const handleArtifact = async (
     subPath === ""
       ? artifactKey(execution, name)
       : `${artifactKey(execution, name)}/${subPath}`;
-  const response = await streamObject(env, key);
+  const response = await streamObject(env.RUNS_STORAGE, key, {
+    cacheControl: ARTIFACT_CACHE,
+  });
   return (
     response ?? jsonError("artifact_not_found", `no artifact at "${key}"`, 404)
   );

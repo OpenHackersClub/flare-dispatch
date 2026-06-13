@@ -109,7 +109,7 @@ The GHA step succeeds the moment dispatch is accepted — it has done its job. T
 
 ### Await sub-mode
 
-> **Status: Planned (V1)** — `await` mode and the `GET /v1/executions/:id` inspection endpoint are not implemented at HEAD. The JS Action today rejects any `mode` other than `fire-and-forget` before touching the network (`packages/cli/src/dispatch.ts`).
+> **Status: partially live.** The `GET /v1/executions/:id` inspection endpoint **is live at HEAD** (capability-token gated; the token rides in the `logsUrl` the dispatch 202 returns). The `await`-*mode Action wiring* — the JS Action that polls it — is still **Planned (V1)**: the Action today rejects any `mode` other than `fire-and-forget` before touching the network (`packages/cli/src/dispatch.ts`).
 
 ```yaml
 - uses: openhackersclub/flare-dispatch-action@v1
@@ -119,7 +119,7 @@ The GHA step succeeds the moment dispatch is accepted — it has done its job. T
     timeout: 20m
 ```
 
-When V1 lands, the Action will poll `GET /v1/executions/:id` every 10 s until the execution reaches a terminal state, then mirror the conclusion as its own GHA step status.
+When the Action wiring lands, it will poll `GET /v1/executions/:id` every 10 s — passing the capability token from the 202's `logsUrl` (the endpoint is token-gated, not unauthenticated) — until the execution reaches a terminal state, then mirror the conclusion as its own GHA step status.
 
 Use **only** when a follow-up GHA step needs the result inline — e.g. a deploy gate that consumes the acceptance execution's exact output. Avoid for runs longer than ~5 minutes: polling burns GHA minutes that fire-and-forget would not.
 
@@ -295,7 +295,7 @@ A successful execution renders as:
 📜 [Logs](https://runs.example.com/v1/artifacts/01J.../exec.ndjson)
 ```
 
-The "Logs" link points at the live `/v1/artifacts/:execution/:name` endpoint (`apps/dispatcher/src/routes/artifacts.ts`); a dedicated `/v1/executions/:id/logs` aggregator is **Planned (V1)** and would roll up per-step NDJSON.
+The check-run summary carries two log links: the Cloudflare Workflows instance page (step timeline) and a **"view full logs"** link to the self-hosted viewer `/logs/:execution` (capability-token gated). The promoted-artifact link still points at `/v1/artifacts/:execution/:name` (`apps/dispatcher/src/routes/artifacts.ts`); the dedicated aggregator `GET /v1/executions/:id/logs` (a streaming plain-text roll-up of every exec's NDJSON) **is now live** alongside the per-file `GET /v1/executions/:id/logs/:file` (`?format=ndjson|text`).
 
 For a failure, the summary inlines the first N failing test names with stack traces and direct links to per-shard reports. The summary is markdown; GitHub renders it in the check-run detail page.
 

@@ -26,6 +26,7 @@ import type { ParseError } from "effect/ParseResult";
 import { workflowDashboardUrl } from "../dashboard-url";
 import type { Env } from "../env";
 import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
+import { buildLogsUrl, resolveLogLinkSecret, signLogToken } from "../log-token";
 import { lookupRun } from "../registry";
 
 /** TTL on receiver-dedup KV entries — spec 04-gha § Receiver dedup (24h). */
@@ -250,9 +251,27 @@ export const handleDispatch = async (
   // CLOUDFLARE_ACCOUNT_ID is unset (BYOC default): the field is then omitted
   // and the response is byte-identical to the pre-feature shape.
   const detailsUrl = workflowDashboardUrl(env.CLOUDFLARE_ACCOUNT_ID, executionId);
+
+  // The tokened log-viewer URL — returned in the 202 so the caller (and the
+  // await-mode poller, which reads `/v1/executions/:id` with the same token)
+  // has a clickable, full-log link the instant the run is accepted. `undefined`
+  // only when no log-link key material is configured (neither LOG_LINK_SECRET
+  // nor HMAC_SECRET) — but HMAC_SECRET is required to reach this point, so in
+  // practice it is always present.
+  const logSecret = resolveLogLinkSecret(env);
+  const origin = env.PUBLIC_ORIGIN ?? new URL(request.url).origin;
+  const logsUrl =
+    logSecret !== undefined
+      ? buildLogsUrl(origin, executionId, await signLogToken(logSecret, executionId))
+      : undefined;
+
   const accepted = (): Response =>
     json(
-      { executionId, ...(detailsUrl !== undefined ? { detailsUrl } : {}) },
+      {
+        executionId,
+        ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+        ...(logsUrl !== undefined ? { logsUrl } : {}),
+      },
       202,
     );
 
