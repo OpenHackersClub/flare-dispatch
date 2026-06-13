@@ -242,6 +242,13 @@ describe("GET /logs/:execution (viewer)", () => {
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("connect-src 'self'");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    // Renders the D1 step timeline + run summary (not just log files), so a
+    // mostly-Worker-side run (e.g. pr-review) still shows its shape + verdict.
+    const html = await res.text();
+    expect(html).toContain('id="steps"');
+    expect(html).toContain('id="summary"');
+    expect(html).toContain("renderSteps");
+    expect(html).toContain("renderSummary");
   });
 
   it("403s the viewer without a token", async () => {
