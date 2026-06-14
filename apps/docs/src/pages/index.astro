@@ -63,22 +63,25 @@ const capabilities = [
 // §06 / Dogfood — both runs fire on this very repo. Each card shows the real
 // artifact a run posts back: pr-review's verdict comment on the PR, and
 // product-demo's walkthrough GIF. The media lives in /public/showcase/ —
-// committed captures from actual flare-dispatch runs (swap the placeholder
-// SVGs for the real screenshot/GIF: see the note on each `media` below).
+// committed captures from actual flare-dispatch runs. pr-review.png is the real
+// review left on PR #138 (the PR that added this section); product-demo is still
+// a placeholder SVG until the demo run is unblocked (swap → product-demo.gif).
 const showcases = [
   {
     tag: "pr-review",
-    badge: "✅ Approve",
+    badge: "💬 Comment",
     title: "The review lands on the pull request",
-    body: "pr-review reads every file in the diff in-Worker, dedups across domain reviewers, and posts one verdict comment — a severity summary table, per-finding headings, and GitHub blob links — on every PR to this repo.",
-    // TODO: replace with the captured screenshot → /showcase/pr-review.png
-    media: "/showcase/pr-review.svg",
+    body: "pr-review reads every file in the diff in-Worker, dedups across domain reviewers, and posts one verdict comment — a severity summary table, per-finding headings, and GitHub blob links — on every PR to this repo. This is a real review it left on the PR that added this very section.",
+    media: "/showcase/pr-review.png",
     mediaAlt:
-      "FlareDispatch pr-review verdict comment on a flare-dispatch pull request: an '### AI code review — ✅ Approve' header, a severity summary table, and per-finding details with blob links.",
-    width: 1280,
-    height: 880,
+      "Real FlareDispatch pr-review verdict comment from flaredispatch[bot] on a flare-dispatch pull request: an 'AI code review — 💬 Comment' header, a risk-tier line, a per-domain reviewer breakdown, a severity summary table, and per-finding details linking to GitHub blob lines.",
+    width: 1616,
+    height: 1254,
     recipe: { href: "/recipes/ai-code-review", label: "Recipe →" },
-    github: { href: `${site.repo}/pull/135`, label: "On GitHub" },
+    github: {
+      href: `${site.repo}/pull/138#pullrequestreview-4493236314`,
+      label: "On GitHub",
+    },
   },
   {
     tag: "product-demo",
