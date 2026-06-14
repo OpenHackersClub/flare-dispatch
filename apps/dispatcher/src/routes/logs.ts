@@ -328,6 +328,10 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .summary details{border:none}
   .summary summary{position:static;background:none;padding:0;top:auto;color:var(--muted);font-size:12px;cursor:pointer}
   .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:var(--paper-soft);border:1px solid var(--hairline);border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
+  .arts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--hairline)}
+  .arts .lbl{color:var(--muted);font-size:12px}
+  .art{display:inline-block;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:3px 8px;font-size:12px;color:var(--accent);text-decoration:none}
+  .art:hover{border-color:var(--accent)}
 </style></head>
 <body>
 <header>
@@ -335,6 +339,7 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   <div class="meta" id="sub"></div>
 </header>
 <div id="summary" class="summary" hidden></div>
+<div id="artifacts" class="arts" hidden></div>
 <div id="steps" class="steps" hidden></div>
 <div class="controls">
   <input type="search" id="filter" placeholder="filter lines…" autocomplete="off">
@@ -421,6 +426,23 @@ const viewerPage = (nonce: string): string => `<!doctype html>
     try { pre.textContent = JSON.stringify(summary, null, 2); }
     catch(e){ pre.textContent = String(summary); }
     det.appendChild(sm); det.appendChild(pre); el.appendChild(det);
+  }
+  // Render the run's PRODUCED FILES — what it explicitly uploaded as artifacts
+  // to R2 (a report, a video, the captured diff). These are the right surface
+  // for "files the run wrote": persisted by opt-in, served (and browsable) at
+  // /v1/artifacts/:id/:name. Container scratch files are NOT here by design —
+  // the container is destroyed at run end.
+  function renderArtifacts(arts){
+    var el = document.getElementById("artifacts");
+    if (!arts || !arts.length){ el.hidden = true; return; }
+    el.hidden = false; el.textContent = "";
+    var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "artifacts:";
+    el.appendChild(lbl);
+    arts.forEach(function(a){
+      var link = document.createElement("a"); link.className = "art";
+      link.href = a.url; link.rel = "noreferrer"; link.textContent = a.name;
+      el.appendChild(link);
+    });
   }
   function applyFilter(){
     var q = document.getElementById("filter").value.toLowerCase();
@@ -510,6 +532,7 @@ const viewerPage = (nonce: string): string => `<!doctype html>
       setHeader(detail.execution);
       renderSteps(detail.steps);
       renderSummary(detail.summary);
+      renderArtifacts(detail.artifacts);
       var st = detail.execution.status;
       var terminal = (st !== "running" && st !== "queued");
       return syncSections(detail, terminal).then(function(){

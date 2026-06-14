@@ -72,6 +72,9 @@ const fixture = (opts: { adminToken?: string } = {}) => {
     ndjson("pnpm build", ["bundle done"]),
     "application/x-ndjson",
   );
+  // A produced-file artifact (what a run `artifact.upload`s) so the detail
+  // route surfaces it for the viewer's artifacts strip.
+  storage.put(`artifacts/${EXEC}/pr-review.diff`, "diff --git a b\n", "text/plain");
   const env = makeFakeEnv({
     hmacSecret: "h",
     workflow,
@@ -195,6 +198,11 @@ describe("GET /v1/executions/:id", () => {
       "exec.ndjson",
     );
     expect(body.summary).toEqual({ ok: true });
+    const arts = body.artifacts as { name: string; url: string }[];
+    expect(arts.map((a) => a.name)).toContain("pr-review.diff");
+    expect(arts.find((a) => a.name === "pr-review.diff")!.url).toContain(
+      "/v1/artifacts/",
+    );
   });
 
   it("404s an unknown execution (with a valid-shape token)", async () => {
@@ -247,8 +255,10 @@ describe("GET /logs/:execution (viewer)", () => {
     const html = await res.text();
     expect(html).toContain('id="steps"');
     expect(html).toContain('id="summary"');
+    expect(html).toContain('id="artifacts"');
     expect(html).toContain("renderSteps");
     expect(html).toContain("renderSummary");
+    expect(html).toContain("renderArtifacts");
   });
 
   it("403s the viewer without a token", async () => {

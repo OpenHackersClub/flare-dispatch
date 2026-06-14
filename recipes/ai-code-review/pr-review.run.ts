@@ -59,6 +59,7 @@ import {
   defineRun,
   step,
   sandbox,
+  artifact,
   config,
   io,
   github,
@@ -298,6 +299,25 @@ const reviewBody = (input: RunInput) =>
       }).pipe(
         Effect.andThen(sandbox.readFile({ container, path: DIFF_FILE })),
         Effect.map((raw) => capDiff(stripDiffNoise(raw), resolved.maxDiffChars)),
+      ),
+    );
+
+    // 3b. Persist the FULL (uncapped) diff as an artifact so the log viewer can
+    //     surface it and a reviewer can read exactly what was reviewed. The
+    //     checkpointed `diff` value is capped for the model's context; the file
+    //     on disk is the whole thing. Best-effort: a `git diff --output=<file>`
+    //     emits no stdout, so without this the run leaves no visible record of
+    //     the diff. A capture failure must never fail the review — swallow it.
+    yield* step("upload-diff", () =>
+      artifact.upload({
+        name: "pr-review.diff",
+        path: DIFF_FILE,
+        container,
+        contentType: "text/plain; charset=utf-8",
+      }),
+    ).pipe(
+      Effect.catchAllCause((cause) =>
+        Effect.logWarning(`upload-diff failed (non-fatal): ${cause}`),
       ),
     );
 
