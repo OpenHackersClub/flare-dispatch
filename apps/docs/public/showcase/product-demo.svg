@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-label="Placeholder for the product-demo walkthrough GIF">
+  <rect width="1280" height="800" fill="#f4f1ea"/>
+  <rect x="0.5" y="0.5" width="1279" height="799" fill="none" stroke="#d8d2c5"/>
+  <rect x="0" y="0" width="1280" height="6" fill="#ff3d00"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <text x="80" y="120" font-size="22" letter-spacing="3" fill="#ff3d00">PRODUCT-DEMO · WALKTHROUGH GIF</text>
+  </g>
+  <g font-family="Georgia, 'Times New Roman', serif" fill="#13131a">
+    <text x="80" y="220" font-size="56">One continuous replay, per-chapter</text>
+  </g>
+  <g font-family="ui-sans-serif, system-ui, sans-serif" fill="#5c5c66">
+    <text x="80" y="270" font-size="26">CDP-recorded walkthrough, stitched to a ≤10 MB GIF, posted inline on the PR.</text>
+  </g>
+  <!-- play poster -->
+  <rect x="80" y="320" width="1120" height="280" fill="#ebe6d8" stroke="#d8d2c5"/>
+  <circle cx="640" cy="460" r="58" fill="none" stroke="#ff3d00" stroke-width="4"/>
+  <path d="M620 430 L676 460 L620 490 Z" fill="#ff3d00"/>
+  <!-- chapter ticks -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#5c5c66" font-size="18">
+    <rect x="80" y="560" width="1120" height="6" fill="#d8d2c5"/>
+    <rect x="80" y="560" width="280" height="6" fill="#ff3d00"/>
+    <text x="80" y="596">▸ sign-in</text>
+    <text x="380" y="596">▸ open-execution</text>
+    <text x="720" y="596">▸ step-timeline</text>
+  </g>
+  <!-- placeholder note -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+    <text x="640" y="690" font-size="30" fill="#13131a">Real walkthrough GIF drops in here</text>
+    <text x="640" y="736" font-size="22" fill="#5c5c66">replace → apps/docs/public/showcase/product-demo.gif</text>
+  </g>
+</svg>
