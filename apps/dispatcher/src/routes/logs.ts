@@ -280,44 +280,54 @@ const viewerPage = (nonce: string): string => `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlareDispatch logs</title>
 <style nonce="${nonce}">
-  :root{color-scheme:dark}
-  html,body{margin:0;background:#0d1117;color:#c9d1d9;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-  header{padding:10px 16px;border-bottom:1px solid #21262d;position:sticky;top:0;background:#0d1117;z-index:1}
+  /* Palette mirrors the FlareDispatch docs site (flare-dispatch-docs.pages.dev),
+     dark theme — Vitesse-style warm ink on near-black "paper", coral accent. */
+  :root{
+    color-scheme:dark;
+    --paper:#0a0a0f; --paper-soft:#11121a; --surface:#13141b;
+    --ink:#eae7dd; --ink-soft:#b8b6ac; --muted:#7a7d8c; --muted-soft:#51545f;
+    --hairline:#23252e; --hairline-strong:#353846;
+    --accent:#ff7041; --accent-soft:#2b1810;
+    --wait:#8ba0cf; --wait-soft:#222a3d; --ok:#4d9375; --err:#cb7676;
+    --mono:"Berkeley Mono","Iosevka Web","SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  html,body{margin:0;background:var(--paper);color:var(--ink);font:13px/1.5 var(--mono)}
+  header{padding:10px 16px;border-bottom:1px solid var(--hairline);position:sticky;top:0;background:var(--paper);z-index:1}
   header .title{font-size:14px}
-  header b{color:#58a6ff}
-  .meta{color:#8b949e;font-size:12px;margin-top:4px}
-  .meta a{color:#58a6ff;text-decoration:none}
+  header b{color:var(--accent)}
+  .meta{color:var(--muted);font-size:12px;margin-top:4px}
+  .meta a{color:var(--accent);text-decoration:none}
   .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
-  .badge.running{background:#1f6feb33;color:#58a6ff}
-  .badge.success{background:#23863633;color:#3fb950}
-  .badge.failure{background:#da363322;color:#f85149}
-  .controls{padding:8px 16px;border-bottom:1px solid #21262d;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  .controls input[type=search]{background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:4px 8px;min-width:220px}
-  .controls label{color:#8b949e;font-size:12px;user-select:none}
-  details{border-bottom:1px solid #161b22}
-  summary{cursor:pointer;padding:8px 16px;background:#10151c;list-style:none;position:sticky;top:96px}
+  .badge.running,.badge.queued{background:var(--wait-soft,#222a3d);color:var(--wait)}
+  .badge.success{background:#4d937522;color:var(--ok)}
+  .badge.failure{background:#cb767622;color:var(--err)}
+  .controls{padding:8px 16px;border-bottom:1px solid var(--hairline);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .controls input[type=search]{background:var(--surface);border:1px solid var(--hairline-strong);color:var(--ink);border-radius:6px;padding:4px 8px;min-width:220px;font-family:inherit}
+  .controls label{color:var(--muted);font-size:12px;user-select:none}
+  details{border-bottom:1px solid var(--hairline)}
+  summary{cursor:pointer;padding:8px 16px;background:var(--paper-soft);list-style:none;position:sticky;top:96px}
   summary::-webkit-details-marker{display:none}
-  summary .cmd{color:#d2a8ff}
-  summary .sz{color:#8b949e;font-size:11px;margin-left:8px}
+  summary .cmd{color:var(--accent)}
+  summary .sz{color:var(--muted);font-size:11px;margin-left:8px}
   .log{padding:4px 0;overflow-x:auto}
   .ln{display:flex;white-space:pre;padding:0 16px}
-  .ln:hover{background:#161b22}
-  .ln .n{color:#484f58;text-align:right;min-width:48px;padding-right:12px;user-select:none}
-  .ln.err .t{color:#f85149}
-  .empty{padding:24px 16px;color:#8b949e}
-  #status{padding:6px 16px;color:#8b949e;font-size:12px}
-  .steps{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px;border-bottom:1px solid #21262d}
-  .step{display:inline-flex;align-items:center;gap:6px;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:3px 8px;font-size:12px}
-  .step .dot{width:7px;height:7px;border-radius:50%;background:#8b949e;flex:none}
-  .step.success .dot{background:#3fb950}
-  .step.failure .dot{background:#f85149}
-  .step.running .dot{background:#58a6ff}
-  .step .sd{color:#8b949e;font-size:11px}
-  .summary{padding:8px 16px;border-bottom:1px solid #21262d}
-  .summary .verdict{font-weight:600;color:#3fb950}
+  .ln:hover{background:var(--surface)}
+  .ln .n{color:var(--muted-soft);text-align:right;min-width:48px;padding-right:12px;user-select:none}
+  .ln.err .t{color:var(--err)}
+  .empty{padding:24px 16px;color:var(--muted)}
+  #status{padding:6px 16px;color:var(--muted);font-size:12px}
+  .steps{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px;border-bottom:1px solid var(--hairline)}
+  .step{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:3px 8px;font-size:12px}
+  .step .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+  .step.success .dot{background:var(--ok)}
+  .step.failure .dot{background:var(--err)}
+  .step.running .dot{background:var(--wait)}
+  .step .sd{color:var(--muted);font-size:11px}
+  .summary{padding:8px 16px;border-bottom:1px solid var(--hairline)}
+  .summary .verdict{font-weight:600;color:var(--ok)}
   .summary details{border:none}
-  .summary summary{position:static;background:none;padding:0;top:auto;color:#8b949e;font-size:12px;cursor:pointer}
-  .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:#0b0f14;border:1px solid #21262d;border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
+  .summary summary{position:static;background:none;padding:0;top:auto;color:var(--muted);font-size:12px;cursor:pointer}
+  .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:var(--paper-soft);border:1px solid var(--hairline);border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
 </style></head>
 <body>
 <header>
