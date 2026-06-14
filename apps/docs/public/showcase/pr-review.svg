@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 880" width="1280" height="880" role="img" aria-label="Placeholder for the pr-review verdict screenshot">
+  <rect width="1280" height="880" fill="#f4f1ea"/>
+  <rect x="0.5" y="0.5" width="1279" height="879" fill="none" stroke="#d8d2c5"/>
+  <rect x="0" y="0" width="1280" height="6" fill="#ff3d00"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <text x="80" y="120" font-size="22" letter-spacing="3" fill="#ff3d00">PR-REVIEW · OPENHACKERSCLUB/FLARE-DISPATCH</text>
+  </g>
+  <g font-family="Georgia, 'Times New Roman', serif" fill="#13131a">
+    <text x="80" y="220" font-size="56">AI code review — ✅ Approve</text>
+  </g>
+  <g font-family="ui-sans-serif, system-ui, sans-serif" fill="#5c5c66">
+    <text x="80" y="270" font-size="26">The verdict comment the run posts back on the pull request.</text>
+  </g>
+  <!-- faux summary table sketch -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#5c5c66" font-size="22">
+    <rect x="80" y="330" width="1120" height="56" fill="#ebe6d8"/>
+    <text x="100" y="367" fill="#13131a">#   Severity      Change required                         Location</text>
+    <line x1="80" y1="386" x2="1200" y2="386" stroke="#b4ad9d"/>
+    <text x="100" y="437">1   ⚠️ warning    tighten the HMAC constant-time compare    routes/dispatch.ts</text>
+    <line x1="80" y1="456" x2="1200" y2="456" stroke="#d8d2c5"/>
+    <text x="100" y="507">2   💡 suggest    extract the retry policy to config         lib/admission.ts</text>
+    <line x1="80" y1="526" x2="1200" y2="526" stroke="#d8d2c5"/>
+  </g>
+  <!-- placeholder note -->
+  <g>
+    <rect x="80" y="600" width="1120" height="200" fill="none" stroke="#b4ad9d" stroke-dasharray="10 8"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" text-anchor="middle">
+      <text x="640" y="690" font-size="30" fill="#13131a">Real screenshot drops in here</text>
+      <text x="640" y="740" font-size="22" fill="#5c5c66">replace → apps/docs/public/showcase/pr-review.png</text>
+    </g>
+  </g>
+</svg>

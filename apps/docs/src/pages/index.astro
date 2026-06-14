@@ -60,6 +60,42 @@ const capabilities = [
   },
 ];
 
+// §06 / Dogfood — both runs fire on this very repo. Each card shows the real
+// artifact a run posts back: pr-review's verdict comment on the PR, and
+// product-demo's walkthrough GIF. The media lives in /public/showcase/ —
+// committed captures from actual flare-dispatch runs (swap the placeholder
+// SVGs for the real screenshot/GIF: see the note on each `media` below).
+const showcases = [
+  {
+    tag: "pr-review",
+    badge: "✅ Approve",
+    title: "The review lands on the pull request",
+    body: "pr-review reads every file in the diff in-Worker, dedups across domain reviewers, and posts one verdict comment — a severity summary table, per-finding headings, and GitHub blob links — on every PR to this repo.",
+    // TODO: replace with the captured screenshot → /showcase/pr-review.png
+    media: "/showcase/pr-review.svg",
+    mediaAlt:
+      "FlareDispatch pr-review verdict comment on a flare-dispatch pull request: an '### AI code review — ✅ Approve' header, a severity summary table, and per-finding details with blob links.",
+    width: 1280,
+    height: 880,
+    recipe: { href: "/recipes/ai-code-review", label: "Recipe →" },
+    github: { href: `${site.repo}/pull/135`, label: "On GitHub" },
+  },
+  {
+    tag: "product-demo",
+    badge: "Walkthrough GIF",
+    title: "The walkthrough drops back as a GIF",
+    body: "product-demo drives the deployed app over CDP with native session recording, stitches the per-chapter frames into one ≤10 MB walkthrough GIF, and posts it inline on the PR — alongside an rrweb replay linked from the check run.",
+    // TODO: replace with the captured walkthrough → /showcase/product-demo.gif
+    media: "/showcase/product-demo.svg",
+    mediaAlt:
+      "Animated walkthrough GIF recorded by FlareDispatch product-demo, posted inline as a PR comment on the flare-dispatch repo.",
+    width: 1280,
+    height: 800,
+    recipe: { href: "/recipes/product-demo", label: "Recipe →" },
+    github: { href: `${site.repo}/pull/132`, label: "On GitHub" },
+  },
+];
+
 // §03 mirrors the /recipes catalog exactly — each recipe, with its source
 // files read from the monorepo-root recipes/ directory at build time.
 const recipeSnippets = recipes.map((recipe) => ({
@@ -326,29 +362,71 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
     </div>
   </section>
 
+  <section class="showcase">
+    <div class="container">
+      <div class="tenets__header">
+        <span class="section-marker">§06 / Dogfood</span>
+        <h2>Both runs, dogfooded on this repo.</h2>
+        <p class="showcase__lede">
+          FlareDispatch reviews its own pull requests and records its own
+          walkthroughs. Each artifact below is the real output of a run on
+          <a href={site.repo}>OpenHackersClub/flare-dispatch</a> — the same
+          pr-review and product-demo recipes shown above, fired on this codebase.
+        </p>
+      </div>
+      <div class="showcase__grid">
+        {showcases.map((s) => (
+          <article class="showcase__card">
+            <header class="showcase__head">
+              <span class="showcase__tag">{s.tag}</span>
+              <span class="showcase__badge">{s.badge}</span>
+            </header>
+            <h3 class="showcase__title">{s.title}</h3>
+            <p class="showcase__body">{s.body}</p>
+            <figure class="showcase__figure">
+              <img
+                class="showcase__media"
+                src={s.media}
+                alt={s.mediaAlt}
+                width={s.width}
+                height={s.height}
+                loading="lazy"
+                decoding="async"
+              />
+            </figure>
+            <div class="showcase__links">
+              <a class="showcase__link showcase__link--strong" href={s.github.href}>{s.github.label} ↗</a>
+              <a class="showcase__link" href={s.recipe.href}>{s.recipe.label}</a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
   <section class="manifesto">
     <div class="container">
       <div class="manifesto__header">
-        <span class="section-marker">§06 / Design philosophy</span>
+        <span class="section-marker">§07 / Design philosophy</span>
         <h2>Three bets the design is built on.</h2>
       </div>
       <ol class="manifesto__list">
         <li class="manifesto__item">
-          <span class="manifesto__num">§06.01</span>
+          <span class="manifesto__num">§07.01</span>
           <div>
             <p class="manifesto__statement"><strong>Progressive</strong> offloading.</p>
             <p class="manifesto__body">Move CI to Cloudflare one job at a time — the heaviest, most expensive jobs first. GitHub Actions keeps the cheap jobs and the PR gate; nothing is all-or-nothing.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§06.02</span>
+          <span class="manifesto__num">§07.02</span>
           <div>
             <p class="manifesto__statement">Runs are <strong>typed programs</strong>, not YAML.</p>
             <p class="manifesto__body">A run is an Effect-TS program — Schema-typed inputs and outputs, composable steps, tagged errors, exhaustive matching. Fork it, vendor-edit it, unit-test it without booting a container.</p>
           </div>
         </li>
         <li class="manifesto__item">
-          <span class="manifesto__num">§06.03</span>
+          <span class="manifesto__num">§07.03</span>
           <div>
             <p class="manifesto__statement">BYOC <strong>by construction</strong>.</p>
             <p class="manifesto__body">Every code path assumes the run is deployed in your own Cloudflare account — no multi-tenant operator, no hosted SaaS to trust. The specs are the contract; the runs ship at HEAD and are yours to fork.</p>
@@ -361,7 +439,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
   <section class="container">
     <div class="cta-band">
       <div>
-        <span class="section-marker">§07 / Read on</span>
+        <span class="section-marker">§08 / Read on</span>
         <h2>Live at HEAD. The specs are the contract; the runs are shipped.</h2>
       </div>
       <div class="cta-band__actions">
