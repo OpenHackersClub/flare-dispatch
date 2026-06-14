@@ -80,6 +80,9 @@ jobs:
           run: product-demo
           endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
           hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          # App-mode writeback (check-run + GIF comment). Same repo var as the
+          # pr-review dogfood; unset ⇒ action sends 0 ⇒ Dispatcher posts nothing.
+          installation-id: ${{ vars.FLAREDISPATCH_INSTALLATION_ID }}
           mode: fire-and-forget
           inputs: |
             {
