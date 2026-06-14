@@ -121,9 +121,14 @@ jobs:
           echo "::notice::dispatch-pr-review skipped — FLAREDISPATCH_ENDPOINT is not set."
           echo "Set repo variable FLAREDISPATCH_ENDPOINT and secret FLAREDISPATCH_HMAC to enable."
 
-      # `installationId` is intentionally absent: the Dispatcher resolves the
-      # installation from the repo→installation KV map when it opens the
-      # check-run (specs/04-gha-integration.md § Check-runs callback).
+      # App-mode writeback: the Dispatcher only posts the verdict back (check-run
+      # + PR review comment) when the dispatch carries a real `installation_id`
+      # AND the Worker has GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY set
+      # (apps/dispatcher/src/workflow.ts `resolveChecksConfig`). The installation
+      # id is non-secret — resolve once via `gh api orgs/<org>/installations` and
+      # store it in repo var FLAREDISPATCH_INSTALLATION_ID. Unset ⇒ the action
+      # defaults installation-id to "0", which the Dispatcher rejects as "do not
+      # post" — i.e. the prior fire-and-forget-without-writeback behavior.
       - name: Dispatch pr-review
         if: vars.FLAREDISPATCH_ENDPOINT != ''
         uses: ./actions/flare-dispatch-action
@@ -131,6 +136,7 @@ jobs:
           run: pr-review
           endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
           hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          installation-id: ${{ vars.FLAREDISPATCH_INSTALLATION_ID }}
           inputs: |
             {
               "repo": "${{ github.repository }}",
