@@ -41,6 +41,17 @@ export type PlayInput = {
    * has the real app to drive instead of a blank page.
    */
   readonly startUrl?: string;
+  /**
+   * Optional GIF-frame capture directory. When set, the loop saves a PNG
+   * frame after the initial navigation and after every applied action into
+   * `${framesDir}/${name}-NNNN.png` (zero-padded, story-name-prefixed so a
+   * later glob sorts chapters in order). These frames are the source the
+   * `demo-agent gif` subcommand stitches into the walkthrough GIF embedded in
+   * the PR comment — separate from `keyScreenshotPath` (one key frame). Frame
+   * capture is best-effort: a failed screenshot is ignored so it never sinks
+   * the story. Unset ⇒ no frames (the pre-GIF behaviour, unchanged).
+   */
+  readonly framesDir?: string;
 };
 
 export type PlayDeps = {
@@ -76,6 +87,25 @@ export const runPlayLoop = (
     const deadlineMs = startMs + input.maxSec * 1_000;
 
     yield* ensureDir(input.screenshotsDir);
+    if (input.framesDir !== undefined) yield* ensureDir(input.framesDir);
+
+    // Best-effort GIF-frame capture. Each call saves one PNG into `framesDir`
+    // under a zero-padded, story-prefixed name so a cross-story glob sorts the
+    // walkthrough in chapter order. A capture failure is swallowed — a missing
+    // frame must never fail the story (the GIF is a reporting nicety, the
+    // verdict is the verdict). No-op when `framesDir` is unset.
+    let frameSeq = 0;
+    const captureFrame = (): Effect.Effect<void, never> =>
+      input.framesDir === undefined
+        ? Effect.void
+        : deps.session
+            .screenshot(
+              path.join(
+                input.framesDir,
+                `${input.name}-${String(frameSeq++).padStart(4, "0")}.png`,
+              ),
+            )
+            .pipe(Effect.ignore);
 
     // If the page is still blank (first story, or navigation didn't carry
     // across the connect boundary), load the app under test ONCE — otherwise
@@ -86,6 +116,10 @@ export const runPlayLoop = (
         yield* deps.session.goto(input.startUrl).pipe(Effect.ignore);
       }
     }
+
+    // Opening frame — the loaded app before the agent's first action, so even
+    // a one-action story yields a watchable two-frame GIF.
+    yield* captureFrame();
 
     const history: string[] = [];
     let keyScreenshotPath: string | undefined;
@@ -147,6 +181,9 @@ export const runPlayLoop = (
         keyScreenshotPath = applied.path;
       }
       history.push(describeAction(action));
+
+      // Capture the post-action page state as a GIF frame (best-effort).
+      yield* captureFrame();
 
       if (action.type === "done") {
         narrative = action.narrative;

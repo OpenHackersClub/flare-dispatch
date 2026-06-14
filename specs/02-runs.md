@@ -49,7 +49,7 @@ This axis is deliberately **distinct** from `limits.requiresBrowser`: `requiresB
 | 2 | [`matrix-fanout`](#2-matrix-fanout) | Same command across N shards in parallel | **Live at HEAD** (V1) — runs inline `sharded` |
 | 3 | [`playwright-e2e`](#3-playwright-e2e) | Sharded Playwright tests with browser pool | **Live at HEAD** (V2) |
 | 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | **Live at HEAD** (V2) |
-| 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode | **Live at HEAD** (V3) |
+| 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode; on completion, GIF + summary PR comment | **Live at HEAD** (V3) |
 | 6 | [`deploy-smoke`](../runs/deploy-smoke.ts) | Post-deploy smoke test against a live URL, Webhook-mode-first | **Live at HEAD** (V2) |
 | 7 | [`playwright-demo`](../runs/playwright-demo.ts) | Record a Playwright walkthrough of a deployed surface | **Live at HEAD** (V3) |
 | 8 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
@@ -254,7 +254,7 @@ Schema.Struct({
 
 > **Status: Live.** Source: [`runs/product-demo.ts`](../runs/product-demo.ts). The first run wired in both **Action mode** (recipe `ci.yml` on `pull_request` / `workflow_dispatch`) and **Schedule mode** (daily cron via `schedules[]` → Dispatcher `scheduled()` handler). No checkout — the target is a deployed URL, not the repo. Drives the site over a single CDP session with Browser Run's native rrweb session recording, shells out to the bundled `demo-agent` CLI for the per-story model loop, and uploads the rrweb event stream as an R2 artifact.
 
-AI-driven product demo. A team hands it a deployed URL (preview / staging / prod) and a list of user stories as prose; the run drives the site through each story over a single CDP session, captures key screenshots, writes a per-story narrative, and produces a holistic markdown summary across all stories that a reviewer can paste into the PR.
+AI-driven product demo. A team hands it a deployed URL (preview / staging / prod) and a list of user stories as prose; the run drives the site through each story over a single CDP session, captures key screenshots, writes a per-story narrative, and produces a holistic markdown summary across all stories. When the dispatch carries a `pr` number, completion also posts one PR comment embedding an animated GIF of the walkthrough — see [§ PR comment on completion](#pr-comment-on-completion-gif--summary).
 
 **Inputs:**
 
@@ -270,6 +270,8 @@ Schema.Struct({
   storiesMarkdown: Schema.optional(Schema.String), // markdown, each `## ` = one story
   viewportPreset: Schema.optional(Schema.Literal("desktop", "mobile")),
   maxDurationSecPerStory: Schema.optional(Schema.Number),
+  pr: Schema.optional(Schema.Number),        // PR number — enables the completion comment (GIF + summary)
+  installationId: Schema.optional(Schema.Number), // threaded when known; the github Layer resolves it per-repo otherwise
 })
 ```
 
@@ -279,24 +281,45 @@ Schema.Struct({
 
 ```ts
 Schema.Struct({
-  storyResults: Schema.Array(Schema.Struct({
-    title: Schema.String,
-    passed: Schema.Boolean,
-    summary: Schema.String,
-    screenshotUris: Schema.Array(Schema.String),
+  // Stories play IN PARALLEL, each on its OWN Browser Run CDP session (its own
+  // rrweb recording), so the replay links are per-story rather than one shared
+  // timeline.
+  stories: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    status: Schema.Literal("passed", "failed"),
+    durationMs: Schema.Number,
+    chapterStartMs: Schema.Number,           // rrweb offsets within this story's recording
+    chapterEndMs: Schema.Number,
+    narrative: Schema.String,
+    keyScreenshotUri: Schema.String,
+    replayUri: Schema.String,                // docs-site rrweb player for this story
+    replayJsonUri: Schema.String,            // signed R2 URL to this story's rrweb events
   })),
-  rrwebUri: Schema.String,                   // signed R2 URL to the session events
-  summaryMd: Schema.String,                  // holistic Markdown summary
+  replayUri: Schema.String,                  // first story that produced a replay
+  replayJsonUri: Schema.String,
+  summaryMd: Schema.String,                  // holistic Markdown summary (built in-run)
+  gifUri: Schema.optional(Schema.String),    // stable artifact URL to the walkthrough GIF (absent if no frames / encode skipped)
 })
 ```
 
-**Steps:** `attach-cdp → start-recording → per story: { agent-driven CDP play } → stop-recording → fetch-rrweb → upload-artifact → summarize`
+**Steps:** `acquire → warmup → per story (parallel): { attach-cdp → record-start → play (+ per-action frame capture) → record-stop → upload-replay → upload-screenshot } → upload-summary → render-gif → upload-gif → post-pr-comment`
 
-**Platform:** Browser Rendering (CDP + native rrweb recording), Sandbox (`demo-agent` shell-out), R2 (rrweb JSON + summary), D1, Check Runs. No repo checkout.
+**Platform:** Browser Rendering (CDP + native rrweb recording), Sandbox (`demo-agent` shell-out for play + GIF encode), R2 (rrweb JSON + screenshots + GIF + summary), D1, Check Runs, GitHub PR comment (`github.pullReview`). No repo checkout.
 
-**Trigger modes:** Action (recipe in `recipes/product-demo/`) and Schedule (`schedules[].cron` daily). See [04-gha-integration § Action mode](04-gha-integration.md#action-mode) and [§ Schedule mode](04-gha-integration.md#schedule-mode).
+**Trigger modes:** Action (recipe in `recipes/product-demo/`) and Schedule (`schedules[].cron` daily). See [04-gha-integration § Action mode](04-gha-integration.md#action-mode) and [§ Schedule mode](04-gha-integration.md#schedule-mode). Action mode threads `pr` from the workflow context to enable the completion comment; a Schedule-mode firing names no PR, so it never comments.
 
 **Limits:** `maxDurationSec: 1800`; `requiresBrowser: true`.
+
+### PR comment on completion (GIF + summary)
+
+> **Status: Live at HEAD.** Source: [`runs/product-demo.ts`](../runs/product-demo.ts) (the `render-gif` / `upload-gif` / `post-pr-comment` steps + the `pr` / `installationId` inputs and `gifUri` output) and [`packages/demo-agent/src/gif.ts`](../packages/demo-agent/src/gif.ts) + the `play --frames-dir` capture. Dogfooded against this repo's own log viewer by [`.github/workflows/product-demo-logviewer.yml`](../.github/workflows/product-demo-logviewer.yml).
+
+Whenever a `product-demo` execution **completes** — success or failure — and the dispatch carried a `pr` number, the run posts one top-level PR review comment via the existing [`github.pullReview`](03-dsl.md#github) write: the holistic `summaryMd` (the per-chapter status table), the `replayUri` link, and the walkthrough as an **animated GIF embedded inline** (`![product-demo walkthrough](gifUri)`). GitHub PR comments cannot embed video, but they render animated GIFs — this puts the demo itself in the review thread instead of behind a link. No new capability surface is needed: the comment rides the same deliberate write exception `pr-review` uses.
+
+- **Frame source.** The rrweb recording is DOM events, not pixels — turning it into a GIF would mean replaying it in a browser. Instead each story's `demo-agent play` captures a pixel frame (`Page.captureScreenshot`) after every applied action into a shared `--frames-dir`, named `${story}-NNNN.png` so a glob sorts the chapters in order. Stories run in parallel on their own sessions, but at the run's `maxConcurrency: 1` they execute sequentially, so frames land in walkthrough order. Capture is best-effort — a missed frame never fails the story.
+- **Encoding.** A `render-gif` step shells out to the `demo-agent gif` subcommand — pure-JS (`pngjs` decode + `gifenc` quantise/encode, bundled into the lean sandbox image, no ffmpeg/ImageMagick). It box-downscales to ≤ 800 px wide and holds the output under ≤ 10 MB (GitHub's camo image proxy won't render larger) by **dropping frames evenly first, then shrinking width** — never failing on an oversized input.
+- **URL stability.** The comment embeds the dispatcher's stable artifact URL (`GET /v1/artifacts/:execution/demo.gif`, [§ r2-artifacts](#primitive-r2-artifacts)) with `image/gif` content type, never a raw presigned R2 URL — camo fetches it server-side, so the image keeps rendering after any presign would have rotated. The artifact route must be publicly readable on the deploy for camo to fetch it (the per-deploy public/private toggle); on a private deploy the embed shows broken and the comment's replay link still works.
+- **Skip + failure semantics.** Same posture as [writeback](#writeback-runs-that-propose-prs): the comment is **best-effort reporting**. No `pr` on the dispatch → no comment, the check-run remains the report. A GIF-encode, upload, or comment-post failure logs (`io.log`) and is swallowed — it never flips the run's conclusion (which derives purely from how many chapters passed). A completion with zero captured frames posts the comment without the image. Each completion posts its own comment (matching `pullReview` semantics — the current run is authoritative).
 
 ---
 

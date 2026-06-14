@@ -45,6 +45,7 @@ import {
   browser,
   artifact,
   config,
+  github,
   io,
   ExecFailed,
   ExecTimeout,
@@ -229,6 +230,16 @@ const Input = Schema.Struct({
   // recipes/ai-code-review/README.md § Bedrock backend — the BYOC trust path.
   bedrockRoleArn: Schema.optional(Schema.String),
   bedrockRegion: Schema.optional(Schema.String),
+  // PR comment on completion (GIF + summary). When `pr` is present, the run
+  // posts ONE top-level PR review comment on completion — success OR failure —
+  // carrying the holistic summary, the per-chapter table, and the walkthrough
+  // as an animated GIF embedded inline (GitHub comments can't embed video but
+  // render GIFs). Best-effort: absent `pr` (e.g. a Schedule-mode firing) ⇒ no
+  // comment, the check-run stays the report. `installationId` authenticates
+  // the write — Action mode usually omits it and the live `github` Layer
+  // resolves the installation per-repo; Webhook-threaded dispatches pass it.
+  pr: Schema.optional(Schema.Number),
+  installationId: Schema.optional(Schema.Number),
 });
 
 // Each story round-trips its own per-chapter record so the summary can
@@ -261,6 +272,10 @@ const Output = Schema.Struct({
   replayJsonUri: Schema.String,
   summaryMd: Schema.String,       // the holistic LLM-written summary
   stories: Schema.Array(StoryResult),
+  // Stable artifact URL (`/v1/artifacts/<exec>/demo.gif`) to the walkthrough
+  // GIF the run stitched from the per-action frames + embedded in the PR
+  // comment. Absent when no frames were captured or the encode was skipped.
+  gifUri: Schema.optional(Schema.String),
 });
 
 export const productDemo = defineRun({
@@ -471,6 +486,10 @@ export const productDemo = defineRun({
       );
 
       const screenshotsDir = "/tmp/demo/screenshots";
+      // Shared across stories (sequential, concurrency 1): each `play` writes
+      // its frames here as `${story}-NNNN.png`, so the final `gif` glob sorts
+      // every chapter into walkthrough order. The GIF is built from these.
+      const framesDir = "/tmp/demo/frames";
 
       // WARM the container before the first story. The first exec on a freshly
       // acquired box pays a cold-start tax (image page-cache miss, the 6.7MB
@@ -749,6 +768,7 @@ export const productDemo = defineRun({
                   "--name", story.name,
                   "--prose", story.prose,
                   "--screenshots", screenshotsDir,
+                  "--frames-dir", framesDir,
                   "--max-sec", String(perStorySec),
                   "--model", playModel,
                   "--url", input.deployedUrl,
@@ -978,6 +998,110 @@ export const productDemo = defineRun({
           ),
       );
 
+      // 3.6. Stitch the per-action frames into ONE walkthrough GIF, then —
+      //      when this dispatch named a PR — post the holistic summary as a PR
+      //      comment with the GIF embedded inline. GitHub PR comments can't
+      //      embed video, but they render animated GIFs, so this lands the demo
+      //      itself in the review thread (the rrweb replay link stays for full
+      //      fidelity). Runs on BOTH the pass and fail paths (below the honest
+      //      check) so a RED demo still drops its walkthrough on the PR. Every
+      //      part is best-effort: a GIF-encode, upload, or comment failure logs
+      //      + is swallowed and never flips the verdict (which derives purely
+      //      from `passedCount`). No `pr` (e.g. a Schedule-mode firing) ⇒ no
+      //      comment; the check-run summary remains the report.
+      const gifStdout = yield* step("render-gif", () =>
+        sandbox
+          .exec({
+            container,
+            // shellQuote — same shell-safety the upload-summary exec needs.
+            // The `gif` subcommand globs `framesDir` (sorted), downscales to
+            // <=800px, drops frames evenly to stay under GitHub camo's ~10MB
+            // limit, and emits `{gifPath,frameCount,bytes,...}` on its last line.
+            command: [
+              "demo-agent", "gif",
+              "--frames", framesDir,
+              "--out", "/tmp/demo/demo.gif",
+              "--max-width", "800",
+              "--max-bytes", "10000000",
+            ]
+              .map(shellQuote)
+              .join(" "),
+          })
+          .pipe(
+            Effect.timeout("120 seconds"),
+            Effect.map((r) => r.stdout),
+            Effect.catchAll(() => Effect.succeed("")),
+          ),
+      );
+      type GifJson = { gifPath: string; frameCount: number; bytes: number };
+      const gj = parseLastJson<GifJson>(gifStdout, {
+        gifPath: "",
+        frameCount: 0,
+        bytes: 0,
+      });
+      // Upload the GIF under the STABLE artifact URL (not a presigned R2 URL):
+      // GitHub's camo proxy fetches it server-side, so the embed keeps
+      // rendering after any presign would have rotated. `image/gif` so the
+      // single-file artifact branch serves the bytes as an image.
+      const gifUri =
+        gj.gifPath === "" || gj.frameCount === 0
+          ? ""
+          : yield* step("upload-gif", () =>
+              artifact
+                .upload({
+                  name: "demo.gif",
+                  path: "/tmp/demo/demo.gif",
+                  container,
+                  contentType: "image/gif",
+                  signedUrlTTL: "30 days",
+                })
+                .pipe(
+                  Effect.timeout("90 seconds"),
+                  Effect.catchAllCause((cause) =>
+                    io
+                      .log(
+                        "warn",
+                        `product-demo: demo.gif upload failed — ${Cause.pretty(cause).slice(0, 400)}`,
+                      )
+                      .pipe(Effect.as("")),
+                  ),
+                ),
+            );
+
+      if (input.pr !== undefined) {
+        const commentBody = [
+          summaryMd,
+          "",
+          ...(gifUri !== ""
+            ? [`![product-demo walkthrough](${gifUri})`, ""]
+            : []),
+          ...(primary?.replayUri !== undefined && primary.replayUri !== ""
+            ? [`▶ [Scrub the full rrweb replay](${primary.replayUri})`]
+            : []),
+        ].join("\n");
+        yield* step("post-pr-comment", () =>
+          github
+            .pullReview({
+              repo: input.repo,
+              pr: input.pr!,
+              sha: input.sha,
+              body: commentBody,
+              ...(input.installationId !== undefined
+                ? { installationId: input.installationId }
+                : {}),
+            })
+            .pipe(
+              Effect.timeout("60 seconds"),
+              Effect.catchAllCause((cause) =>
+                io.log(
+                  "warn",
+                  `product-demo: PR comment post failed (best-effort) — ${Cause.pretty(cause).slice(0, 400)}`,
+                ),
+              ),
+            ),
+        );
+      }
+
       // 4. HONEST CHECK: a demo where NO chapter passed is broken, not green —
       //    fail so the dispatcher posts a `failure` conclusion (the verdict
       //    derives from the run Exit; the markdown summary + per-story replays
@@ -1001,6 +1125,7 @@ export const productDemo = defineRun({
         replayJsonUri: primary?.replayJsonUri ?? "",
         summaryMd,
         stories,
+        ...(gifUri !== "" ? { gifUri } : {}),
       };
     }),
 });

@@ -1,7 +1,7 @@
 // @flare-dispatch/demo-agent — @effect/cli subcommand definitions.
 //
-// Six subcommands the `product-demo` run shells out to:
-//   record start | record stop | play | summarize | write-json | write-prior
+// Seven subcommands the `product-demo` run shells out to:
+//   record start | record stop | play | gif | summarize | write-json | write-prior
 //
 // Each subcommand:
 //   * decodes options via `@effect/cli`,
@@ -23,6 +23,7 @@ import {
   fetchRecording,
 } from "./recorder.js";
 import { runPlayLoop } from "./play.js";
+import { renderGifFromDir } from "./gif.js";
 import { makeLanguageModelLayer, summarizeStories } from "./model.js";
 import {
   type AgentError,
@@ -69,6 +70,12 @@ const proseOption = Options.text("prose").pipe(
 );
 const screenshotsOption = Options.text("screenshots").pipe(
   Options.withDescription("Directory for per-story screenshots."),
+);
+const framesDirOption = Options.text("frames-dir").pipe(
+  Options.withDescription(
+    "Optional: directory to save a PNG frame after every action — the source the `gif` subcommand stitches into the walkthrough GIF. Omit to skip frame capture.",
+  ),
+  Options.optional,
 );
 const maxSecOption = Options.integer("max-sec").pipe(
   Options.withDescription("Per-story wall-clock ceiling in seconds."),
@@ -212,11 +219,12 @@ const playCommand = Command.make(
     name: nameOption,
     prose: proseOption,
     screenshots: screenshotsOption,
+    framesDir: framesDirOption,
     maxSec: maxSecOption,
     model: modelOption,
     url: urlOption,
   },
-  ({ cdpWs, name, prose, screenshots, maxSec, model, url }) =>
+  ({ cdpWs, name, prose, screenshots, framesDir, maxSec, model, url }) =>
     Effect.gen(function* () {
       // HARD process-level failsafe deadline. The play loop's between-action
       // deadline check can't fire while an action is in flight, and the
@@ -256,11 +264,71 @@ const playCommand = Command.make(
           maxSec,
           attachedAtMs,
           startUrl: Option.getOrUndefined(url),
+          framesDir: Option.getOrUndefined(framesDir),
         },
         { session: attached.session },
       ).pipe(Effect.provide(makeLanguageModelLayer(model)));
       yield* attached.session.close();
       yield* Effect.sync(() => clearTimeout(killer));
+      yield* Console.log(JSON.stringify(result));
+    }).pipe(Effect.catchAll(reportAndDie)),
+);
+
+// ---------------------------------------------------------------------------
+// `gif` — stitch the frames captured during `play --frames-dir` into one
+// animated GIF the run uploads + embeds in its PR comment. Pure-JS encode
+// (see gif.ts); holds the output under a byte budget for GitHub's image proxy.
+
+const framesOption = Options.text("frames").pipe(
+  Options.withDescription("Directory of PNG frames (from `play --frames-dir`)."),
+);
+const maxWidthOption = Options.integer("max-width").pipe(
+  Options.withDefault(800),
+  Options.withDescription("Max GIF width in px — frames are downscaled, never upscaled."),
+);
+const maxFramesOption = Options.integer("max-frames").pipe(
+  Options.withDefault(60),
+  Options.withDescription("Cap on frames in the GIF — excess are dropped evenly."),
+);
+const maxBytesOption = Options.integer("max-bytes").pipe(
+  Options.withDefault(10_000_000),
+  Options.withDescription("Byte budget — GitHub's camo proxy won't render larger images."),
+);
+const delayMsOption = Options.integer("delay-ms").pipe(
+  Options.withDefault(600),
+  Options.withDescription("Per-frame delay in milliseconds."),
+);
+
+const gifCommand = Command.make(
+  "gif",
+  {
+    frames: framesOption,
+    out: outOption,
+    maxWidth: maxWidthOption,
+    maxFrames: maxFramesOption,
+    maxBytes: maxBytesOption,
+    delayMs: delayMsOption,
+  },
+  ({ frames, out, maxWidth, maxFrames, maxBytes, delayMs }) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.try({
+        try: () =>
+          renderGifFromDir({
+            framesDir: frames,
+            out,
+            maxWidth,
+            maxFrames,
+            maxBytes,
+            delayMs,
+          }),
+        catch: (e) =>
+          new FsFailed({
+            path: frames,
+            op: "read",
+            message: e instanceof Error ? e.message : String(e),
+          }),
+      });
+      // Final-line JSON the run parses — `gifPath: ""` ⇒ no frames, no GIF.
       yield* Console.log(JSON.stringify(result));
     }).pipe(Effect.catchAll(reportAndDie)),
 );
@@ -341,6 +409,7 @@ const writePriorCommand = Command.make(
 export const subcommands = [
   recordCommand,
   playCommand,
+  gifCommand,
   summarizeCommand,
   writeJsonCommand,
   writePriorCommand,
