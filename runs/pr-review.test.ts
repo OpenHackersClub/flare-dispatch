@@ -324,6 +324,80 @@ describe("pr-review", () => {
     },
   );
 
+  // ---- log-viewer link: PR comment deep-links to full logs + reviewed diff ---
+  // #137 surfaced a run's produced artifacts (incl. `pr-review.diff`) in the log
+  // viewer; this links the PR comment back to it. The URL comes from
+  // `io.viewerUrl` (dispatcher-minted, tokened) — `none` on a deploy with no
+  // public origin / log-link key, in which case the comment renders link-less.
+
+  const VIEWER_URL = "https://fd.example/logs/exec-1?t=tok";
+
+  it.effect(
+    "viewerUrl present → comment footers a `View full logs & reviewed diff` link",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: backendConfig,
+        io: { viewerUrl: VIEWER_URL },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+        modelGateway: { responses: [emptyReport] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).toContain(
+          `📋 [View full logs & reviewed diff ↗](${VIEWER_URL})`,
+        );
+        // Footer sits above the idempotency marker, not after it.
+        expect(body.indexOf(VIEWER_URL)).toBeLessThan(
+          body.indexOf("<!-- flare-dispatch: pr-review -->"),
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "viewerUrl absent → comment renders link-less (historical form)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: backendConfig,
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+        modelGateway: { responses: [emptyReport] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).not.toContain("View full logs");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "viewerUrl present → failure comment also links back to the logs",
+    () => {
+      // No backend config → `resolve-backend` fails fast, exercising the error
+      // boundary's failure-comment path.
+      const { layer, handles } = makeCFRuntimeTest({
+        io: { viewerUrl: VIEWER_URL },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
+        modelGateway: { responses: [emptyReport] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const comment = handles.github.pullReviewCalls[0]!;
+        expect(comment.body).toContain("could not complete");
+        expect(comment.body).toContain(
+          `📋 [View full logs & reviewed diff ↗](${VIEWER_URL})`,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   // ---- pr-review.agents: single vs multi-agent fan-out -----------------------
   // The collapsed `multi-agent-review` run lives on as `agents: "single"` — one
   // generalist reviewer through the same structured engine. `multi` (default)

@@ -264,3 +264,24 @@ describe("IOLive.priorExecution", () => {
     }
   });
 });
+
+describe("IOLive.viewerUrl", () => {
+  const readViewerUrl = (layer: ReturnType<typeof makeIOLive>) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const io = yield* IO;
+        return yield* io.viewerUrl;
+      }).pipe(Effect.provide(layer)),
+    );
+
+  it("returns Some when the dispatcher threads a logsViewerBase", async () => {
+    const url = "https://fd.example/logs/exec-1?t=tok";
+    const result = await readViewerUrl(makeIOLive({ logsViewerBase: url }));
+    expect(result).toEqual(Option.some(url));
+  });
+
+  it("returns None when no logsViewerBase is configured", async () => {
+    const result = await readViewerUrl(makeIOLive());
+    expect(Option.isNone(result)).toBe(true);
+  });
+});

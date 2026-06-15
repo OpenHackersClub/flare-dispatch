@@ -32,6 +32,14 @@ export type IOLiveOptions = {
    * results so a run never sees itself as its own prior.
    */
   readonly currentExecutionId?: string;
+  /**
+   * The tokened log-viewer base URL for this execution — the dispatcher mints
+   * it (it owns the log-token secret) and threads it through so `io.viewerUrl`
+   * can hand a run its own readable log/artifact surface. `undefined` (no
+   * public origin or no log-link key on the deploy) → `io.viewerUrl` is
+   * `Option.none()`.
+   */
+  readonly logsViewerBase?: string;
 };
 
 /** Build the live `IO` Layer. */
@@ -46,6 +54,11 @@ export const makeIOLive = (opts: IOLiveOptions = {}): Layer.Layer<IO> =>
     // V0 runs are dispatched with explicit inputs, not env reads — there is no
     // per-run env surface yet. Honest `undefined` keeps `io.env` total.
     env: () => Effect.succeed(undefined),
+
+    // The readable log/artifact surface for this execution. `none` when the
+    // deploy lacks a public origin or log-link key (the dispatcher then passes
+    // no `logsViewerBase`), keeping `io.viewerUrl` total.
+    viewerUrl: Effect.succeed(Option.fromNullable(opts.logsViewerBase)),
 
     // `Duration.decode` normalises the IOService input to a `Duration`. The
     // interface types the input as a plain `string`; Effect's `DurationInput`
