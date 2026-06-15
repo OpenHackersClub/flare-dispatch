@@ -55,7 +55,7 @@
 //       Action mode (a GHA workflow dispatches it with per-call overrides).
 // DSL:  see specs/03-dsl.md (uses `config` + `github`).
 
-import { Effect, Schema, Match } from "effect";
+import { Effect, Schema, Match, Option } from "effect";
 import {
   defineRun,
   step,
@@ -140,6 +140,19 @@ const ReviewOutput = ReviewOutputSchema;
 const COMMENT_MARKER = "<!-- flare-dispatch: pr-review -->";
 
 /**
+ * The "view full logs" footer for a PR comment — a markdown link to this
+ * execution's log viewer, which (since #137) also lists the reviewed
+ * `pr-review.diff` artifact. `undefined` viewer URL (a deploy with no public
+ * origin / no log-link key) → empty string, so the comment renders exactly as
+ * before. `viewerUrl` is dispatcher-minted (tokened), never model-authored, so
+ * it needs no sanitization.
+ */
+const viewerFooter = (viewerUrl: string | undefined): readonly string[] =>
+  viewerUrl === undefined
+    ? []
+    : ["", `📋 [View full logs & reviewed diff ↗](${viewerUrl})`];
+
+/**
  * Where `prepare-diff` writes the unified diff inside the container. Read back
  * in full via `sandbox.readFile` — `ExecResult.stdout` inlines only a 16KB
  * tail, which silently reviewed a sliver of any sizeable PR.
@@ -217,13 +230,18 @@ export const prReview = defineRun({
 
   run: (input) =>
     Effect.gen(function* () {
+      // This execution's log-viewer URL — links every PR comment (success OR
+      // failure) back to the full logs + the reviewed `pr-review.diff` artifact.
+      // `Option.none()` on a deploy with no public origin / log-link key, in
+      // which case the comment renders link-less, as before.
+      const viewerUrl = Option.getOrUndefined(yield* io.viewerUrl);
       // The whole review is wrapped in an error boundary that ALWAYS posts a PR
       // comment — success or failure. `reviewBody` produces the output; the
       // catch arm posts a "could not complete" comment and re-fails (as a
       // `StepFailed`, a member of `RunError`) so the check still goes red
       // honestly. The comment post itself is best-effort — a failure to post
       // must not mask the original cause.
-      return yield* reviewBody(input).pipe(
+      return yield* reviewBody(input, viewerUrl).pipe(
         Effect.catchAll((err) =>
           Effect.gen(function* () {
             const reason = describeError(err);
@@ -232,7 +250,12 @@ export const prReview = defineRun({
             yield* step("post-failure-comment", () =>
               postComment(
                 input,
-                `⚠️ **pr-review could not complete**: ${reason}\n\n${COMMENT_MARKER}`,
+                [
+                  `⚠️ **pr-review could not complete**: ${reason}`,
+                  ...viewerFooter(viewerUrl),
+                  "",
+                  COMMENT_MARKER,
+                ].join("\n"),
               ).pipe(
                 Effect.catchAll((postErr) =>
                   io.log(
@@ -254,7 +277,7 @@ export const prReview = defineRun({
 // ---------------------------------------------------------------------------
 // The review proper.
 
-const reviewBody = (input: RunInput) =>
+const reviewBody = (input: RunInput, viewerUrl?: string) =>
   Effect.gen(function* () {
     // 1. Resolve the configurable backend (model id + output mode + diff cap)
     //    from CONFIG_KV, with any per-dispatch input overrides layered on top —
@@ -446,7 +469,10 @@ const reviewBody = (input: RunInput) =>
     //    land as check-run annotations via the run output). Best-effort — a
     //    comment failure must not turn a green review red.
     yield* step("post-comment", () =>
-      postComment(input, renderReviewComment(input, output, domainCounts, style)).pipe(
+      postComment(
+        input,
+        renderReviewComment(input, output, domainCounts, style, viewerUrl),
+      ).pipe(
         Effect.catchAll((e) =>
           io.log("warn", `pr-review: posting PR comment failed — ${describeError(e)}`),
         ),
@@ -711,10 +737,13 @@ const renderReviewComment = (
   output: Schema.Schema.Type<typeof ReviewOutput>,
   domainCounts: ReadonlyArray<DomainCount>,
   style: Style = DEFAULT_STYLE,
+  viewerUrl?: string,
 ): string =>
   Match.value(style).pipe(
-    Match.when("compact", () => renderCompact(input, output)),
-    Match.when("default", () => renderDefault(input, output, domainCounts)),
+    Match.when("compact", () => renderCompact(input, output, viewerUrl)),
+    Match.when("default", () =>
+      renderDefault(input, output, domainCounts, viewerUrl),
+    ),
     Match.exhaustive,
   );
 
@@ -724,6 +753,7 @@ const renderDefault = (
   input: Pick<RunInput, "repo" | "sha">,
   output: Schema.Schema.Type<typeof ReviewOutput>,
   domainCounts: ReadonlyArray<DomainCount>,
+  viewerUrl?: string,
 ): string => {
   const verdictBadge = Match.value(output.verdict).pipe(
     Match.when("approve", () => "✅ Approve"),
@@ -777,7 +807,13 @@ const renderDefault = (
             : []),
         ];
 
-  return [...header, ...findingsBlock, "", COMMENT_MARKER].join("\n");
+  return [
+    ...header,
+    ...findingsBlock,
+    ...viewerFooter(viewerUrl),
+    "",
+    COMMENT_MARKER,
+  ].join("\n");
 };
 
 /** Compact "leaderboard-bot" layout — verdict header (`## ✅ LGTM` /
@@ -787,6 +823,7 @@ const renderDefault = (
 const renderCompact = (
   input: Pick<RunInput, "repo" | "sha">,
   output: Schema.Schema.Type<typeof ReviewOutput>,
+  viewerUrl?: string,
 ): string => {
   const verdictHeader = Match.value(output.verdict).pipe(
     Match.when("approve", () => "## ✅ LGTM"),
@@ -796,7 +833,14 @@ const renderCompact = (
   );
 
   if (output.findings.length === 0) {
-    return [verdictHeader, "", "No issues found.", "", COMMENT_MARKER].join("\n");
+    return [
+      verdictHeader,
+      "",
+      "No issues found.",
+      ...viewerFooter(viewerUrl),
+      "",
+      COMMENT_MARKER,
+    ].join("\n");
   }
 
   const compactSeverity = (level: Finding["level"]): string =>
@@ -822,6 +866,7 @@ const renderCompact = (
     ...(overflow > 0
       ? ["", `_…and ${overflow} more (see check annotations)._`]
       : []),
+    ...viewerFooter(viewerUrl),
     "",
     COMMENT_MARKER,
   ].join("\n");
