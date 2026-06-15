@@ -34,6 +34,12 @@ export type IOFakeOptions = {
    * default. Lets a run test exercise the re-review / prior-findings path.
    */
   readonly prior?: PriorExecution<unknown>;
+  /**
+   * When set, `io.viewerUrl` returns `Option.some(viewerUrl)`; omitted it is
+   * `Option.none()` — the no-public-origin default. Lets a run test assert its
+   * comment links back to the log viewer.
+   */
+  readonly viewerUrl?: string;
 };
 
 /**
@@ -62,6 +68,7 @@ export const makeIOFake = (
       return `00000000-0000-4000-8000-${n}`;
     }),
     env: () => Effect.succeed(undefined),
+    viewerUrl: Effect.succeed(Option.fromNullable(opts.viewerUrl)),
     sleep: () => Effect.void,
     log: (level, msg, attrs) =>
       Effect.sync(() => {

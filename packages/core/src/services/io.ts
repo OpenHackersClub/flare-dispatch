@@ -35,6 +35,17 @@ export interface IOService {
     family: string;
     outputSchema: Schema.Schema<O, I>;
   }) => Effect.Effect<Option.Option<PriorExecution<O>>>;
+  /**
+   * The tokened log-viewer base URL for THIS execution
+   * (`https://<origin>/logs/<id>?t=<token>`) — the readable surface that, since
+   * the artifact work in #137, also lists a run's produced artifacts (e.g.
+   * `pr-review`'s reviewed diff). A run reads it to deep-link its own
+   * human-facing output (a PR comment) back to the full logs. `Option.none()`
+   * when the deploy has no public origin or no log-link key material — the run
+   * then renders its link-less historical form. Minted by the dispatcher (it
+   * owns the log-token secret); a run can only read it, never forge it.
+   */
+  readonly viewerUrl: Effect.Effect<Option.Option<string>>;
 }
 
 export class IO extends Context.Tag("@flare-dispatch/core/IO")<IO, IOService>() {}
@@ -50,4 +61,5 @@ export const io = {
     family: string;
     outputSchema: Schema.Schema<O, I>;
   }) => Effect.flatMap(IO, (s) => s.priorExecution(opts)),
+  viewerUrl: Effect.flatMap(IO, (s) => s.viewerUrl),
 } as const;

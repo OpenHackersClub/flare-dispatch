@@ -485,12 +485,20 @@ namespace io {
     family: string;                          // instanceId prefix, e.g. "pr-review:owner/name:42"
     outputSchema: Schema.Schema<O, unknown>;
   }) => Effect.Effect<Option.Option<PriorExecution<O>>, never, RunContext>;
+
+  // This execution's tokened log-viewer URL — the readable logs + produced
+  // artifacts surface. A run reads it to deep-link its own human-facing output
+  // (e.g. a PR comment) back to the full logs. Option.none() when the deploy
+  // has no public origin / log-link key.
+  declare const viewerUrl: Effect.Effect<Option.Option<string>, never, RunContext>;
 }
 ```
 
 `io.priorExecution` reads D1 execution metadata for the most recent **terminal** execution whose Workflow `instanceId` starts with `family:` — excluding the current one. The `family` is the semantic dedup key (see [04-gha-integration § Receiver dedup](04-gha-integration.md#receiver-dedup-shared-by-all-modes)) minus its head-SHA component: `pr-review:{repo}:{pr}` rather than `pr-review:{repo}:{pr}:{head_sha}`. A run uses it to make its current decision relative to its last one — incremental review, "did this regress since the previous push," resolving stale findings. The prior `output` is decoded against `outputSchema`; a decode mismatch (the prior execution ran an older run version with a different output shape) yields `Option.none()` rather than failing.
 
-> **Status: live at HEAD.** Implemented in [`packages/runtime-cf/src/io-live.ts`](../packages/runtime-cf/src/io-live.ts) — a real D1 query (`SELECT … FROM executions WHERE id LIKE 'family:%' AND id != <current> AND status IN ('success','failure') ORDER BY completed_at DESC LIMIT 1`), with the current execution excluded. It returns `Option.none()` only when the D1 binding is absent (a stand-alone `IOLive` for tests / local dev), the prior `summary_json` is NULL / unparseable, the decode against `outputSchema` mismatches (an older run version's output shape), or a D1 read faults mid-lookup — all "best-effort tuning, never a hard run failure." `pr-review` incremental mode is the canonical caller.
+`io.viewerUrl` hands a run its own execution's log-viewer URL — the tokened `/logs/<id>?t=<token>` surface that renders both the run's logs and its produced artifacts (the [`artifact`](#artifact) uploads). The dispatcher mints it (it owns the log-token secret) and threads it through the runtime, so a run can only read it, never forge one. `pr-review` is the canonical caller: it footers a `📋 View full logs & reviewed diff` link onto every PR comment so a reviewer can jump from the comment to the exact diff that was reviewed (uploaded as the `pr-review.diff` artifact). `Option.none()` on a deploy with no public origin or no log-link key material — the run then renders its link-less historical form.
+
+> **Status: live at HEAD.** `priorExecution` is implemented in [`packages/runtime-cf/src/io-live.ts`](../packages/runtime-cf/src/io-live.ts) — a real D1 query (`SELECT … FROM executions WHERE id LIKE 'family:%' AND id != <current> AND status IN ('success','failure') ORDER BY completed_at DESC LIMIT 1`), with the current execution excluded. It returns `Option.none()` only when the D1 binding is absent (a stand-alone `IOLive` for tests / local dev), the prior `summary_json` is NULL / unparseable, the decode against `outputSchema` mismatches (an older run version's output shape), or a D1 read faults mid-lookup — all "best-effort tuning, never a hard run failure." `pr-review` incremental mode is the canonical caller. `viewerUrl` is the same file's `Option.fromNullable(logsViewerBase)` — the dispatcher passes `logsViewerBase` (built from `PUBLIC_ORIGIN`/request origin + the log-token secret) into the runtime; the GitHub check-run summary embeds the same URL.
 
 ### `config`
 

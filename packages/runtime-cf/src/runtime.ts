@@ -224,6 +224,9 @@ export const makeCFRuntimeLive = (
   const io = makeIOLive({
     db: opts.db,
     currentExecutionId: opts.executionId,
+    ...(opts.logsViewerBase !== undefined
+      ? { logsViewerBase: opts.logsViewerBase }
+      : {}),
   });
   const executions = makeD1ExecutionsLive(opts.db, opts.execution);
   const artifact = makeR2ArtifactLive(
