@@ -74,6 +74,7 @@ jobs:
       # what enables the GIF-on-completion comment; on workflow_dispatch there is
       # no PR, so it's omitted and the run reports via the check-run only.
       - name: Dispatch product-demo against the log viewer
+        id: dispatch
         if: vars.FLAREDISPATCH_ENDPOINT != '' && (vars.LOG_VIEWER_DEMO_URL != '' || github.event.inputs.log_url != '')
         uses: ./actions/flare-dispatch-action
         with:
@@ -92,3 +93,15 @@ jobs:
               "storiesMarkdown": ${{ toJSON(steps.stories.outputs.md) }},
               "viewportPreset": "desktop"${{ github.event.pull_request.number && format(', "pr": {0}', github.event.pull_request.number) || '' }}
             }
+
+      # On a manual run there is no PR — so there is no check-run / GIF comment
+      # to carry the replay link. Poll the execution to completion and print the
+      # replay link (+ recorded artifacts) into THIS run's log + job summary.
+      # On PR events the check-run already carries it, so this step is skipped.
+      - name: Surface the replay link (workflow_dispatch — no PR)
+        if: github.event_name == 'workflow_dispatch' && vars.FLAREDISPATCH_ENDPOINT != '' && steps.dispatch.outputs.execution-id != ''
+        env:
+          ENDPOINT: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          EXECUTION_ID: ${{ steps.dispatch.outputs.execution-id }}
+          LOGS_URL: ${{ steps.dispatch.outputs.logs-url }}
+        run: ./scripts/surface-replay-link.sh
