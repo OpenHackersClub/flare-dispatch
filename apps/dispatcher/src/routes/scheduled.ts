@@ -40,6 +40,7 @@
 // own `executions` D1 row is keyed off the *Workflow instance* id, so a
 // dedup-collapsed second call is a literal no-op end-to-end.
 
+import { toInstanceId } from "../instance-id";
 import { type ScheduleMatch, schedulesByCron } from "../registry";
 import type { Env } from "../env";
 
@@ -97,7 +98,7 @@ const fireOne = async (
     return;
   }
 
-  const id = schedule.idempotencyKey(ctx);
+  const id = toInstanceId(schedule.idempotencyKey(ctx));
   const inputs = schedule.inputs(ctx);
 
   // The Workflow `params` shape `RunWorkflow.run` decodes — same as dispatch.ts.

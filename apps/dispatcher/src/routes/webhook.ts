@@ -33,6 +33,7 @@
 // container starts — lives inside the Workflow.
 
 import { verify } from "../hmac";
+import { toInstanceId } from "../instance-id";
 import { triggersByEvent } from "../registry";
 import type { Env } from "../env";
 
@@ -199,7 +200,7 @@ export const handleGithubWebhook = async (
     const ctx = { payload };
     if (trigger.gate && !trigger.gate(ctx)) continue;
 
-    const id = trigger.idempotencyKey(ctx);
+    const id = toInstanceId(trigger.idempotencyKey(ctx));
     const inputs = trigger.inputs(ctx);
     const params = {
       executionId: id,

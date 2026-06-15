@@ -25,7 +25,7 @@ CLI; every model call happens in the Worker against a configurable backend.
 | `stripDiffNoise(diff)` / `capDiff(diff)` | Drops lockfile / minified / generated / vendored file sections from a unified diff, then caps the size. |
 | `extractJsonText(text)` | Strips `<think>…</think>` blocks + code fences and isolates the outermost JSON value — the `json`-mode parsing front-end. |
 | `resolveBackend(getConfig, { namespace? })` | Resolves the active backend profile (model id + mode) from config under a **namespace** (default `pr-review`). **No API key.** |
-| `namespacedKey(ns)` / `backendConfigKey(ns)` / `promptKey(ns)` | The `<ns>.<key>` CONFIG_KV convention in one place — how a recipe derives `spec-drift.repos`, `ci-triage.prompt`, etc. |
+| `namespacedKey(ns)` / `backendConfigKey(ns)` / `promptKey(ns)` / `guidelinesKey(ns)` | The `<ns>.<key>` CONFIG_KV convention in one place — how a recipe derives `spec-drift.repos`, `ci-triage.prompt`, `pr-review.guidelines`, etc. |
 
 `Finding` / `ReviewOutput` are the wire contract shared with the run.
 
@@ -81,9 +81,13 @@ auth** (shown here for `pr-review`):
 | `opencode` (a tool-calling-capable Workers AI model) | `pr-review.opencode.model` (bare `@cf/...`), `pr-review.opencode.mode` (default `tools`) |
 | `reasonix` (a reasoning model that ignores tool-calls) | `pr-review.reasonix.model` (bare `@cf/...` distill, **or** a `deepseek/`-prefixed hosted reasoner like `deepseek/deepseek-reasoner` — BYOK via AI Gateway), `pr-review.reasonix.mode` (default `json`) |
 
-`pr-review.prompt` optionally overrides the per-domain reviewer system prompt;
+`pr-review.prompt` optionally REPLACES the per-domain reviewer system prompt;
 otherwise the engine's generic default is used (no project-specific rubric is
-shipped). Model ids are bare `@cf/...` (the Workers AI binding's own naming) —
+shipped). `pr-review.guidelines` is ADDITIVE — `composeSystemPrompt` appends it
+to the base prompt as authoritative house rules, so an operator can layer a
+suppression rubric, conventions, or severity calibration on top of the
+maintained default without forking it. Model ids are bare `@cf/...` (the Workers
+AI binding's own naming) —
 **not** the `workers-ai/@cf/...` compat-endpoint prefix the old HTTP path used.
 
 The model name passes through verbatim — swapping models is a CONFIG_KV edit,

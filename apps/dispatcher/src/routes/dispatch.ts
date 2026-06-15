@@ -26,6 +26,7 @@ import type { ParseError } from "effect/ParseResult";
 import { workflowDashboardUrl } from "../dashboard-url";
 import type { Env } from "../env";
 import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
+import { toInstanceId } from "../instance-id";
 import { buildLogsUrl, resolveLogLinkSecret, signLogToken } from "../log-token";
 import { lookupRun } from "../registry";
 
@@ -238,11 +239,15 @@ export const handleDispatch = async (
   //    one per spec 04-gha) → semantic `{run}:{repo}:{sha}` fallback. Both
   //    serve as BOTH the executionId returned to the caller AND the Workflow
   //    instanceId, so platform-level `create({id})` dedup is automatic.
+  //    `toInstanceId` makes the result a valid CF Workflows id (the semantic
+  //    fallback and arbitrary caller-supplied header keys can carry `:` / `/`
+  //    or overrun 64 chars, which `create({ id })` rejects as `invalid_id`).
   const headerKey = request.headers.get("Idempotency-Key");
-  const executionId =
+  const executionId = toInstanceId(
     headerKey && headerKey.length > 0
       ? headerKey
-      : semanticInstanceId(body.run, body.github.repo, body.github.sha);
+      : semanticInstanceId(body.run, body.github.repo, body.github.sha),
+  );
 
   // The Cloudflare Workflows instance page for this execution. Returned in the
   // 202 (below) so the caller — the GHA Action — can surface a clickable link
