@@ -245,7 +245,7 @@ The cron expression in the run's `schedules` and the one in `wrangler.jsonc`'s `
 
 ### Free dedup against the other modes
 
-A scheduled sweep does not waste compute re-doing work the other modes already did. The child executions it spawns keep their **semantic** `instanceId` — `pr-review:{repo}:{pr}:{head_sha}` — and CF Workflows treats a duplicate `create({ id })` as a no-op (see [§ Receiver dedup](#receiver-dedup-shared-by-all-modes)). So a PR already reviewed at its current head SHA by Webhook mode is silently skipped by the nightly sweep; the sweep only spends tokens on PRs that changed since their last review, or that Webhook mode never saw. Schedule mode is a *backstop*, not a duplicate channel.
+A scheduled sweep does not waste compute re-doing work the other modes already did. The child executions it spawns keep their **semantic** `instanceId` — `pr-review:{repo_}:{sha12}` — and CF Workflows treats a duplicate `create({ id })` as a no-op (see [§ Receiver dedup](#receiver-dedup-shared-by-all-modes)). So a PR already reviewed at its current head SHA by Webhook mode is silently skipped by the nightly sweep; the sweep only spends tokens on PRs that changed since their last review, or that Webhook mode never saw. Schedule mode is a *backstop*, not a duplicate channel.
 
 ### Deferred follow-ups
 
@@ -356,7 +356,13 @@ Setup: see [`specs/05-byoc.md` § Secrets](./05-byoc.md) and the commented `send
 All three modes share the same two-layer dedup discipline so a redelivery storm, a double-click on "Re-run failed checks," a GHA retry, or a duplicate cron delivery doesn't produce parallel work or duplicate check-runs.
 
 1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, the caller-supplied `Idempotency-Key` for direct dispatch, or the `schedules[].idempotencyKey` value for a cron tick (Cloudflare may deliver a Cron Trigger more than once). A repeat returns `202` immediately — Workflows is never touched. `apps/dispatcher/src/routes/webhook.ts` does this today, guarded on the **optional** `IDEMPOTENCY_KV` binding: it is declared (commented-out) in `wrangler.jsonc`, so this layer is on once you bind the namespace. Absent the binding, receiver dedup falls back to the Workflow-level key below (Schedule mode passes its `idempotencyKey(ctx)` as the Workflow `instanceId`, so duplicate cron deliveries already collapse at layer 2 regardless).
-2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo}:{pr}:{head_sha}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`, and for a scheduling Workflow the cron-window key `pr-review-sweep:{iso_date}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same logical work collapse onto one execution. A scheduling Workflow's fan-out children are themselves keyed semantically, so a sweep is idempotent against both itself and the other modes.
+2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo_}:{sha12}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`, and for a scheduling Workflow the cron-window key `pr-review-sweep:{iso_date}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same logical work collapse onto one execution. A scheduling Workflow's fan-out children are themselves keyed semantically, so a sweep is idempotent against both itself and the other modes.
+
+### Run cooldown (rate cap on top of dedup)
+
+Dedup collapses dispatches naming the **same** logical work (same sha); it does nothing against a rapid push sequence, where every push is new work. A run may additionally declare a **cooldown** — `cooldown: { seconds, scope }` on `defineRun` — capping dispatches to one per window per `{run}:{repo}:{scope}` bucket. `pr-review` ships `{ seconds: 1800, scope: pr-<number> }`: at most one review per PR per 30 minutes, across BOTH Action and Webhook mode (Schedule mode is exempt — crons self-pace).
+
+Enforcement lives in `apps/dispatcher/src/cooldown.ts`, rides the same optional `IDEMPOTENCY_KV` binding (no binding → no cap, best-effort like layer 1), and **never errors**: a dispatch landing inside the window is answered `202` with the *prior* execution's id plus `skipped: "cooldown"` and `retryAfterSec`, so a fire-and-forget CI step stays green and its `execution-id` output still points at a real execution. The webhook receiver reports the same outcome in a `skipped[]` array alongside `dispatched[]`.
 
 ---
 

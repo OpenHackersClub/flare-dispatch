@@ -23,6 +23,7 @@
 
 import { Either, ParseResult, Schema } from "effect";
 import type { ParseError } from "effect/ParseResult";
+import { checkAndArmCooldown } from "../cooldown";
 import { workflowDashboardUrl } from "../dashboard-url";
 import type { Env } from "../env";
 import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
@@ -279,6 +280,31 @@ export const handleDispatch = async (
       },
       202,
     );
+
+  // 6.5 Run cooldown (when the run declares one) — at most one execution per
+  //     window per `{run}:{repo}:{scope}` bucket. A dispatch inside the window
+  //     is acknowledged with the PRIOR execution's id and `skipped:
+  //     "cooldown"`: 202, never an error, so a fire-and-forget CI step stays
+  //     green and its `execution-id` output still points at a real execution.
+  const cooldownVerdict = await checkAndArmCooldown({
+    kv: env.IDEMPOTENCY_KV,
+    runName: body.run,
+    cooldown: run.cooldown,
+    repo: body.github.repo,
+    inputs,
+    executionId,
+    now: Date.now(),
+  });
+  if (cooldownVerdict.state === "cooling") {
+    return json(
+      {
+        executionId: cooldownVerdict.priorExecutionId,
+        skipped: "cooldown",
+        retryAfterSec: cooldownVerdict.retryAfterSec,
+      },
+      202,
+    );
+  }
 
   // 7. Receiver-level dedup: write the KV entry FIRST (before touching
   //    Workflows) so a concurrent duplicate request sees the key and
