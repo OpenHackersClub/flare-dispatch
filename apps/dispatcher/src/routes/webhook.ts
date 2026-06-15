@@ -33,6 +33,7 @@
 // container starts — lives inside the Workflow.
 
 import { verify } from "../hmac";
+import { toInstanceId } from "../instance-id";
 import { triggersByEvent } from "../registry";
 import type { Env } from "../env";
 
@@ -41,27 +42,6 @@ const SIGNATURE_HEADER = "X-Hub-Signature-256";
 
 /** TTL on receiver-dedup KV entries — spec 04-gha § Receiver dedup (24h). */
 const DEDUP_TTL_SEC = 86_400;
-
-/**
- * Map a trigger's semantic `idempotencyKey` into a valid Cloudflare Workflows
- * instance id. CF instance ids allow only `[A-Za-z0-9_-]` and are capped at 64
- * chars; a webhook key like `pr-review:owner/repo:42:<40-char-sha>` carries `:`
- * and `/` and overruns 64 — so a raw `create({ id })` fails with
- * `instance.invalid_id` and the run never starts. Sanitize deterministically
- * (same key → same id, preserving `create({ id })` dedup): swap disallowed
- * chars for `_`, and when the result exceeds 64 chars keep a prefix plus a
- * stable djb2 suffix so distinct keys can't collide after truncation.
- */
-const toInstanceId = (raw: string): string => {
-  const safe = raw.replace(/[^A-Za-z0-9_-]/g, "_");
-  if (safe.length <= 64) return safe;
-  let hash = 5381;
-  for (let i = 0; i < raw.length; i++) {
-    hash = ((hash << 5) + hash + raw.charCodeAt(i)) >>> 0;
-  }
-  const suffix = hash.toString(36);
-  return `${safe.slice(0, 64 - suffix.length - 1)}_${suffix}`;
-};
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {

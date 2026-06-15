@@ -274,9 +274,10 @@ describe("POST /v1/dispatch/:run — success", () => {
     expect(res.status).toBe(202);
     const payload = (await res.json()) as { executionId: string };
     // Semantic instanceId per spec 04-gha § Receiver dedup —
-    // `{run}:{repo}:{sha[:12]}` (slashes in repo replaced with `_`).
+    // `{run}:{repo}:{sha[:12]}`, sanitized to a valid CF Workflows id by
+    // `toInstanceId` (disallowed chars — `:` and `/` — become `_`).
     expect(payload.executionId).toBe(
-      "offload-test:owner_test-repo:abc123def456",
+      "offload-test_owner_test-repo_abc123def456",
     );
 
     expect(workflow.calls).toHaveLength(1);
@@ -611,7 +612,7 @@ describe("POST /v1/dispatch/:run — dedup", () => {
   });
 
   it("Workflow.create raising instance.already_exists → 202, no error to caller", async () => {
-    const semanticId = "offload-test:owner_test-repo:abc123def456";
+    const semanticId = "offload-test_owner_test-repo_abc123def456";
     const { env, workflow } = fixture({
       throwAlreadyExistsFor: new Set([semanticId]),
     });

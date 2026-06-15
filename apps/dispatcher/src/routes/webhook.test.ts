@@ -173,7 +173,9 @@ describe("POST /v1/webhooks/github — trigger evaluation", () => {
 
     expect(workflow.calls).toHaveLength(1);
     const call = workflow.calls[0]!;
-    expect(call.id).toBe("deploy-smoke:owner/test-repo:9001");
+    // The trigger's semantic idempotency key sanitized to a valid CF Workflows
+    // instance id by `toInstanceId` (`:` and `/` → `_`).
+    expect(call.id).toBe("deploy-smoke_owner_test-repo_9001");
     const params = call.params as {
       run: string;
       github: { repo: string; sha: string; installation_id?: number };
