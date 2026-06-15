@@ -49,6 +49,7 @@ export {
   namespacedKey,
   backendConfigKey,
   promptKey,
+  guidelinesKey,
   type ResolvedBackend,
   parseBackend,
   parseMode,
@@ -64,6 +65,7 @@ export {
 
 export {
   DEFAULT_REVIEW_SYSTEM_PROMPT,
+  composeSystemPrompt,
   type CompleteStructuredInput,
   completeStructured,
   type ReviewDomainInput,

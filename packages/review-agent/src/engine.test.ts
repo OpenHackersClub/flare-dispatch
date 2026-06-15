@@ -17,8 +17,10 @@ import { makeModelGatewayFake } from "@flare-dispatch/core/testing";
 import {
   classifyRisk,
   completeStructured,
+  composeSystemPrompt,
   coordinate,
   coordinateReview,
+  DEFAULT_REVIEW_SYSTEM_PROMPT,
   reviewDomain,
   riskTier,
 } from "./engine.js";
@@ -64,6 +66,45 @@ const withGateway = (
 
 /** Common backend coordinates every call needs. */
 const conn = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" } as const;
+
+describe("composeSystemPrompt (pure — prompt layering)", () => {
+  it("returns the trimmed base alone when no guidelines/focus", () => {
+    expect(composeSystemPrompt({ base: "  base instruction  " })).toBe(
+      "base instruction",
+    );
+  });
+
+  it("appends guidelines as an authoritative block, layered on the base", () => {
+    const out = composeSystemPrompt({
+      base: DEFAULT_REVIEW_SYSTEM_PROMPT,
+      guidelines: "Do not flag style nits already enforced by the linter.",
+    });
+    // The base is preserved (additive, not a replacement)...
+    expect(out.startsWith(DEFAULT_REVIEW_SYSTEM_PROMPT)).toBe(true);
+    // ...and the guidelines are appended under an authoritative label.
+    expect(out).toContain("authoritative house rules");
+    expect(out).toContain(
+      "Do not flag style nits already enforced by the linter.",
+    );
+  });
+
+  it("orders base → guidelines → focus", () => {
+    const out = composeSystemPrompt({
+      base: "BASE",
+      guidelines: "GUIDE",
+      focus: "FOCUS",
+    });
+    expect(out.indexOf("BASE")).toBeLessThan(out.indexOf("GUIDE"));
+    expect(out.indexOf("GUIDE")).toBeLessThan(out.indexOf("FOCUS"));
+    expect(out).toContain("Extra focus for this review: FOCUS");
+  });
+
+  it("drops whitespace-only layers", () => {
+    expect(
+      composeSystemPrompt({ base: "BASE", guidelines: "   ", focus: "" }),
+    ).toBe("BASE");
+  });
+});
 
 describe("riskTier / classifyRisk", () => {
   it("an empty diff is trivial", () => {

@@ -58,7 +58,8 @@ The engine selects a model backend from config — repoint it in seconds, no red
 | Key (CONFIG_KV) | Meaning |
 |---|---|
 | `pr-review.backend` | `opencode` (default), `reasonix`, `anthropic`, or `bedrock` |
-| `pr-review.prompt` | *(optional)* override the generic per-domain reviewer system prompt |
+| `pr-review.prompt` | *(optional)* REPLACE the generic per-domain reviewer system prompt |
+| `pr-review.guidelines` | *(optional)* ADDITIVE house rules appended on top of the reviewer prompt — a suppression rubric ("what NOT to flag"), project conventions, or severity calibration. Layers onto the maintained default instead of replacing it. |
 | `pr-review.opencode.model` | bare Workers AI model id for the **opencode** backend, e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 | `pr-review.opencode.mode` | `tools` (default) or `json` — how structured output is coaxed (see below) |
 | `pr-review.reasonix.model` | reasoning-model id for the **reasonix** backend. Either a bare Workers AI distill (`@cf/deepseek-ai/deepseek-r1-distill-qwen-32b`, account-billed, no key) **or** a `deepseek/`-prefixed hosted reasoner (`deepseek/deepseek-reasoner`, the real model — routes via the AI Gateway universal endpoint with a BYOK DeepSeek key stored in the gateway; requires `AI_GATEWAY_ID`) |

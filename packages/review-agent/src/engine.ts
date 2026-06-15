@@ -83,6 +83,43 @@ many low-value ones. If the diff is clean for your domain, report zero findings.
 Call the \`report\` tool exactly once with your findings (an empty array is
 valid). Do not respond with prose — the tool call IS your output.`;
 
+/**
+ * Compose the reviewer system prompt from its layers, appending each non-empty
+ * one with a blank-line separator. PURE — no I/O — so it unit-tests directly.
+ *
+ *   - `base`        the reviewer instruction: an operator `*.prompt` override or
+ *                   {@link DEFAULT_REVIEW_SYSTEM_PROMPT}.
+ *   - `guidelines`  optional ADDITIVE "house rules" (operator `*.guidelines`).
+ *                   Layered on top of `base` rather than replacing it, so an
+ *                   operator can add a suppression rubric ("what NOT to flag"),
+ *                   project conventions, or severity calibration WITHOUT forking
+ *                   the maintained default. Labeled authoritative so the model
+ *                   treats it as binding, not a hint.
+ *   - `focus`       optional per-dispatch focus line (rides the trusted dispatch
+ *                   input, never the attacker-controllable diff).
+ *
+ * Order is base → guidelines → focus: standing house rules sit above a single
+ * run's focus. Whitespace-only layers are dropped; the result is trimmed.
+ */
+export const composeSystemPrompt = (layers: {
+  readonly base: string;
+  readonly guidelines?: string;
+  readonly focus?: string;
+}): string => {
+  const parts: string[] = [layers.base.trim()];
+  const guidelines = layers.guidelines?.trim();
+  if (guidelines !== undefined && guidelines !== "") {
+    parts.push(
+      `Additional review guidelines — treat these as authoritative house rules:\n${guidelines}`,
+    );
+  }
+  const focus = layers.focus?.trim();
+  if (focus !== undefined && focus !== "") {
+    parts.push(`Extra focus for this review: ${focus}`);
+  }
+  return parts.join("\n\n");
+};
+
 // (Coordination is deterministic — pure code — so there is no coordinator
 // prompt; see `coordinate` below.)
 

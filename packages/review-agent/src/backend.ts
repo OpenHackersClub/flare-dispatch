@@ -226,6 +226,17 @@ export const backendConfigKey = (namespace: string): string =>
 export const promptKey = (namespace: string): string =>
   namespacedKey(namespace)("prompt");
 
+/**
+ * The CONFIG_KV key carrying a namespace's optional review GUIDELINES — operator
+ * "house rules" the engine APPENDS to the reviewer system prompt instead of
+ * replacing it. Where `promptKey` swaps out the whole reviewer instruction,
+ * `guidelinesKey` layers an extra rubric on top of the maintained default (or on
+ * top of a `*.prompt` override): e.g. a "what NOT to flag" suppression list, a
+ * project's conventions, or severity calibration. See `composeSystemPrompt`.
+ */
+export const guidelinesKey = (namespace: string): string =>
+  namespacedKey(namespace)("guidelines");
+
 /** The CONFIG_KV key naming the active backend (default `pr-review` namespace). */
 export const BACKEND_CONFIG_KEY = backendConfigKey(DEFAULT_NAMESPACE);
 

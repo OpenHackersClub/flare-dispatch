@@ -21,7 +21,8 @@
 //
 //   CONFIG_KV  pr-review.agents         "single" (one generalist reviewer) | "multi" (tier-scaled per-domain personas)  (default "multi")
 //   CONFIG_KV  pr-review.backend        "opencode" | "reasonix" | "anthropic" | "bedrock"  (default opencode)
-//   CONFIG_KV  pr-review.prompt          (optional) override the reviewer system prompt
+//   CONFIG_KV  pr-review.prompt          (optional) REPLACE the reviewer system prompt
+//   CONFIG_KV  pr-review.guidelines      (optional) ADDITIVE house rules appended to the reviewer prompt (suppression rubric / conventions / severity calibration)
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.reasonix.model  reasoning-model id — a bare Workers AI distill (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b) OR a `deepseek/`-prefixed hosted reasoner (e.g. deepseek/deepseek-reasoner) — BYOK via AI Gateway, the real model
@@ -69,10 +70,12 @@ import {
   type BackendUnconfigured,
   backendConfigKey,
   capDiff,
+  composeSystemPrompt,
   coordinate as engineCoordinate,
   DEFAULT_NAMESPACE,
   DEFAULT_REVIEW_SYSTEM_PROMPT,
   type Finding,
+  guidelinesKey,
   type ModelCallFailed,
   namespacedKeys,
   parseBackend,
@@ -333,20 +336,27 @@ const reviewBody = (input: RunInput) =>
       );
     const plan = planForMode(agentMode, tier);
 
-    // 5. The reviewer system prompt — operator override or the engine's generic
-    //    default — plus an optional per-dispatch focus line. Composed here (not
-    //    threaded through the engine) so `focusArea` rides the trusted dispatch
-    //    input, never the attacker-controllable diff. The model's OUTPUT is still
-    //    sanitized before it renders in the public comment regardless.
+    // 5. The reviewer system prompt — layered base → guidelines → focus,
+    //    composed here (not threaded through the engine) so `focusArea` rides
+    //    the trusted dispatch input, never the attacker-controllable diff. The
+    //    model's OUTPUT is still sanitized before it renders in the public
+    //    comment regardless.
+    //      - `pr-review.prompt`     REPLACES the base reviewer instruction.
+    //      - `pr-review.guidelines` is ADDITIVE — appended on top as authoritative
+    //        house rules (a suppression rubric, project conventions, severity
+    //        calibration), so an operator can shape the review without forking
+    //        the maintained default prompt.
     const promptOverride = yield* step("resolve-prompt", () =>
       config.get("pr-review.prompt"),
     );
-    const basePrompt = promptOverride ?? DEFAULT_REVIEW_SYSTEM_PROMPT;
-    const focus = input.focusArea?.trim();
-    const systemPrompt =
-      focus !== undefined && focus !== ""
-        ? `${basePrompt}\n\nExtra focus for this review: ${focus}`
-        : basePrompt;
+    const guidelines = yield* step("resolve-guidelines", () =>
+      config.get(guidelinesKey(NS)),
+    );
+    const systemPrompt = composeSystemPrompt({
+      base: promptOverride ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
+      ...(guidelines !== undefined ? { guidelines } : {}),
+      ...(input.focusArea !== undefined ? { focus: input.focusArea } : {}),
+    });
 
     // 5b. Comment style preset — operator picks the comment layout. Both
     //     presets are hard-coded server-side (so model-authored text can't
