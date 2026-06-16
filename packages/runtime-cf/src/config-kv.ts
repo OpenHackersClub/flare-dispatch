@@ -20,15 +20,25 @@ import { Config, type ConfigService } from "@flare-dispatch/core";
  * Build the live `Config` Layer bound to a KV namespace.
  *
  * @param kv  the `CONFIG_KV` KVNamespace binding.
+ * @param overrides  optional per-execution key→value map checked BEFORE KV. The
+ *   Worker injects execution-scoped values here (e.g. self-heal's per-execution
+ *   model-proxy URL + capability token) that must not live in KV — the run reads
+ *   them via `config.get` without the Worker ever exposing the signing key.
+ *   specs/08-self-healing.md § 6.3.
  */
-export const makeConfigKvLive = (kv: KVNamespace): Layer.Layer<Config> => {
+export const makeConfigKvLive = (
+  kv: KVNamespace,
+  overrides?: Readonly<Record<string, string>>,
+): Layer.Layer<Config> => {
   const service: ConfigService = {
     get: (key) =>
-      Effect.tryPromise(() => kv.get(key)).pipe(
-        Effect.map((value) => value ?? undefined),
-        // A KV read failure degrades to "key unset" — never fails the run.
-        Effect.orElseSucceed(() => undefined),
-      ),
+      overrides !== undefined && key in overrides
+        ? Effect.succeed(overrides[key])
+        : Effect.tryPromise(() => kv.get(key)).pipe(
+            Effect.map((value) => value ?? undefined),
+            // A KV read failure degrades to "key unset" — never fails the run.
+            Effect.orElseSucceed(() => undefined),
+          ),
 
     getJSON: <A, I>(key: string, schema: Schema.Schema<A, I>) =>
       Effect.tryPromise(() => kv.get(key)).pipe(

@@ -126,6 +126,12 @@ export type CFRuntimeLiveOptions = {
    */
   readonly configKv?: KVNamespace;
   /**
+   * Per-execution config overrides checked before `configKv` (specs/08 § 6.3).
+   * The Worker injects execution-scoped values the run reads via `config.get`
+   * but that must not persist in KV — the self-heal model-proxy URL + token.
+   */
+  readonly configOverrides?: Readonly<Record<string, string>>;
+  /**
    * Browser Rendering connect config for the `browser` capability
    * (`BROWSER_CDP_*` Worker secrets). `undefined` — a deploy with no Browser
    * Rendering configured — selects the dying `Browser` stub: a browser run
@@ -260,7 +266,7 @@ export const makeCFRuntimeLive = (
   const config =
     opts.configKv === undefined
       ? ConfigDeferred
-      : makeConfigKvLive(opts.configKv);
+      : makeConfigKvLive(opts.configKv, opts.configOverrides);
   // `Browser` is live when Browser Rendering is configured; absent, the dying
   // stub keeps a browser run from silently mis-behaving.
   const browser =

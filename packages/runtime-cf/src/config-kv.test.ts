@@ -95,4 +95,41 @@ describe("ConfigKvLive", () => {
     );
     expect(Option.isNone(value)).toBe(true);
   });
+
+  describe("per-execution overrides (self-heal token injection, §6.3)", () => {
+    const runWith = <A>(
+      overrides: Record<string, string>,
+      effect: Effect.Effect<A, never, Config>,
+    ): Promise<A> =>
+      Effect.runPromise(
+        effect.pipe(Effect.provide(makeConfigKvLive(bindings.kv, overrides))),
+      );
+
+    it("an override value wins over KV (KV not consulted)", async () => {
+      await bindings.kv.put("self-heal.agent-token", "kv-stale-token");
+      const value = await runWith(
+        { "self-heal.agent-token": "per-exec-token" },
+        Effect.flatMap(Config, (c) => c.get("self-heal.agent-token")),
+      );
+      expect(value).toBe("per-exec-token");
+    });
+
+    it("a non-override key still falls through to KV", async () => {
+      await bindings.kv.put("ci-triage.repos", "owner/name");
+      const value = await runWith(
+        { "self-heal.proxy-url": "https://x/v1/agent/e/inference" },
+        Effect.flatMap(Config, (c) => c.get("ci-triage.repos")),
+      );
+      expect(value).toBe("owner/name");
+    });
+
+    it("an override even shadows a KV read error (no KV call)", async () => {
+      const value = await Effect.runPromise(
+        Effect.flatMap(Config, (c) => c.get("self-heal.proxy-url")).pipe(
+          Effect.provide(makeConfigKvLive(brokenKv, { "self-heal.proxy-url": "ok" })),
+        ),
+      );
+      expect(value).toBe("ok");
+    });
+  });
 });

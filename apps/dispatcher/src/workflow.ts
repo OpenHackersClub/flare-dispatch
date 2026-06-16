@@ -83,6 +83,7 @@ import { appendFailureSummary, failureSummaryMd } from "./failure-summary";
 import { renderResultEmail } from "./notify";
 import { workflowDashboardUrl } from "./dashboard-url";
 import { buildLogsUrl, resolveLogLinkSecret, signLogToken } from "./log-token";
+import { resolveAgentProxySecret, signAgentToken } from "./agent-token";
 import type { Env } from "./env";
 
 /** The repo/ref/sha context a dispatch carries — `04-gha-integration § body`. */
@@ -328,6 +329,46 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
             await signLogToken(logSecret, payload.executionId),
           )
         : undefined;
+
+    // Self-heal agent-tier setup (specs/08-self-healing.md § 6.3): for a
+    // `sandboxImage: "agent"` run, mint the per-execution model-proxy capability
+    // token, ARM the AgentBudget DO, and inject the proxy URL + token into the
+    // run's config. The run reads them via `config.get` but never holds the
+    // signing key — that stays Worker-only. Both steps are replay-safe: the token
+    // is a deterministic HMAC of the execution id, and `AgentBudget.init` ignores
+    // a refill once spending has begun.
+    let configOverrides: Record<string, string> | undefined;
+    if (
+      run.sandboxImage === "agent" &&
+      this.env.AGENT_BUDGET !== undefined &&
+      publicOrigin !== undefined
+    ) {
+      const proxySecret = resolveAgentProxySecret(this.env);
+      if (proxySecret !== undefined) {
+        const token = await signAgentToken(proxySecret, payload.executionId);
+        const origin = publicOrigin.replace(/\/$/, "");
+        const proxyUrl = `${origin}/v1/agent/${encodeURIComponent(payload.executionId)}/inference`;
+        const tokenBudget = Number.parseInt(
+          (await this.env.CONFIG_KV?.get("self-heal.token-budget")) ?? "",
+          10,
+        );
+        const maxRequests = Number.parseInt(
+          (await this.env.CONFIG_KV?.get("self-heal.max-iterations")) ?? "",
+          10,
+        );
+        await this.env.AGENT_BUDGET.get(
+          this.env.AGENT_BUDGET.idFromName(payload.executionId),
+        ).init({
+          ...(Number.isFinite(tokenBudget) ? { tokenBudget } : {}),
+          ...(Number.isFinite(maxRequests) ? { maxRequests } : {}),
+        });
+        configOverrides = {
+          "self-heal.proxy-url": proxyUrl,
+          "self-heal.agent-token": token,
+        };
+      }
+    }
+
     const runtime = makeCFRuntimeLive({
       db,
       bucket: this.env.RUNS_STORAGE,
@@ -351,6 +392,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         ? { cloudflare: resolveCloudflareConfig(this.env) }
         : {}),
       configKv: this.env.CONFIG_KV,
+      ...(configOverrides !== undefined ? { configOverrides } : {}),
       browser: resolveBrowserConfig(this.env),
       email: resolveEmailConfig(this.env),
       // Workers AI binding backs the `modelGateway` capability (the `pr-review`
@@ -901,6 +943,20 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       }
     });
 
-    await Effect.runPromise(program.pipe(Effect.provide(runtime)));
+    try {
+      await Effect.runPromise(program.pipe(Effect.provide(runtime)));
+    } finally {
+      // Self-heal: mark the AgentBudget no longer live once the run ends, so the
+      // (deterministic, non-expiring) capability token can't drain the remaining
+      // budget after the execution finishes. Best-effort — the hard token cap
+      // already bounds spend; this revokes the post-run tail. specs/08 § 6.3.
+      if (configOverrides !== undefined && this.env.AGENT_BUDGET !== undefined) {
+        await this.env.AGENT_BUDGET.get(
+          this.env.AGENT_BUDGET.idFromName(payload.executionId),
+        )
+          .kill()
+          .catch(() => {});
+      }
+    }
   }
 }
