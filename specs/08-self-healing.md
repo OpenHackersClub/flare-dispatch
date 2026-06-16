@@ -32,17 +32,31 @@ It covers **two error classes** through one pipeline:
 
 These are load-bearing. The design is mostly a consequence of them.
 
-1. **Don't replace the observability stack.** flare-dispatch is **not** an APM and
-   stores no metrics, traces, or logs from the running product. If the consumer
-   runs SigNoz / Datadog / HyperDX, that stays the source of truth. flare-dispatch
-   only *emits* its own OTel ([01-architecture § Observability](01-architecture.md#observability))
-   and *ingests bounded findings* through the vendor-blind `signals/v1` waist.
-   Synthesis happens on a small, capped pack at fix time — never by becoming a
-   store. See [§ 3](#3-three-layer-telemetry-model).
-2. **Vendor-blind dispatcher.** The Dispatcher never queries a vendor and holds
-   none of their credentials — the same posture #121/#123 commit to. New vendors
-   are onboarded by a consumer-side collector or a CONFIG_KV webhook mapping, zero
-   dispatcher code.
+1. **Don't *duplicate* the observability stack — but do own your own outcomes.**
+   flare-dispatch never becomes a second copy of the running product's raw
+   telemetry (errors/traces/logs): that copy is stale the moment it's written,
+   drifts from the vendor that *is* the source of truth, and saddles a stateless
+   router with the consumer's production PII + retention liability. The cost of a
+   telemetry store was never the bytes — it is data gravity, drift, and staleness
+   ([§ 3.1](#31-why-not-just-store-everything)). So: full context reaches the agent
+   by a *fresh on-demand pull from the vendor* ([§ 6.4](#64-on-demand-context-pull--full-context-without-a-store)),
+   not from a local copy; a *thin ephemeral per-incident cache* holds the assembled
+   pack for the run's lifetime; and the **one** durable store flare-dispatch keeps
+   is its **own** incident→fix→outcome history ([§ 9.1](#91-incident-memory--the-one-store-worth-keeping)) —
+   low-liability operational data, the same class as the executions table, and the
+   substrate for learning across incidents. It still *emits* its own OTel
+   ([01-architecture § Observability](01-architecture.md#observability)).
+2. **Vendor-blind *dispatcher* — vendor-aware at the edge.** The Dispatcher never
+   queries a vendor and holds none of their credentials (same posture as
+   #121/#123); this keeps its secret set tiny and its surface auditable. But
+   vendor-blindness is a property of the *dispatcher*, not the *system*: the
+   credentialed, vendor-aware work lives at the edge — consumer-side collectors,
+   the in-sandbox context-pull adapter, and an opaque vendor-native `dedupKey`
+   passed *through* the waist so the dispatcher dedups on the vendor's own grouping
+   without understanding it ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)).
+   Accepted cost: onboarding a vendor is consumer work, and loop-closing writeback
+   *to* the vendor (ack/resolve/link) is a consumer-side adapter, out of dispatcher
+   scope ([§ 12](#12-relationship-to-the-open-pr-stack)).
 3. **Credential-free agent.** The coding agent is untrusted code, like any run.
    It never holds the GitHub App key, the HMAC secret, or a long-lived model key
    ([07-trust-model § container escape](07-trust-model.md)). It receives a context
@@ -61,9 +75,12 @@ These are load-bearing. The design is mostly a consequence of them.
    self-heal is admission-gated, iteration-capped, token-budgeted, fingerprint-
    deduped, and cooldown-throttled. See [§ 9](#9-cost--safety-governance).
 
-**Non-goals (V0–V2):** continuous auto-merge; flare-dispatch as a metrics/trace
-store; querying vendor APIs from the Dispatcher; fixing across repos in one PR;
-fixing infra/IaC outside the repo; "agent has production access."
+**Non-goals (V0–V2):** continuous auto-merge; flare-dispatch as a durable store of
+the *product's* raw telemetry (a shadow Sentry/Datadog); querying vendor APIs from
+the **Dispatcher** (the agent pulling vendor data at the edge with the consumer's
+own credentials is in scope — [§ 6.4](#64-on-demand-context-pull--full-context-without-a-store));
+fixing across repos in one PR; fixing infra/IaC outside the repo; "agent has
+production access."
 
 ---
 
@@ -189,6 +206,28 @@ There is no fourth layer. flare-dispatch never polls Datadog, never holds a
 SigNoz API key, never ingests a raw trace stream. The synthesis step reads the
 consumer's *already-narrowed* signals and flare-dispatch's *own* D1/R2 — both
 already in hand — and never reaches back into the vendor.
+
+### 3.1 Why not just store everything?
+
+The obvious objection: *a coding agent fixes better with full context — so add a
+cheap context store and give it everything.* The answer is to separate two stores
+that "context store" conflates, because storage bytes were never the cost:
+
+| | Store the **product's raw telemetry** (errors/traces/logs) | Store flare-dispatch's **own incident→fix→outcome** |
+|---|---|---|
+| Whose data | the consumer's production / users — **PII** | flare-dispatch's operational record |
+| Real cost | data gravity, retention/residency liability, a breach target holding production data | low — same class as the executions table |
+| Freshness | **stale at ingest**; the agent wants *current* state, so you'd re-poll the vendor → violates [principle 2](#1-principles--non-goals) | n/a — it's historical by nature |
+| Vs. the vendor | a worse, drifting **second source of truth** | the vendor never had it |
+| Verdict | **don't** — [§ 6.4](#64-on-demand-context-pull--full-context-without-a-store) pulls it fresh instead | **do** — [§ 9.1](#91-incident-memory--the-one-store-worth-keeping) |
+
+So the real choice is not *snapshot vs. full context* — it is *where full context
+lives and who fetches it fresh*. Full context read **fresh from the vendor on
+demand** dominates a **stale local copy** on every axis but offline availability,
+without the liability. The only durable telemetry flare-dispatch keeps is its own
+outcomes. (One honest exception: a consumer running **no APM** has no vendor to
+pull from — for them, opt-in retention of ingested `signals/v1` as their error
+history is offered, with retention controls; off by default.)
 
 ---
 
@@ -404,6 +443,40 @@ Worker, and every call lands in flare-dispatch's own OTel — so agent spend is
 observable and hard-capped. This mirrors the [`/v1/browser/cdp` bridge](01-architecture.md#browser-rendering)
 brokering container→Browser Rendering.
 
+### 6.4 On-demand context pull — full context without a store
+
+The `incident/v1` pack is a bounded *trigger* snapshot (50 × ~2 KB), sized for
+"name the failure," not "hold an entire stack trace + the surrounding events." A
+good fix often needs more, and *current* state: "is this error still firing?",
+"the 3 spans around it", "what else shipped in that deploy?". flare-dispatch
+answers this **without storing telemetry and without the Dispatcher querying a
+vendor** — by letting the **agent** pull, on demand, from the consumer's stack:
+
+- The consumer supplies a **read-only context-pull adapter** (a CLI/MCP tool baked
+  into the agent image, or shipped with the run) — the same "consumer-side adapter,
+  dispatcher stays blind" shape as the #121 collectors, but *pull-during-fix*
+  instead of *pull-at-dispatch*.
+- It runs **in the sandbox**, authenticated with the **consumer's own** vendor
+  credentials, injected via `loadSecrets` ([07-trust-model § secret injection](07-trust-model.md)).
+  The agent is already untrusted code holding a clone; a read-only vendor token it
+  was *given* changes nothing about the dispatcher's posture.
+- The agent calls it like any tool: `context-pull traces --error <id> --window 1h`.
+  Output folds into the agent's working context, capped like everything else.
+
+This keeps **both** principles whole — the Dispatcher stores nothing and queries
+no vendor — while removing the context-starvation that produces plausible-but-wrong
+fixes. The vendor stays the store; it is simply read *fresh*, at the edge, by the
+party that already holds the credentials.
+
+> **Security note (see [§ 10](#10-trust-model-delta)).** On-demand pull *amplifies*
+> the prompt-injection surface — more attacker-influenced telemetry enters the
+> agent. Mitigations: the adapter is **read-only** (no vendor mutation), pulled
+> context is treated as untrusted like the rest of the pack, and the agent's output
+> is still gated by sandbox-verify + the writeback allowlist. Code never ships on
+> the strength of context alone. Egress for the pull is to the vendor endpoint the
+> consumer configured — lock down with Zero Trust egress rules if the threat model
+> needs it.
+
 ---
 
 ## 7. The heal loop
@@ -515,12 +588,40 @@ for one root cause fold into the single open PR rather than spawning runs.
 | Cooldown | `self-heal` capped at 1 dispatch per incidentId per window (default 6 h) | mirrors the [pr-review run cooldown](https://github.com/OpenHackersClub/flare-dispatch/commit/cfa55b1) (1/PR/30 min) |
 | Spend visibility | model spend flows through the Worker proxy → flare-dispatch OTel + [06-cost](06-cost.md) accounting | [§ 6.3](#63-model-access-the-key-decision) |
 
-**Incident fingerprint** = stable identity of *the failure*, not the alert
-delivery: for CI, `(repo, failing-check-name, normalized-error-signature)`; for
-application, `(source, signal.title-normalized, suspect-file)`. Repeated alerts
-for the same root cause collapse onto one PR; genuinely distinct failures get
-distinct PRs. This is the dedup spine that stops an alert storm becoming a PR
-storm.
+### 9.1 Incident-memory — the one store worth keeping
+
+The single durable store self-heal adds is its **own** outcome history (D1, the
+same class as the [executions table](01-architecture.md#data-model) — *not* the
+product's telemetry, see [§ 3.1](#31-why-not-just-store-everything)): one row per
+incident — `incidentId`, fingerprint, class, the agent's diff summary, the
+verification result, the PR number, and **what happened to it** (merged / closed /
+reverted). Low-liability, cheap, and it earns its keep three ways:
+
+1. **Priors for the fix.** On a recurring `incidentId`, the pack carries "you fixed
+   this class before; that PR {merged & held | was reverted}" — the agent starts
+   from the last known-good (or known-bad) attempt instead of cold. This is the
+   step past one-shot autofix.
+2. **Dedup against *resolved* history**, not just open PRs — a fixed-then-recurring
+   incident is flagged as a regression, not a fresh bug.
+3. **Cost/quality telemetry** — verified-rate, merge-rate, revert-rate per
+   fingerprint feed [06-cost](06-cost.md) and tell the operator where self-heal is
+   actually earning its spend vs. generating noise.
+
+### 9.2 Incident fingerprint & vendor-native dedup
+
+**Fingerprint** = stable identity of *the failure*, not the alert delivery: for CI,
+`(repo, failing-check-name, normalized-error-signature)`; for application,
+`(source, signal.title-normalized, suspect-file)`. Repeated alerts for the same
+root cause collapse onto one PR; distinct failures get distinct PRs.
+
+The generic fingerprint is *weaker* than the grouping a vendor already computed
+(Sentry issue id, Datadog aggregation key). So `signals/v1` carries an **optional
+opaque `dedupKey`** the consumer's adapter fills with the vendor's native group id.
+When present it *is* the fingerprint — the Dispatcher dedups on the vendor's own
+grouping **without understanding it** (vendor-aware at the edge, blind at the
+core, [principle 2](#1-principles--non-goals)); when absent, the generic
+fingerprint is the fallback. This is the dedup spine that stops an alert storm
+becoming a PR storm, at the vendor's own grouping quality.
 
 ---
 
@@ -675,8 +776,8 @@ Land the ingestion stack first. Self-heal has no value until signals flow.
 | Phase | Scope | New surface |
 |---|---|---|
 | **V0 — CI-class, verified, action-mode** | Self-heal only the strong-repro CI class. Synthesis = first-party only (no signal correlation). Agent tier image. Model via proxy (A). Verify = re-run failing command. Draft PR, verified-only. | `incident/v1` contract; agent-tier Dockerfile target; `flare-agent` adapter; `/v1/agent/:exec/inference` proxy; `self-heal-pr` run + writeback. |
-| **V1 — application-class + correlation** | Add signal→execution time correlation, stack-frame→file mapping, derived-repro (agent writes a failing test first). Webhook auto-escalation. Triage escalation. | Synthesis correlation; `auto-escalate` branch; unverified-label path. |
-| **V2 — governance & breadth** | Token-budget accounting into [06-cost](06-cost.md); multi-candidate (N agents, pick the one whose fix verifies — the judge-panel pattern); cooldown/fingerprint tuning; optional consumer-owned auto-merge policy gate. | cost accounting; candidate fan-out via [fan-out model](01-architecture.md#fan-out-model). |
+| **V1 — application-class + correlation + edge pull** | Add signal→execution time correlation, stack-frame→file mapping, derived-repro (agent writes a failing test first). On-demand context-pull adapter ([§ 6.4](#64-on-demand-context-pull--full-context-without-a-store)). Vendor-native `dedupKey` passthrough ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)). Webhook auto-escalation. Triage escalation. | Synthesis correlation; context-pull adapter contract; `dedupKey` (additive `signals/v1`); `auto-escalate` branch; unverified-label path. |
+| **V2 — memory, governance & breadth** | Incident-memory store + fix priors ([§ 9.1](#91-incident-memory--the-one-store-worth-keeping)). Token-budget accounting into [06-cost](06-cost.md); multi-candidate (N agents, pick the one whose fix verifies — the judge-panel pattern); cooldown/fingerprint tuning; optional consumer-owned auto-merge policy gate; opt-in signal retention for APM-less consumers. | incident-memory D1 table; cost accounting; candidate fan-out via [fan-out model](01-architecture.md#fan-out-model). |
 
 ### Open questions
 
