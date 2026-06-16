@@ -101,6 +101,77 @@ input and the `completeStructured` engine; they differ in output (write-up vs.
 diff) and cost profile. Triage may *escalate* a high-confidence, single-cluster
 incident into a self-heal dispatch (opt-in, [§ 11](#11-the-self-heal-pr-run)).
 
+### Component placement
+
+The same tier map as [01-architecture § Components](01-architecture.md#components).
+Self-heal adds **four** components (bold-bordered below); everything else is Live
+and reused unchanged.
+
+```mermaid
+flowchart TB
+  subgraph GH[GitHub]
+    APP[App webhook<br/>installation]
+    CHK[Check Runs API<br/>+ Git Data API]
+  end
+  subgraph VND["Consumer's observability (vendor-blind — never queried)"]
+    DD[Datadog]:::ext
+    SZ[SigNoz]:::ext
+    HX[HyperDX]:::ext
+  end
+
+  subgraph CF[Cloudflare account — self-hosted Dispatcher]
+    subgraph CP[Control plane]
+      DSP[Dispatcher Worker<br/>auth · route · dedup]
+      SIGRT[/v1/webhooks/signals/:source/]
+      MPROXY[["/v1/agent/:exec/inference<br/>model-proxy · cap-token"]]:::new
+      WF[Workflow · self-heal-pr<br/>durable instance]
+      ADM[Admission semaphore<br/>+ container lease]
+      INST[instantiate.ts<br/>dedup → create]
+    end
+    subgraph WK["Worker-side fix stages (sole credential holder)"]
+      SYN[[Synthesis step<br/>D1+R2 join → incident/v1]]:::new
+      WBG[Writeback gate<br/>validate manifest → open PR]
+    end
+    subgraph DP[Data plane]
+      SBA[["Sandbox · agent tier<br/>RUNS_SANDBOX_AGENT"]]:::new
+      AG[["flare-agent (agent/v1)<br/>edits clone · no secrets"]]:::new
+      MG[modelGateway<br/>binding = auth]
+    end
+    subgraph ST[Storage]
+      D1[(D1 — executions, steps)]
+      R2[(R2 — incident pack,<br/>writeback diff, logs)]
+      KV[(KV — config, dedup/<br/>cooldown, idempotency)]
+    end
+  end
+  subgraph MODELS["Model backends (resolveBackend)"]
+    WAI[Workers AI]:::ext
+    AIGW[AI Gateway → Claude]:::ext
+    BR[Bedrock · OIDC/STS]:::ext
+  end
+
+  DD & SZ & HX -->|alert webhook| SIGRT
+  DD & SZ & HX -.->|consumer collectors → collect-command| DSP
+  APP -->|App-signed webhook| DSP
+  SIGRT --> INST --> WF
+  DSP --> WF
+  WF --> ADM --> SYN
+  SYN --> D1 & R2
+  WF --> SBA --> AG
+  AG -->|cap-token| MPROXY --> MG
+  MG --> WAI & AIGW & BR
+  WF --> WBG
+  WBG -->|installation token| CHK
+  WF --> R2 & D1 & KV
+
+  classDef new stroke:#d63,stroke-width:3px;
+  classDef ext fill:#f6f6f6,stroke:#999,color:#333;
+```
+
+**Reading the credential boundary:** the agent (`AG`) holds no secrets — it
+reaches a model only through `MPROXY` with an execution-scoped token, and its diff
+becomes a PR only through `WBG`, which alone holds the GitHub App credential.
+Nothing crosses from the data plane to GitHub directly.
+
 ---
 
 ## 3. Three-layer telemetry model
@@ -197,6 +268,41 @@ nothing else.
 Synthesis is a pure-ish Worker/Workflow step (D1 + R2 reads, no model, no
 container) so it is cheap, deterministic, and testable.
 
+### Synthesis sequence — the first-party correlation join
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant WF as Workflow step "synthesize"
+  participant SIG as Inbound signal / CI failure
+  participant D1 as D1 (executions, steps)
+  participant R2 as R2 (logs, writeback diffs)
+  participant PK as incident/v1 pack
+
+  WF->>SIG: read class + firstSeen + (stack frame | failing check)
+  alt application class
+    WF->>D1: SELECT executions on repo WHERE end_ts < firstSeen ORDER BY end_ts DESC
+    D1-->>WF: candidate deploys (last green→suspect transition)
+    WF->>R2: fetch writeback/diff + changed files of suspect execution
+    R2-->>WF: changed files → suspectFiles, suspectRef range
+    WF->>WF: map stack frame → file:line · repro.kind = "derived"
+    Note over WF: correlation confidence = time-proximity × changed-file overlap
+  else CI class
+    WF->>D1: load the failing execution's steps
+    D1-->>WF: failing ExecResult.command + step pointer
+    WF->>R2: read bounded log tail for that step
+    R2-->>WF: stderr/stdout tail → ciFailures[]
+    WF->>WF: repro.kind = "command" (the exact failing command)
+  end
+  WF->>WF: cap (one entry / cluster, byte caps) → Schema-validate incident/v1
+  WF->>PK: write artifacts/<exec>/incident/pack.json
+```
+
+The join in step 2 is the whole point: it reaches only into flare-dispatch's
+**own** D1/R2, never back into the vendor. Low correlation confidence marks
+`suspectRef` advisory so the agent doesn't over-trust a wrong SHA
+([§ 13 open question 3](#13-phased-rollout)).
+
 ---
 
 ## 6. The coding agent
@@ -261,6 +367,43 @@ resolution (`resolveBackend`, the `self-heal.*` CONFIG_KV namespace) so Claude v
 AI Gateway, a Workers AI model, or Bedrock are all selectable without touching the
 agent.
 
+### Model-proxy sequence — credential-free in-container inference
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant AG as Agent (in Sandbox container)
+  participant WF as Workflow
+  participant MP as Dispatcher /v1/agent/:exec/inference
+  participant TB as Token budget (KV, per-execution)
+  participant MG as modelGateway
+  participant UP as Upstream (Workers AI / AI Gateway · Claude / Bedrock)
+
+  WF->>AG: exec agent, env FLARE_MODEL_PROXY + capability token (exec-scoped)
+  loop until outcome OR iteration/budget cap
+    AG->>MP: POST messages + Authorization: cap-token
+    MP->>MP: constant-time verify token, check exec is live
+    MP->>TB: remaining budget?
+    alt budget exhausted
+      TB-->>MP: 0
+      MP-->>AG: 429 budget-exhausted (agent halts, writes no-fix/needs-human)
+    else budget available
+      MP->>MG: complete(resolveBackend(self-heal.*))  %% binding is the auth
+      MG->>UP: provider call (no key leaves the Worker)
+      UP-->>MG: completion + token usage
+      MG-->>MP: completion
+      MP->>TB: decrement by tokens used
+      MP-->>AG: completion
+    end
+  end
+  AG-->>WF: agent-result.json + working-tree diff
+```
+
+The token never leaves the execution's lifetime, the model key never leaves the
+Worker, and every call lands in flare-dispatch's own OTel — so agent spend is
+observable and hard-capped. This mirrors the [`/v1/browser/cdp` bridge](01-architecture.md#browser-rendering)
+brokering container→Browser Rendering.
+
 ---
 
 ## 7. The heal loop
@@ -295,7 +438,7 @@ sequenceDiagram
   else verification red or outcome=no-fix
     WF->>GH: open DRAFT PR labelled "unverified" (evidence attached) OR skip
   end
-  WF->>WF: record incidentId → open-PR map (dedup); finalize check-run
+  WF->>WF: record incidentId → open-PR map (dedup) · finalize check-run
 ```
 
 Every box is an existing primitive except synthesis (a new Worker step), the
@@ -324,6 +467,40 @@ flips the run red).
   the agent's change before a human looks.
 - **Escalation, not silent action.** When triage escalates an incident, it does
   so as a labelled draft PR a human can close — never a merge.
+
+### Incident lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> Received: dispatch (signal / escalation / red run)
+  Received --> Deduped: incidentId already has an open PR
+  Received --> Cooldown: within cooldown window
+  Received --> Admitted: fresh + slot free
+  Deduped --> [*]: UPDATE existing PR, no new agent run
+  Cooldown --> [*]: skip (throttled)
+  Admitted --> Synthesized: build incident/v1 pack
+  Synthesized --> AgentRunning: clone + run agent (bounded loop)
+  AgentRunning --> NoFix: outcome = no-fix / needs-human
+  AgentRunning --> Patched: outcome = patched (working-tree diff)
+  Patched --> Verifying: re-run repro / failing command
+  Verifying --> VerifiedDraft: repro now green ✅
+  Verifying --> UnverifiedDraft: repro still red ⚠️
+  NoFix --> UnverifiedDraft: open evidence-only draft (or skip)
+  VerifiedDraft --> PrReview: pr-review + required CI on the branch
+  UnverifiedDraft --> PrReview
+  PrReview --> Merged: human merges (never auto)
+  PrReview --> Closed: human closes
+  Merged --> [*]
+  Closed --> [*]
+
+  note right of VerifiedDraft
+    Only VerifiedDraft is eligible for a
+    consumer-owned auto-merge policy (V2).
+  end note
+```
+
+The `Deduped` / `Cooldown` edges are the alert-storm dampers — repeated alerts
+for one root cause fold into the single open PR rather than spawning runs.
 
 ---
 
@@ -428,6 +605,36 @@ export const selfHealPr = defineRun({
   the repo/sha. The CI class with the strongest repro.
 - **Schedule mode** — a daily sweep that self-heals the single worst incident
   (cost-bounded: one per tick).
+
+The webhook path is the most automatic; here is its decision exactly — it reuses
+the #122 ingress and the extracted `instantiate.ts`, branching only on the
+`auto-escalate` flag:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant V as Vendor (Datadog/SigNoz/Grafana/…)
+  participant RT as POST /v1/webhooks/signals/:source
+  participant CFG as CONFIG_KV
+  participant INST as instantiate.ts (dedup → create)
+  participant TRI as ci-triage-pr (daily PR)
+  participant HEAL as self-heal-pr
+
+  V->>RT: alert webhook + Bearer token
+  RT->>RT: verify token (const-time) → map payload to signals/v1 → cap + Schema
+  RT->>CFG: read self-heal.auto-escalate.<source>
+  alt escalate AND high-severity single alert
+    RT->>INST: instantiate self-heal-pr (incidentId fingerprint)
+    INST-->>HEAL: new execution (or UPDATE existing — dedup)
+  else default
+    RT->>INST: instantiate/fold ci-triage-pr (date-keyed)
+    INST-->>TRI: same-day PR updated with the new signal
+  end
+  RT-->>V: 202 accepted
+```
+
+Onboarding a vendor stays zero-code: a CONFIG_KV mapping + the `auto-escalate`
+flag + a webhook URL. The dispatcher never learns the vendor's API.
 
 ### CONFIG_KV keys (operator sets out of band)
 
