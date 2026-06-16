@@ -49,8 +49,9 @@ RUN git init . \
  && git checkout FETCH_HEAD
 RUN pnpm install --frozen-lockfile --filter @flare-dispatch/demo-agent... --filter @flare-dispatch/flare-agent...
 RUN pnpm --filter @flare-dispatch/demo-agent build
-# flare-agent — the self-heal coding agent CLI, baked only into the agent tier
-# (WITH_AGENT). Built here unconditionally (tiny); COPY'd gated below.
+# flare-agent — the self-heal coding agent CLI. The 7 KB binary is present in
+# ALL tiers (the COPY below is unconditional); only the agent tier (WITH_AGENT)
+# actually invokes it via `sandboxImage: "agent"`. Built here unconditionally.
 RUN pnpm --filter @flare-dispatch/flare-agent build
 
 # ── Stage 2 — the runtime sandbox image ──────────────────────────────────────
