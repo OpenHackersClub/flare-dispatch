@@ -185,5 +185,25 @@ export {
   type SignalT,
 } from "./signals";
 
+// --- Incident (the fix-side `incident/v1` context-pack contract) --------------
+export {
+  INCIDENT_CONTRACT_VERSION,
+  MAX_INCIDENT_CI_FAILURES,
+  MAX_INCIDENT_SUSPECT_FILES,
+  MAX_INCIDENT_LOGTAIL_CHARS,
+  MAX_INCIDENT_TEXT_CHARS,
+  MAX_INCIDENT_SHORT_CHARS,
+  MAX_INCIDENT_PATH_CHARS,
+  MAX_INCIDENT_URL_CHARS,
+  IncidentClass,
+  Diagnosis,
+  CiFailure,
+  SuspectRef,
+  Repro,
+  Incident,
+  type IncidentClassT,
+  type IncidentT,
+} from "./incident";
+
 // --- Errors ------------------------------------------------------------------
 export * from "./errors";
