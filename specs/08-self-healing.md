@@ -289,13 +289,23 @@ nothing else.
 ### How synthesis builds it — no new vendor read
 
 1. **First-party correlation (the new, non-obvious value).** Given a signal with
-   a timestamp, join it against D1 **executions** to find the deploy/run that most
-   plausibly introduced it (the last green→suspect transition before the signal's
-   first occurrence), and pull that execution's **writeback/diff** and changed
-   files from R2. A bare "TypeError ×12" becomes "TypeError ×12, first seen 20 min
-   after execution `X` shipped a change to `src/handler.ts`." This correlation uses
-   data flare-dispatch **already owns** — it adds no vendor capability and no new
-   secret.
+   a timestamp, join it against D1 **executions** (`… WHERE repo = ? AND completed_at
+   < firstSeen ORDER BY completed_at DESC`) to find the deploy/run that most plausibly
+   introduced it (the last green→suspect transition before the signal's first
+   occurrence), and pull that execution's **writeback/diff** and changed files from
+   R2. A bare "TypeError ×12" becomes "TypeError ×12, first seen 20 min after
+   execution `X` shipped a change to `src/handler.ts`." This uses data flare-dispatch
+   **already owns** — no vendor capability, no new secret.
+
+   > **Scope (V1 honesty).** D1 holds only flare-dispatch's *own* execution rows
+   > ([05-byoc § D1 schema](05-byoc.md#d1-schema), columns `started_at`/`completed_at`).
+   > The correlation therefore only fires when **flare-dispatch dispatched the deploy**.
+   > A consumer who ships via their own GitHub Actions / Pages has *no* execution row
+   > to join — for them this step degrades to a `cloudflare.deployments` read-capability
+   > query (recent deploys), not the rich diff join, and `suspectRef` stays advisory.
+   > The query also needs a `(repo, completed_at)` index — the only existing index is
+   > `(repo, sha)`, so an unindexed `ORDER BY completed_at` is a scan. Add the index
+   > (migration) before claiming the join is cheap.
 2. **Repro derivation.** CI class → the failing `ExecResult.command` *is* the
    repro. Application class → map the stack frame to `file:line` and mark
    `repro.kind = "derived"` so the agent knows to write a failing test first.
@@ -320,7 +330,8 @@ sequenceDiagram
 
   WF->>SIG: read class + firstSeen + (stack frame | failing check)
   alt application class
-    WF->>D1: SELECT executions on repo WHERE end_ts < firstSeen ORDER BY end_ts DESC
+    WF->>D1: SELECT executions WHERE repo=? AND completed_at < firstSeen ORDER BY completed_at DESC
+    Note over WF,D1: only flare-dispatch-dispatched deploys have a row — else fall back to cloudflare.deployments read
     D1-->>WF: candidate deploys (last green→suspect transition)
     WF->>R2: fetch writeback/diff + changed files of suspect execution
     R2-->>WF: changed files → suspectFiles, suspectRef range
@@ -395,16 +406,25 @@ capability. Three ways to give it a model; the spec **recommends (A)** and keeps
 
 | | Mechanism | Credential posture | Verdict |
 |---|---|---|---|
-| **(A) Worker model-proxy** ✅ | New dispatcher route `POST /v1/agent/:execution/inference`, called by the container with a **per-execution capability token** (same pattern as the [log-viewer capability token](01-architecture.md#components) and the [`/v1/browser/cdp` CDP bridge](01-architecture.md#browser-rendering)). The Worker proxies to `modelGateway`. | **No model key in the container.** Binding stays the auth. Token is execution-scoped, expires with the run, rate-limited per execution. | **Recommended.** Exact precedent: the CDP bridge already brokers container→managed-resource through the Worker. |
+| **(A) Worker model-proxy** ✅ | New dispatcher route `POST /v1/agent/:execution/inference`, called by the container with a **per-execution capability token** (the [log-viewer capability-token precedent](01-architecture.md#components) — a request/response gate, *not* the CDP bridge, which uses a static `BROWSER_CDP_API_TOKEN` over a persistent WebSocket). The Worker proxies to `modelGateway`. | **No model key in the container.** Binding stays the auth. Token is execution-scoped, expires with the run, rate-limited per execution. | **Recommended.** |
 | (B) Injected key | Operator puts a model key in CONFIG_KV; run `loadSecrets`-injects it into the container env. | A long-lived key sits in the container env for the run. Violates principle 3. | MVP-only escape hatch; discourage. |
 | (C) OIDC → Bedrock | Container federates via the [self-issued OIDC](01-architecture.md#components) to AWS STS → Bedrock, exactly like the [`bedrock` backend](02-runs.md). | Short-lived STS creds, no long-lived key. | Good fallback when the consumer is already on Bedrock/BYOC. |
 
 (A) makes the agent's model spend observable (it flows through the Worker, so it
-lands in flare-dispatch's own OTel + the per-execution token's rate limit) and
-keeps the credential-free invariant whole. The proxy reuses the existing backend
-resolution (`resolveBackend`, the `self-heal.*` CONFIG_KV namespace) so Claude via
-AI Gateway, a Workers AI model, or Bedrock are all selectable without touching the
-agent.
+lands in flare-dispatch's own OTel + the per-execution budget) and keeps the
+credential-free invariant whole. The proxy reuses the existing backend resolution
+(`resolveBackend`, the `self-heal.*` CONFIG_KV namespace) so Claude via AI Gateway,
+a Workers AI model, or Bedrock are all selectable without touching the agent.
+
+**The budget + liveness must be a Durable Object, not KV.** The proxy decrements a
+running token budget and checks the execution is still live on *every* call. KV is
+eventually consistent (read-after-write is not guaranteed; [01-architecture § Storage](01-architecture.md#storage)
+scopes KV to config/idempotency/token-cache, never an atomic counter), so a
+`read → call → decrement` loop racing across isolates/colos under-counts and blows
+the hard cap. A per-execution **`AgentBudget` Durable Object** (single-writer,
+strongly consistent) holds the remaining budget, the liveness flag, and a simple
+rate limiter — the same role the admission/lease D1 state plays for containers. The
+capability token authenticates; the DO holds the state the stateless token can't.
 
 ### Model-proxy sequence — credential-free in-container inference
 
@@ -414,24 +434,25 @@ sequenceDiagram
   participant AG as Agent (in Sandbox container)
   participant WF as Workflow
   participant MP as Dispatcher /v1/agent/:exec/inference
-  participant TB as Token budget (KV, per-execution)
+  participant TB as AgentBudget DO (per-execution, strongly consistent)
   participant MG as modelGateway
   participant UP as Upstream (Workers AI / AI Gateway · Claude / Bedrock)
 
   WF->>AG: exec agent, env FLARE_MODEL_PROXY + capability token (exec-scoped)
   loop until outcome OR iteration/budget cap
     AG->>MP: POST messages + Authorization: cap-token
-    MP->>MP: constant-time verify token, check exec is live
-    MP->>TB: remaining budget?
-    alt budget exhausted
-      TB-->>MP: 0
+    MP->>MP: constant-time verify capability token
+    MP->>TB: reserve(estimatedTokens) — single-writer, checks live + remaining
+    alt exhausted or exec not live
+      TB-->>MP: deny
       MP-->>AG: 429 budget-exhausted (agent halts, writes no-fix/needs-human)
-    else budget available
+    else reserved
+      TB-->>MP: ok (budget held)
       MP->>MG: complete(resolveBackend(self-heal.*))  %% binding is the auth
       MG->>UP: provider call (no key leaves the Worker)
       UP-->>MG: completion + token usage
       MG-->>MP: completion
-      MP->>TB: decrement by tokens used
+      MP->>TB: settle(actualTokens) — reconcile the reservation
       MP-->>AG: completion
     end
   end
@@ -440,8 +461,10 @@ sequenceDiagram
 
 The token never leaves the execution's lifetime, the model key never leaves the
 Worker, and every call lands in flare-dispatch's own OTel — so agent spend is
-observable and hard-capped. This mirrors the [`/v1/browser/cdp` bridge](01-architecture.md#browser-rendering)
-brokering container→Browser Rendering.
+observable and hard-capped. The reserve-then-settle on the strongly-consistent
+`AgentBudget` DO is what makes the cap *hard* (a naive KV decrement would race).
+The capability-token gate mirrors the [log-viewer token](01-architecture.md#components),
+not the static-token CDP bridge.
 
 ### 6.4 On-demand context pull — full context without a store
 
@@ -492,45 +515,62 @@ sequenceDiagram
   participant R2 as R2
   participant GH as GitHub (writeback gate)
 
-  DSP->>WF: dispatch (signal / escalation / red-run), incidentId
-  WF->>WF: admit (semaphore) → lease container id → cooldown+dedup check
+  DSP->>WF: dispatch (signal / escalation / red-run)
+  WF->>WF: fingerprint(raw signal) → incidentId → dedup + cooldown + daily-cap check
+  Note over WF: dedup BEFORE admit — never burn an agent slot on a skip
+  WF->>WF: admit (semaphore) → lease container id
   WF->>SY: build incident/v1 pack (D1 + R2 join, no vendor)
   SY->>R2: write artifacts/<exec>/incident/pack.json
-  WF->>SB: acquire agent-tier container, git.clone(repo, suspectRef.head)
-  WF->>SB: exec agent ($INCIDENT_PACK, $FLARE_MODEL_PROXY)
-  loop bounded: maxIterations, token budget
+  WF->>SB: acquire agent-tier container, workspace(repo, suspectRef.head), installCached
+  WF->>SB: stage pack R2→file ($INCIDENT_PACK) · runDetached agent ($FLARE_MODEL_PROXY)
+  loop bounded: maxIterations, AgentBudget DO
     SB->>MP: POST /v1/agent/:exec/inference (capability token)
     MP-->>SB: completion (binding is the auth)
   end
-  SB-->>WF: agent-result.json + working-tree diff
+  WF->>SB: waitForExit → agent-result.json + working-tree diff
   WF->>SB: exec VERIFY (repro.command / test) on the patched tree
   alt verification green
     WF->>SB: stage-writeback (git status --porcelain → manifest + blobs)
     WF->>R2: upload writeback artifact
-    WF->>GH: writeback gate: validate manifest, open DRAFT PR (verified=true)
-  else verification red or outcome=no-fix
-    WF->>GH: open DRAFT PR labelled "unverified" (evidence attached) OR skip
+    WF->>GH: writeback gate: validate manifest, open DRAFT PR (verified)
+  else red or no-fix
+    WF->>WF: annotate check-run (silent by default) · open unverified PR only if opted in
   end
-  WF->>WF: record incidentId → open-PR map (dedup) · finalize check-run
+  WF->>WF: record incident→PR + outcome (incident-memory) · finalize check-run
 ```
 
-Every box is an existing primitive except synthesis (a new Worker step), the
-model-proxy (one new route), the agent-tier image (one Dockerfile target), and
-the verify step (a plain `sandbox.exec` of the repro command). The writeback half
-is **unchanged** — the agent's diff flows through the same validated gate
-`refresh-fixtures` uses: path-traversal/allowlist/byte/count caps, `.github/workflows`
-behind the opt-in, draft PR, best-effort (a writeback failure annotates, never
-flips the run red).
+Most boxes are existing primitives, but **two reuse claims need qualifying**:
+
+- **The verify→writeback path is *not* unchanged.** Today writeback fires only on
+  a *successful* run (`workflow.ts:775`, `status === "success"`), and `WritebackSpec`
+  fixes the PR `title`/`body`/`draft` at `defineRun` time with **no label/dynamic-body
+  field**. Self-heal needs writeback to (a) run on a *verified-but-the-run-concluded-how?*
+  basis and (b) carry the verify outcome into the PR body/label. So the gate must be
+  **extended**: decouple writeback from run conclusion (or always conclude `success`
+  and carry verified-ness in the writeback inputs), and add an optional dynamic
+  `body`/`labels` channel the run supplies post-verify. The *validation* half
+  (path/allowlist/byte/count caps, `.github/workflows` opt-in) is reused unchanged.
+- **The agent loop must use `runDetached` + `waitForExit`**, not a plain
+  `sandbox.exec`. A 10–20-min indivisible agent run that replays from scratch on
+  Worker eviction would re-spawn the agent and double-spend the budget
+  ([01-architecture § Long-running test handling](01-architecture.md#long-running-test-handling)).
+  Wall-clock itself is fine (the step is I/O-bound awaiting the container).
 
 ---
 
 ## 8. Confidence gate & human-in-the-loop
 
 - **Draft, always.** Writeback opens drafts; self-heal never overrides that.
-- **Verified vs. unverified.** Verification (re-run the repro/CI on the patched
-  tree) is the gate. `verified=true` → the PR body leads with "✅ reproduced the
-  failure, applied a fix, the repro is now green." `verified=false` → labelled
-  `self-heal:unverified`, evidence attached, explicitly "needs a human."
+- **A verified fix opens a PR; an unverified one is silent by default.**
+  Verification (re-run the repro/CI on the patched tree) is the gate. `verified=true`
+  → open the draft PR, body leading with "✅ reproduced the failure, applied a fix,
+  the repro is now green." `verified=false` / `no-fix` → **annotate the run and stop;
+  open no PR** unless the operator opts in (`self-heal.open-unverified`, default off).
+  Rationale: an evidence-only PR for a fix the agent *couldn't* verify is triage
+  burden, not signal — auto-opened review PRs already tend to see low engagement.
+  Sentry Seer and Copilot Autofix both refuse to
+  surface unverified fixes; this matches them by default and diverges only on
+  explicit opt-in.
 - **The fix re-enters CI.** Because the PR is an ordinary branch, the consumer's
   required check-runs (flare-dispatch itself, or their GHA) run against it. The
   loop's claim — "this makes the red green" — is checkable by the same CI that
@@ -583,10 +623,20 @@ for one root cause fold into the single open PR rather than spawning runs.
 |---|---|---|
 | Concurrency | per-pool admission semaphore (agent tier is its own pool) | [run-admission semaphore](01-architecture.md#run-admission-semaphore) (Live) |
 | No collision | per-container-id lease | [per-container-id lease](01-architecture.md#per-container-id-lease) (Live) |
-| Loop bound | `self-heal.max-iterations` (default 4) + `self-heal.token-budget` (hard cap; agent killed when reached) | model-proxy enforces per-execution |
-| Dedup | `incidentId = sha256(fingerprint)`; one open self-heal PR per incident — repeat alerts UPDATE it | mirrors [date-keyed ci-triage PR](../runs/ci-triage-pr.ts) + [webhook idempotency](04-gha-integration.md) |
+| Loop bound | `self-heal.max-iterations` (default 4) + `self-heal.token-budget` per heal (hard cap, [`AgentBudget` DO](#63-model-access-the-key-decision)) | model-proxy enforces per-execution |
+| Dedup | `incidentId = sha256(fingerprint)`; one open self-heal PR per incident — repeat alerts UPDATE it. Checked **before admission** ([§ 7](#7-the-heal-loop)) so a skip never burns an agent slot | mirrors [date-keyed ci-triage PR](../runs/ci-triage-pr.ts) + [webhook idempotency](04-gha-integration.md) |
 | Cooldown | `self-heal` capped at 1 dispatch per incidentId per window (default 6 h) | mirrors the [pr-review run cooldown](https://github.com/OpenHackersClub/flare-dispatch/commit/cfa55b1) (1/PR/30 min) |
+| **Global ceiling** | `self-heal.max-heals-per-day` (per repo + account) **and** a rolling token/$ budget kill-switch (an account-level `AgentBudget` DO) — fail-closed when exceeded | new — the per-incident throttles above do **not** bound a multi-fingerprint storm |
 | Spend visibility | model spend flows through the Worker proxy → flare-dispatch OTel + [06-cost](06-cost.md) accounting | [§ 6.3](#63-model-access-the-key-decision) |
+
+**Why the per-incident throttles are not enough.** Dedup and cooldown are both keyed
+to a single `incidentId`. A bad deploy emitting *N distinct* error signatures →
+*N fingerprints* → *N heals*, each spending a token budget plus a downstream
+`pr-review` fan-out. The semaphore *serializes* them but they all eventually run.
+A rough storm: ~20 distinct fingerprints → ~20 heals + ~20 pr-reviews ≈ **$40–300**
+in one window before anything per-incident fires. The **global ceiling** row is what
+actually closes that path — a hard daily heal cap and a rolling spend kill-switch
+that throttles *across* incidents. It is not optional.
 
 ### 9.1 Incident-memory — the one store worth keeping
 
@@ -623,6 +673,15 @@ core, [principle 2](#1-principles--non-goals)); when absent, the generic
 fingerprint is the fallback. This is the dedup spine that stops an alert storm
 becoming a PR storm, at the vendor's own grouping quality.
 
+The *application-class* fallback fingerprint is the weakest link, two ways at once:
+`title-normalized` collapses distinct bugs that share a generic message ("TypeError")
+into one PR, while a `suspect-file` from the heuristic stack-frame map (low
+correlation confidence, [§ 5](#5-synthesis-the-incidentv1-context-pack)) can split
+one root cause across files into many PRs. So **fold the correlation confidence into
+the key** and **gate auto-escalation on confidence ≥ threshold** — below it, an
+application alert folds into the daily triage PR rather than spinning a heal. The CI
+fingerprint `(repo, check, error-signature)` has no such problem and needs no gate.
+
 ---
 
 ## 10. Trust-model delta
@@ -632,11 +691,13 @@ code like any run. Two additions:
 
 - **The model-proxy is a new authenticated egress.** `POST /v1/agent/:execution/inference`
   is reachable only with a per-execution capability token (minted by the Workflow,
-  scoped to that execution, expiring with it, rate-limited). It brokers
-  container→model exactly as `/v1/browser/cdp` brokers container→Browser Rendering —
-  a container never gets a raw model credential, only a token that the Worker
-  trades for a binding-authenticated call. A leaked token buys, at most, that one
-  execution's remaining token budget.
+  scoped to that execution, expiring with it). Liveness + rate limit + the hard
+  token budget live in the strongly-consistent [`AgentBudget` DO](#63-model-access-the-key-decision),
+  not in the stateless token. It brokers container→model the way the
+  [log-viewer token](01-architecture.md#components) gates container→Worker — a
+  container never gets a raw model credential, only a token the Worker trades for a
+  binding-authenticated call. A leaked token buys, at most, that one execution's
+  remaining token budget.
 - **No new secret reaches the container.** The pack is data. The proxy token is
   not a model key. The agent's only outbound credential is execution-scoped. The
   GitHub App key remains Worker-only — the agent's diff becomes a PR exclusively
@@ -670,23 +731,36 @@ export const selfHealPr = defineRun({
   }),
   writeback: {
     branch: { prefix: "flare-dispatch/self-heal" },   // per-incident branch
+    commitMessage: "fix: self-heal …",                // required by WritebackSpec
     pr: { title: "fix: …", body: "…", draft: true },
     pathAllowlist: [/* operator-scoped; src/** etc. */],
     // allowWorkflows: false  — workflows stay gated
   },
   run: (input) => Effect.gen(function* () {
+    // Fingerprint + dedup/cooldown/daily-cap BEFORE admit (don't burn a slot on a
+    // skip). The Workflow's admission/lease wrap the body as for any run.
     const pack = yield* step("synthesize", () => buildIncidentPack(input));
-    if (pack === undefined) return /* dedup/cooldown skip */;
+    if (pack === undefined) return /* deduped / throttled — no agent run */;
+    // workspace() returns { container, dir } and runs installCached (sandbox.git.clone
+    // alone returns just dir) — same primitive refresh-fixtures uses. install: true
+    // avoids a cold `pnpm install` on the ephemeral FS each heal.
     const { container, dir } = yield* step("checkout", () =>
-      sandbox.git.clone({ repo: pack.repo, sha: pack.suspectRef.head }));
-    yield* step("agent", () => sandbox.exec({
+      workspace({ repo: pack.repo, sha: pack.suspectRef.head, install: true }));
+    // Stage the pack (a value the synthesis step holds) into a file the agent reads
+    // — data, never a secret. (Pick the concrete R2→container restore mechanism;
+    // the pack is ≤ the signals cap so an exec-write or artifact-restore both work.)
+    yield* step("stage-pack", () => stagePack({ container, path: PACK_PATH, pack }));
+    // runDetached + waitForExit: a 10–20-min agent loop must be eviction-safe, or a
+    // Worker eviction replays the step, re-spawns the agent, and double-spends budget.
+    const handle = yield* step("agent-start", () => sandbox.runDetached({
       container, cwd: dir,
       command: ["flare-agent", "heal", "--pack", PACK_PATH],
-      env: { INCIDENT_PACK: PACK_PATH, FLARE_MODEL_PROXY: proxyUrl },
-      timeoutSec: 1200,
+      env: { INCIDENT_PACK: PACK_PATH, FLARE_MODEL_PROXY: proxyUrl /* + cap token */ },
     }));
+    yield* step("agent-wait", () => sandbox.waitForExit({ handle }));
     const verify = yield* step("verify", () => sandbox.exec({
       container, cwd: dir, command: pack.repro.command, timeoutSec: 600 }));
+    if (verify.exitCode !== 0 && !openUnverified) return /* annotate run, no PR */;
     yield* step("stage-writeback", () => sandbox.exec({ /* porcelain → manifest */ }));
     // writeback gate (Worker) opens the draft PR with verified = verify.exitCode === 0
   }),
@@ -744,12 +818,22 @@ self-heal.repos              repos eligible for self-heal (allowlist; required)
 self-heal.backend            opencode | reasonix | anthropic | bedrock
 self-heal.<backend>.model    model id (+ .mode)               (resolveBackend)
 self-heal.max-iterations     agent loop cap                   (default 4)
-self-heal.token-budget       hard token cap per heal          (default 200k)
+self-heal.token-budget       hard token cap per heal          (default 200k; see note)
 self-heal.cooldown-hours     per-incident dispatch cooldown   (default 6)
+self-heal.max-heals-per-day  GLOBAL daily heal cap (repo+acct)(default 10)   ← storm guard
+self-heal.spend-ceiling      rolling token/$ kill-switch      (account-level; fail-closed)
+self-heal.open-unverified    open a PR when verify fails      (default off — silent)
+self-heal.escalate-min-confidence  app-class correlation gate (default 0.6)
 self-heal.path-allowlist     writeback path scope             (default src/**)
 self-heal.auto-escalate.<source>   webhook → self-heal       (default off)
 self-heal.prompt             agent system-prompt override     (optional)
 ```
+
+> **Token-budget note.** 200k is a *tension point*, not a safe default: real agentic
+> coding loops on a multi-file fix routinely exceed it (→ premature `no-fix`), yet
+> 200k is also the **dominant per-heal cost**. Tune it against the chosen backend
+> (cheaper on Workers AI/Sonnet, far costlier on Opus) and track the no-fix rate per
+> [§ 9.1](#91-incident-memory--the-one-store-worth-keeping) — it is the main quality⇄cost dial.
 
 ---
 
@@ -776,7 +860,7 @@ Land the ingestion stack first. Self-heal has no value until signals flow.
 | Phase | Scope | New surface |
 |---|---|---|
 | **V0 — CI-class, verified, action-mode** | Self-heal only the strong-repro CI class. Synthesis = first-party only (no signal correlation). Agent tier image. Model via proxy (A). Verify = re-run failing command. Draft PR, verified-only. | `incident/v1` contract; agent-tier Dockerfile target; `flare-agent` adapter; `/v1/agent/:exec/inference` proxy; `self-heal-pr` run + writeback. |
-| **V1 — application-class + correlation + edge pull** | Add signal→execution time correlation, stack-frame→file mapping, derived-repro (agent writes a failing test first). On-demand context-pull adapter ([§ 6.4](#64-on-demand-context-pull--full-context-without-a-store)). Vendor-native `dedupKey` passthrough ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)). Webhook auto-escalation. Triage escalation. | Synthesis correlation; context-pull adapter contract; `dedupKey` (additive `signals/v1`); `auto-escalate` branch; unverified-label path. |
+| **V1 — application-class (experimental) + correlation + edge pull** | Behind an experimental flag. Add signal→execution time correlation, stack-frame→file mapping, derived-repro (agent writes a failing test first). On-demand context-pull adapter ([§ 6.4](#64-on-demand-context-pull--full-context-without-a-store)). Vendor-native `dedupKey` passthrough ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)). Webhook auto-escalation. Triage escalation. | Synthesis correlation; context-pull adapter contract; `dedupKey` (additive `signals/v1`); `auto-escalate` branch; unverified-label path. |
 | **V2 — memory, governance & breadth** | Incident-memory store + fix priors ([§ 9.1](#91-incident-memory--the-one-store-worth-keeping)). Token-budget accounting into [06-cost](06-cost.md); multi-candidate (N agents, pick the one whose fix verifies — the judge-panel pattern); cooldown/fingerprint tuning; optional consumer-owned auto-merge policy gate; opt-in signal retention for APM-less consumers. | incident-memory D1 table; cost accounting; candidate fan-out via [fan-out model](01-architecture.md#fan-out-model). |
 
 ### Open questions
@@ -786,15 +870,19 @@ Land the ingestion stack first. Self-heal has no value until signals flow.
    swappable, but V0 needs one default. *Recommendation: a thin Effect CLI driving
    the model-proxy, so the loop/iteration/budget controls live in our code, not the
    agent's.*
-2. **Repro strength for application errors.** When `repro.kind = "derived"`, how
-   hard do we push the agent to write a failing test before fixing? A fix with no
-   regression test is weaker. *Recommendation: require an added test for the
-   `verified` label in the application class.*
+2. **Repro strength for application errors — V1 is experimental, label it so.**
+   When `repro.kind = "derived"` the agent writes a failing test, then fixes — and
+   autonomous agents frequently produce plausible-but-wrong diffs or **vacuously-
+   passing tests**, so "require an added test for the `verified` label" does *not*
+   by itself stop a tautological test that asserts nothing. V0's CI class (a real,
+   pre-existing failing command) is the only *credible* auto path; **V1 application-
+   class ships behind an explicit experimental flag**, and even then leans on
+   draft-only + `pr-review` + human merge. Don't oversell derived-repro healing.
 3. **Correlation confidence.** The signal→execution join is heuristic (time
-   proximity + changed-file overlap). How is low-confidence correlation surfaced to
-   the agent so it doesn't over-trust a wrong suspect SHA? *Carry a correlation
-   confidence in the pack; below a threshold, mark suspectRef advisory.*
+   proximity + changed-file overlap) and only exists for flare-dispatch-dispatched
+   deploys ([§ 5](#5-synthesis-the-incidentv1-context-pack)). Low confidence must
+   both mark `suspectRef` advisory *and* gate auto-escalation
+   (`self-heal.escalate-min-confidence`) so a weak guess folds into triage, not a heal.
 4. **Model-proxy vs. Bedrock default.** Is (A) the universal default, or do
    BYOC/Bedrock consumers prefer (C) end-to-end? *Recommendation: (A) default,
    (C) auto-selected when `self-heal.backend = bedrock`.*
-```
