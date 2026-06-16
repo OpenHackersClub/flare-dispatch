@@ -229,6 +229,7 @@ export const makeFakeEnv = (opts: {
   workflow: FakeWorkflow;
   storage: FakeR2;
   idempotencyKv?: KVNamespace;
+  configKv?: KVNamespace;
   githubWebhookSecret?: string;
   adminToken?: string;
   logLinkSecret?: string;
@@ -243,6 +244,7 @@ export const makeFakeEnv = (opts: {
     ...(opts.idempotencyKv !== undefined
       ? { IDEMPOTENCY_KV: opts.idempotencyKv }
       : {}),
+    ...(opts.configKv !== undefined ? { CONFIG_KV: opts.configKv } : {}),
     ...(opts.githubWebhookSecret !== undefined
       ? { GITHUB_WEBHOOK_SECRET: opts.githubWebhookSecret }
       : {}),

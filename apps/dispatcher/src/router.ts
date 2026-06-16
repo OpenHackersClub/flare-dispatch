@@ -38,6 +38,7 @@ import {
 } from "./routes/logs";
 import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
 import { handleGithubWebhook } from "./routes/webhook";
+import { handleSignalsWebhook } from "./routes/signals-webhook";
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {
@@ -128,6 +129,21 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleGithubWebhook(request, env);
+  }
+
+  // POST /v1/webhooks/signals/:source — push-path observability-alert ingress.
+  // ANY vendor that can POST a JSON alert webhook triggers a `ci-triage-pr`
+  // dispatch carrying the alert as one signals/v1 signal (mapping is CONFIG_KV).
+  if (
+    segments.length === 4 &&
+    segments[0] === "v1" &&
+    segments[1] === "webhooks" &&
+    segments[2] === "signals"
+  ) {
+    if (request.method !== "POST") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleSignalsWebhook(request, env, decodeURIComponent(segments[3]!));
   }
 
   // POST /v1/admin/events/:wf_id — signal a Workflow paused on step.waitForEvent.

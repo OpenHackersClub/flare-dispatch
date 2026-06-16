@@ -253,6 +253,122 @@ Schedule mode's heartbeat is recurring, but a run sometimes needs a **one-off** 
 
 ---
 
+## Signal ingress
+
+> **Status: Live.** Receiver — source-label sanitize, static-bearer auth, CONFIG_KV dot-path mapping, `signals/v1` validation, and shared `RunWorkflow` instantiation — is wired at `apps/dispatcher/src/routes/signals-webhook.ts`, routed in `apps/dispatcher/src/router.ts`.
+
+The *push* counterpart to the [`signals/v1`](02-runs.md) pull contract. Where the pull path has a consumer collect signals on its own schedule and POST them through Action mode, signal ingress lets **any observability vendor that can POST a JSON alert webhook** (Datadog, SigNoz, Grafana, PagerDuty, …) trigger an immediate [`ci-triage-pr`](#) dispatch the moment an alert fires — carrying that one alert as a single `signals/v1` signal.
+
+The dispatcher stays **vendor-blind**: the payload → signal mapping is *configuration* (CONFIG_KV), never vendor-specific code. No new code ships to onboard a new vendor — only a CONFIG_KV mapping entry and a webhook URL pasted into the vendor's UI.
+
+### When to use
+
+- A vendor emits an alert webhook and you want the day's CI-triage PR to **also** reflect that runtime alert, the moment it fires — not at the next scheduled sweep.
+- The vendor's webhook UI can set a **custom header** but cannot produce FlareDispatch's HMAC scheme (the Action-mode `X-FlareDispatch-Signature`). Alert webhooks are the only cross-vendor quasi-standard; ingress meets them there.
+- You want a single, low-ceremony URL per vendor rather than a GHA workflow or a bespoke collector.
+
+For a consumer that owns its own scheduling and can sign an HMAC, prefer **Action mode** (`POST /v1/dispatch/ci-triage-pr` with `inputs.signals[]`) — it carries the full capped `signals[]` array, not one alert at a time.
+
+### Route
+
+```
+POST /v1/webhooks/signals/:source
+```
+
+`:source` is an **operator-chosen label** (e.g. `datadog`, `vendor-a`) — it names the mapping to apply and becomes the signal's `source` field (`webhook:<source>`). It is sanitized to `^[a-z0-9-]{1,32}$`; anything else is a `404`.
+
+### Auth — static bearer token
+
+A vendor's generic webhook UI can't compute our HMAC over the raw body, so ingress authenticates with a **static bearer token** the operator configures and pastes into the vendor's webhook **custom-header** field:
+
+```
+Authorization: Bearer <signals.webhook.token>
+```
+
+The presented token is compared against the configured one in **constant time** (`constantTimeEqual` in `apps/dispatcher/src/hmac.ts` — HMACs both sides under a per-call random key and compares the fixed-width MACs via `crypto.subtle.verify`, since Workers has no `timingSafeEqual`).
+
+- **Missing / empty `signals.webhook.token`** (or no `CONFIG_KV` bound) → `503 ingress_not_configured`. Ingress is **off by default** and **fails closed** — it never accepts unauthenticated alerts.
+- **Token absent or mismatched** → `401`.
+
+One shared token covers all sources. Rotate it by overwriting the CONFIG_KV key and updating each vendor's custom-header config.
+
+### CONFIG_KV keys
+
+| Key | Holds |
+|-----|-------|
+| `signals.webhook.token` | The shared static bearer token. **Required** — absent → `503`. |
+| `signals.map.<source>` | Per-source JSON mapping template (below). Optional — absent → the default mapping. |
+
+### Mapping template semantics
+
+`signals.map.<source>` is a JSON **object** whose values map onto the four `signals/v1` body fields — `title`, `detail`, `url`, `count` (`source` is always set to `webhook:<source>`; any other key is ignored):
+
+```json
+{ "title": "$.alert_title", "detail": "$.body.message", "url": "$.link", "count": "$.occurrences" }
+```
+
+- A **`"$."`-prefixed** string is a **dot-path** into the webhook payload. Array indices are integer segments: `$.items.0.name`. A path that resolves to an object/array is JSON-stringified (so a template can lift a sub-tree into `detail`). A **missing** path → the field is omitted.
+- Any **other** string is a **literal** (e.g. `"title": "Production alert"`).
+- After mapping, every field is **clamped** to the `signals/v1` caps (truncate, never reject) and the signal is validated against the same core `Signal` Schema the dispatch gate uses.
+- A payload that yields **no title and no derivable detail** → `422 unmappable_payload`. (A single-field template still validates — the missing required field is derived from the present one.)
+
+**Default mapping** (no `signals.map.<source>` configured) is best-effort across common alert-webhook field names — `title|alert|message|summary|name` → `title`; `body|description|text|detail` → `detail`; `url|link|alert_url|permalink` → `url` — and falls back to a JSON excerpt of the payload for `detail` so an unrecognized shape still produces a triageable signal.
+
+### Idempotency
+
+The Workflow instance id is `signals:<source>:<delivery>`, where `<delivery>` is a common vendor **delivery header** (`X-Delivery-Id` / `X-Request-Id` / `X-Message-Id`) when present, else the **SHA-256 of the raw body**. So a vendor **retry** of the same alert dedupes onto one execution, while **distinct** alerts stay distinct. Dedup uses the same `IDEMPOTENCY_KV` + platform `create({id})` no-op path as every other mode ([§ Receiver dedup](#receiver-dedup-shared-by-all-modes)).
+
+### Response
+
+| Status | Meaning |
+|--------|---------|
+| `202`  | accepted — `{ "executionId": "signals:<source>:<delivery>" }` (+ `detailsUrl` when `CLOUDFLARE_ACCOUNT_ID` is set) |
+| `400`  | request body is not valid JSON |
+| `401`  | bearer token missing / invalid |
+| `404`  | `:source` is not `^[a-z0-9-]{1,32}$` |
+| `422`  | payload yields neither a title nor a derivable detail |
+| `503`  | ingress not configured (no `CONFIG_KV` / `signals.webhook.token`) |
+
+### Per-day interaction with `ci-triage-pr`
+
+An alert webhook has no schedule tick, so the dispatch carries `firedAt: Date.now()` (the ingest time). `ci-triage-pr` keys its draft PR by date (`flare-dispatch/ci-triage-<date>`), so **the first alert of the day opens that day's triage draft PR, and every later alert UPDATES the same PR** — folding the new signal into the same write-up rather than opening a new PR per alert. A signal counts as a failure for the green-day check, so a day with no Actions/deploy failures but a real runtime alert still produces a PR.
+
+### Examples
+
+**`vendor-a`** — a vendor whose alert payload nests its fields:
+
+```sh
+# CONFIG_KV
+signals.webhook.token            =  <shared-bearer-token>
+signals.map.vendor-a             =  {"title":"$.alert.name","detail":"$.alert.body","url":"$.alert.url","count":"$.alert.event_count"}
+```
+
+```sh
+curl -X POST https://runs.example.com/v1/webhooks/signals/vendor-a \
+  -H "Authorization: Bearer <shared-bearer-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"alert":{"name":"5xx rate high","body":"api 5xx > 2% for 5m","url":"https://vendor-a.example/a/1","event_count":312}}'
+# → 202 {"executionId":"signals:vendor-a:<sha256-or-delivery-id>"}
+```
+
+**`vendor-b`** — a vendor with flat, conventionally-named fields, so **no mapping entry** is needed (the default mapping handles it):
+
+```sh
+# CONFIG_KV
+signals.webhook.token            =  <shared-bearer-token>
+# (no signals.map.vendor-b)
+```
+
+```sh
+curl -X POST https://runs.example.com/v1/webhooks/signals/vendor-b \
+  -H "Authorization: Bearer <shared-bearer-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Disk almost full","description":"node-7 at 95%","link":"https://vendor-b.example/i/9"}'
+# → 202, default mapping lifts title/description/link
+```
+
+---
+
 ## Check-runs callback (shared by all modes)
 
 Whatever triggered the execution, the Dispatcher reports the result through the `FlareDispatch` App's check-runs API. App credentials are exchanged for short-lived installation tokens (1-hour TTL). The token is cached in **Worker memory only** (`packages/github-app/src/installation-token.ts`); the KV-backed `INSTALL_TOKEN_KV` cache that survives Worker recycles is **Planned (V1)** — `INSTALL_TOKEN_KV` is declared (commented-out, optional) in `wrangler.jsonc`, and on a recycle the next check-run write simply does a fresh JWT exchange (one extra round-trip, never a failure).
