@@ -54,3 +54,14 @@ export class RunSandbox extends Sandbox<Env> {
 export class RunSandboxBrowser extends Sandbox<Env> {
   override sleepAfter = SANDBOX_SLEEP_AFTER;
 }
+
+/**
+ * The Durable Object class backing the agent-tier `RUNS_SANDBOX_AGENT` Container
+ * binding (the `WITH_AGENT` image — flare-agent + toolchain, egress-restricted).
+ * Identical body to `RunSandbox`; Cloudflare requires a distinct DO class per
+ * Container image, so the self-heal routing split needs this third class.
+ * specs/08-self-healing.md § 6.2.
+ */
+export class RunSandboxAgent extends Sandbox<Env> {
+  override sleepAfter = SANDBOX_SLEEP_AFTER;
+}

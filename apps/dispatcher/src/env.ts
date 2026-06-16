@@ -52,6 +52,19 @@ export interface Env {
    */
   readonly RUNS_SANDBOX_BROWSER?: DurableObjectNamespace<Sandbox>;
 
+  /**
+   * Container binding — the agent-tier sandbox image (same Dockerfile with
+   * `WITH_AGENT=true`): the `flare-agent` CLI + a node/git toolchain baked in,
+   * and a MANDATORY egress allowlist (model-proxy + git remote only — the
+   * container holds the cloned private repo + incident pack, so an injection-
+   * steered agent must not be able to exfiltrate). Runs declaring
+   * `sandboxImage: "agent"` (self-heal-pr) route here. Optional: a deploy that
+   * omits it soft-degrades to `RUNS_SANDBOX`, where a self-heal run finds no
+   * `flare-agent` and fails (not a guarantee, just a non-crash). Egress is NOT
+   * configurable away — it is part of the tier. specs/08-self-healing.md § 6.2.
+   */
+  readonly RUNS_SANDBOX_AGENT?: DurableObjectNamespace<Sandbox>;
+
   /** R2 bucket — `logs/<execution-id>/<step>.ndjson` + `artifacts/...`. */
   readonly RUNS_STORAGE: R2Bucket;
 

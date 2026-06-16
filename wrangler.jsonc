@@ -101,6 +101,19 @@
       "instance_type": "standard-2",
       // Keep ADMISSION_CAP (vars above) ≤ max_instances (#109).
       "max_instances": 16
+    },
+    {
+      // Agent tier (self-heal): flare-agent CLI + node/git toolchain baked in
+      // (WITH_AGENT). Heavier instance — an agent loop is CPU/memory-bound vs a
+      // test run. EGRESS must be restricted to the model-proxy + git remote
+      // (specs/08-self-healing.md § 6.2); enforce via Cloudflare Zero-Trust /
+      // account egress policy at deploy (no wrangler field for per-container
+      // egress today — documented as a deploy prerequisite, not optional).
+      "class_name": "RunSandboxAgent",
+      "image": "./infra/Dockerfile.sandbox",
+      "image_vars": { "WITH_AGENT": "true" },
+      "instance_type": "standard-3",
+      "max_instances": 8
     }
   ],
 
@@ -113,14 +126,17 @@
       { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
       { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" },
       // Per-execution model-proxy token budget (self-heal, specs/08 § 6.3).
-      { "name": "AGENT_BUDGET", "class_name": "AgentBudget" }
+      { "name": "AGENT_BUDGET", "class_name": "AgentBudget" },
+      // Agent-tier image for self-heal (specs/08 § 6.2).
+      { "name": "RUNS_SANDBOX_AGENT", "class_name": "RunSandboxAgent" }
     ]
   },
 
   "migrations": [
     { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
     { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] },
-    { "tag": "v2", "new_sqlite_classes": ["AgentBudget"] }
+    { "tag": "v2", "new_sqlite_classes": ["AgentBudget"] },
+    { "tag": "v3", "new_sqlite_classes": ["RunSandboxAgent"] }
   ],
 
   "r2_buckets": [

@@ -273,16 +273,18 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     const sandboxNs = selectSandboxNs(run.sandboxImage, {
       lean: this.env.RUNS_SANDBOX,
       browser: this.env.RUNS_SANDBOX_BROWSER,
+      agent: this.env.RUNS_SANDBOX_AGENT,
     });
 
     // The admission-semaphore pool key — the SAME routing rule as the binding
-    // selection above (browser image without a bound browser container
-    // degrades to lean), so a run is always metered against the pool whose
-    // container it will actually consume.
+    // selection above (browser/agent image without a bound container degrades to
+    // lean), so a run is always metered against the pool whose container it will
+    // actually consume.
     const admissionPool = selectSandboxNs<AdmissionPool>(run.sandboxImage, {
       lean: "lean",
       browser:
         this.env.RUNS_SANDBOX_BROWSER !== undefined ? "browser" : undefined,
+      agent: this.env.RUNS_SANDBOX_AGENT !== undefined ? "agent" : undefined,
     });
     // The per-pool slot cap, from the plain `ADMISSION_CAP` wrangler var
     // (one var for both pools; keep it ≤ each container's `max_instances` —
