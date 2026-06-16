@@ -201,11 +201,12 @@ export const handleExecutionDetail = async (
   // keys nested under `<name>/…`).
   const artifactPrefix = `artifacts/${executionId}/`;
   const artifacts = artifactList.objects
-    .map((o) => o.key.slice(artifactPrefix.length))
-    .filter((rel) => rel.length > 0 && !rel.includes("/"))
-    .map((name) => ({
-      name,
-      url: `/v1/artifacts/${encodeURIComponent(executionId)}/${encodeURIComponent(name)}`,
+    .map((o) => ({ name: o.key.slice(artifactPrefix.length), size: o.size }))
+    .filter((a) => a.name.length > 0 && !a.name.includes("/"))
+    .map((a) => ({
+      name: a.name,
+      size: a.size,
+      url: `/v1/artifacts/${encodeURIComponent(executionId)}/${encodeURIComponent(a.name)}`,
     }));
 
   const dashboardUrl = workflowDashboardUrl(env.CLOUDFLARE_ACCOUNT_ID, row.id);

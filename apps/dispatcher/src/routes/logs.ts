@@ -316,13 +316,20 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .ln.err .t{color:var(--err)}
   .empty{padding:24px 16px;color:var(--muted)}
   #status{padding:6px 16px;color:var(--muted);font-size:12px}
-  .steps{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px;border-bottom:1px solid var(--hairline)}
-  .step{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:3px 8px;font-size:12px}
-  .step .dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
-  .step.success .dot{background:var(--ok)}
-  .step.failure .dot{background:var(--err)}
-  .step.running .dot{background:var(--wait)}
-  .step .sd{color:var(--muted);font-size:11px}
+  /* flame chart / trace waterfall — one row per step, bar width ∝ duration,
+     x-offset ∝ start time so concurrent steps reveal their overlap. */
+  .flame{padding:8px 16px 12px;border-bottom:1px solid var(--hairline)}
+  .flame .axis{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin:0 0 6px 176px;border-bottom:1px solid var(--hairline);padding-bottom:3px}
+  .flame .row{display:grid;grid-template-columns:168px 1fr;align-items:center;gap:8px;height:20px}
+  .flame .row:hover{background:var(--surface)}
+  .flame .lbl2{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .flame .lbl2 .nm{color:var(--ink-soft);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .flame .lbl2 .du{color:var(--muted);font-size:11px;flex:none;font-variant-numeric:tabular-nums}
+  .flame .track{position:relative;height:14px}
+  .flame .bar{position:absolute;top:0;height:14px;border-radius:3px;min-width:3px;background:var(--muted);opacity:.9}
+  .flame .row.success .bar{background:var(--ok)}
+  .flame .row.failure .bar{background:var(--err)}
+  .flame .row.running .bar{background:var(--wait)}
   .summary{padding:8px 16px;border-bottom:1px solid var(--hairline)}
   .summary .verdict{font-weight:600;color:var(--ok)}
   .summary details{border:none}
@@ -330,8 +337,21 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:var(--paper-soft);border:1px solid var(--hairline);border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
   .arts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--hairline)}
   .arts .lbl{color:var(--muted);font-size:12px}
-  .art{display:inline-block;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:3px 8px;font-size:12px;color:var(--accent);text-decoration:none}
-  .art:hover{border-color:var(--accent)}
+  .art{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:2px 6px 2px 9px;font-size:12px}
+  .art.active{border-color:var(--accent);background:var(--accent-soft)}
+  .art-name{background:none;border:none;color:var(--accent);font-family:inherit;font-size:12px;cursor:pointer;padding:0}
+  .art-name:hover{text-decoration:underline}
+  .art-sz{color:var(--muted);font-size:11px}
+  .art-raw{color:var(--muted);text-decoration:none;font-size:12px;line-height:1;padding:0 3px;border-radius:4px}
+  .art-raw:hover{color:var(--accent)}
+  /* GitHub-style inline file viewer for a clicked artifact. */
+  .artview{border-bottom:1px solid var(--hairline);background:var(--paper-soft)}
+  .artview-bar{display:flex;align-items:center;gap:8px;padding:6px 16px;border-bottom:1px solid var(--hairline)}
+  .artview-name{color:var(--accent);font-size:12px;font-weight:600;margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .artview-act{color:var(--ink-soft);font-size:12px;text-decoration:none;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:2px 8px;cursor:pointer;font-family:inherit;line-height:1.4}
+  .artview-act:hover{border-color:var(--accent);color:var(--accent)}
+  .artview-body{max-height:60vh;overflow:auto}
+  .artview-img{display:block;max-width:100%;height:auto;margin:12px 16px;background:#fff;border-radius:4px}
 </style></head>
 <body>
 <header>
@@ -340,7 +360,8 @@ const viewerPage = (nonce: string): string => `<!doctype html>
 </header>
 <div id="summary" class="summary" hidden></div>
 <div id="artifacts" class="arts" hidden></div>
-<div id="steps" class="steps" hidden></div>
+<div id="artview" class="artview" hidden></div>
+<div id="steps" class="flame" hidden></div>
 <div class="controls">
   <input type="search" id="filter" placeholder="filter lines…" autocomplete="off">
   <label><input type="checkbox" id="stderrOnly"> stderr only</label>
@@ -388,25 +409,61 @@ const viewerPage = (nonce: string): string => `<!doctype html>
       sub.appendChild(a);
     }
   }
-  // Render the D1 step timeline — a run's shape even when it has sparse exec
-  // logs (e.g. a mostly-Worker-side run like pr-review: one container exec,
-  // the rest model/GitHub calls). Each chip = step name + status dot + duration.
-  function fmtMs(ms){ return ms >= 1000 ? Math.round(ms/1000) + "s" : ms + "ms"; }
+  // Render the D1 step timeline as a flame chart / trace waterfall — a run's
+  // shape even when it has sparse exec logs (e.g. a mostly-Worker-side run like
+  // pr-review: one container exec, the rest model/GitHub calls). Each row's bar
+  // is positioned by its start offset and sized by its duration, so the slow
+  // steps read at a glance and concurrent steps reveal their overlap — far more
+  // legible than equal-width chips that hid relative cost.
+  function fmtMs(ms){ return ms >= 1000 ? (ms/1000).toFixed(ms < 10000 ? 1 : 0) + "s" : Math.round(ms) + "ms"; }
   function renderSteps(steps){
     var el = document.getElementById("steps");
     if (!steps || !steps.length){ el.hidden = true; return; }
+    var now = Date.now();
+    var started = steps.filter(function(s){ return s.startedAt; });
+    if (!started.length){ el.hidden = true; return; }
+    // The run window: earliest start → latest end (a running step ends "now").
+    var t0 = Infinity, t1 = -Infinity;
+    started.forEach(function(s){
+      if (s.startedAt < t0) t0 = s.startedAt;
+      var end = s.completedAt || now;
+      if (end > t1) t1 = end;
+    });
+    var total = Math.max(t1 - t0, 1);
     el.hidden = false; el.textContent = "";
-    steps.forEach(function(s){
-      var chip = document.createElement("span"); chip.className = "step " + (s.status||"");
-      var dot = document.createElement("span"); dot.className = "dot";
-      var nm = document.createElement("span"); nm.textContent = s.name;
-      chip.appendChild(dot); chip.appendChild(nm);
-      if (s.completedAt && s.startedAt){
-        var sd = document.createElement("span"); sd.className = "sd";
-        sd.textContent = fmtMs(s.completedAt - s.startedAt);
-        chip.appendChild(sd);
-      }
-      el.appendChild(chip);
+
+    var axis = document.createElement("div"); axis.className = "axis";
+    var a0 = document.createElement("span"); a0.textContent = "0";
+    var a1 = document.createElement("span"); a1.textContent = fmtMs(total);
+    axis.appendChild(a0); axis.appendChild(a1);
+    el.appendChild(axis);
+
+    var ordered = started.slice().sort(function(a,b){
+      return (a.startedAt - b.startedAt) || ((a.completedAt||now) - (b.completedAt||now));
+    });
+    ordered.forEach(function(s){
+      var end = s.completedAt || now;
+      var dur = end - s.startedAt;
+      var leftPct = ((s.startedAt - t0) / total) * 100;
+      var widthPct = ((end - s.startedAt) / total) * 100;
+
+      var row = document.createElement("div"); row.className = "row " + (s.status||"");
+      var lbl = document.createElement("div"); lbl.className = "lbl2";
+      var nm = document.createElement("span"); nm.className = "nm"; nm.textContent = s.name;
+      var du = document.createElement("span"); du.className = "du";
+      du.textContent = s.completedAt ? fmtMs(dur) : "…";
+      lbl.appendChild(nm); lbl.appendChild(du);
+
+      var track = document.createElement("div"); track.className = "track";
+      var bar = document.createElement("div"); bar.className = "bar";
+      bar.style.left = leftPct.toFixed(3) + "%";
+      bar.style.width = Math.max(widthPct, 0).toFixed(3) + "%";
+      bar.title = s.name + " · " + (s.completedAt ? fmtMs(dur) : "running") +
+        " · start +" + fmtMs(s.startedAt - t0);
+      track.appendChild(bar);
+
+      row.appendChild(lbl); row.appendChild(track);
+      el.appendChild(row);
     });
   }
   // Render the run's own terminal output (run-agnostic): a verdict badge when
@@ -432,16 +489,132 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   // for "files the run wrote": persisted by opt-in, served (and browsable) at
   // /v1/artifacts/:id/:name. Container scratch files are NOT here by design —
   // the container is destroyed at run end.
+  var lastArts = [];   // most recent artifact list (re-render keeps active state)
+  var activeArt = null; // name of the artifact open in the inline viewer
+  var TEXT_EXT = {md:1,txt:1,log:1,json:1,ndjson:1,jsonl:1,patch:1,diff:1,yaml:1,yml:1,toml:1,csv:1,tsv:1,xml:1,html:1,htm:1,js:1,mjs:1,cjs:1,ts:1,tsx:1,jsx:1,css:1,sh:1,bash:1,zsh:1,py:1,rb:1,rs:1,go:1,java:1,c:1,h:1,cpp:1,sql:1,env:1,ini:1,conf:1,cfg:1,lock:1,gitignore:1};
+  var IMG_EXT = {png:1,jpg:1,jpeg:1,gif:1,webp:1,avif:1,svg:1,ico:1,bmp:1};
+  function fileExt(name){ var m = /\\.([A-Za-z0-9]+)$/.exec(name); return m ? m[1].toLowerCase() : ""; }
+  function fmtBytes(n){
+    if (n == null) return "";
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n/1024).toFixed(1) + " KB";
+    return (n/1048576).toFixed(1) + " MB";
+  }
+  function isTextual(ext, ct){
+    if (TEXT_EXT[ext]) return true;
+    if (!ct) return false;
+    return /^text\\//.test(ct) || /(json|xml|javascript|csv|yaml|x-ndjson|x-sh|plain)/.test(ct);
+  }
+  // The artifacts strip — clicking a name opens the file inline (GitHub-style),
+  // the ↗ opens the raw bytes in a new tab. These are the run's PRODUCED FILES
+  // (a report, a screenshot, the captured diff), persisted to R2 and served at
+  // /v1/artifacts/:id/:name; the endpoint is same-origin so the inline fetch /
+  // <img> work under the page's strict CSP (connect-src/img-src 'self').
   function renderArtifacts(arts){
+    lastArts = arts || [];
     var el = document.getElementById("artifacts");
     if (!arts || !arts.length){ el.hidden = true; return; }
     el.hidden = false; el.textContent = "";
     var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "artifacts:";
     el.appendChild(lbl);
     arts.forEach(function(a){
-      var link = document.createElement("a"); link.className = "art";
-      link.href = a.url; link.rel = "noreferrer"; link.textContent = a.name;
-      el.appendChild(link);
+      var chip = document.createElement("span");
+      chip.className = "art" + (activeArt === a.name ? " active" : "");
+      var name = document.createElement("button");
+      name.type = "button"; name.className = "art-name"; name.textContent = a.name;
+      name.addEventListener("click", function(){ openArtifact(a); });
+      chip.appendChild(name);
+      if (a.size != null){
+        var sz = document.createElement("span"); sz.className = "art-sz"; sz.textContent = fmtBytes(a.size);
+        chip.appendChild(sz);
+      }
+      var raw = document.createElement("a"); raw.className = "art-raw";
+      raw.href = a.url; raw.target = "_blank"; raw.rel = "noreferrer";
+      raw.title = "open raw in new tab"; raw.textContent = "↗";
+      chip.appendChild(raw);
+      el.appendChild(chip);
+    });
+  }
+  function artNotice(body, a, msg){
+    var box = document.createElement("div"); box.className = "empty";
+    box.appendChild(document.createTextNode(msg + " "));
+    var raw = document.createElement("a"); raw.className = "art-raw";
+    raw.href = a.url; raw.target = "_blank"; raw.rel = "noreferrer"; raw.textContent = "open raw ↗";
+    box.appendChild(raw);
+    body.appendChild(box);
+  }
+  // Render textual content with line numbers, mirroring the log view. Always
+  // via textContent + clean() — artifact bytes are attacker-controlled too.
+  function renderCode(body, txt){
+    var rows = txt.split("\\n");
+    if (rows.length && rows[rows.length-1] === "") rows.pop();
+    if (rows.length === 0){
+      var e = document.createElement("div"); e.className = "empty"; e.textContent = "(empty file)";
+      body.appendChild(e); return;
+    }
+    var logEl = document.createElement("div"); logEl.className = "log";
+    for (var i=0;i<rows.length;i++){
+      var ln = document.createElement("div"); ln.className = "ln";
+      var n = document.createElement("span"); n.className = "n"; n.textContent = String(i+1);
+      var tt = document.createElement("span"); tt.className = "t"; tt.textContent = clean(rows[i]);
+      ln.appendChild(n); ln.appendChild(tt); logEl.appendChild(ln);
+    }
+    body.appendChild(logEl);
+  }
+  function closeArtifact(){
+    activeArt = null;
+    var v = document.getElementById("artview"); v.hidden = true; v.textContent = "";
+    renderArtifacts(lastArts);
+  }
+  function openArtifact(a){
+    if (activeArt === a.name){ closeArtifact(); return; } // toggle off
+    activeArt = a.name;
+    renderArtifacts(lastArts);
+    var v = document.getElementById("artview"); v.hidden = false; v.textContent = "";
+
+    var bar = document.createElement("div"); bar.className = "artview-bar";
+    var nm = document.createElement("span"); nm.className = "artview-name"; nm.textContent = a.name;
+    bar.appendChild(nm);
+    var raw = document.createElement("a"); raw.className = "artview-act";
+    raw.href = a.url; raw.target = "_blank"; raw.rel = "noreferrer"; raw.textContent = "raw ↗";
+    var dl = document.createElement("a"); dl.className = "artview-act";
+    dl.href = a.url; dl.setAttribute("download", a.name); dl.textContent = "download";
+    var close = document.createElement("button"); close.type = "button"; close.className = "artview-act";
+    close.textContent = "✕"; close.title = "close"; close.addEventListener("click", closeArtifact);
+    bar.appendChild(raw); bar.appendChild(dl); bar.appendChild(close);
+    v.appendChild(bar);
+
+    var body = document.createElement("div"); body.className = "artview-body";
+    var loading = document.createElement("div"); loading.className = "empty"; loading.textContent = "Loading " + a.name + "…";
+    body.appendChild(loading); v.appendChild(body);
+
+    var ext = fileExt(a.name);
+    if (IMG_EXT[ext]){
+      var img = new Image(); img.className = "artview-img"; img.alt = a.name;
+      img.onload = function(){ body.textContent = ""; body.appendChild(img); };
+      img.onerror = function(){ body.textContent = ""; artNotice(body, a, "Couldn't load this image inline."); };
+      img.src = a.url;
+      return;
+    }
+    var MAX_INLINE = 2 * 1024 * 1024;
+    if (a.size != null && a.size > MAX_INLINE){
+      body.textContent = "";
+      artNotice(body, a, "File is large (" + fmtBytes(a.size) + ") — inline preview skipped.");
+      return;
+    }
+    fetch(a.url).then(function(r){
+      var ct = (r.headers.get("content-type") || "").toLowerCase();
+      return r.text().then(function(txt){ return { ct: ct, txt: txt }; });
+    }).then(function(res){
+      if (activeArt !== a.name) return; // user moved on while it loaded
+      body.textContent = "";
+      if (isTextual(ext, res.ct)) renderCode(body, res.txt);
+      else artNotice(body, a, "This file type can't be previewed inline.");
+    }).catch(function(e){
+      if (activeArt !== a.name) return;
+      body.textContent = "";
+      var er = document.createElement("div"); er.className = "empty"; er.textContent = "Failed to load: " + e.message;
+      body.appendChild(er);
     });
   }
   function applyFilter(){
