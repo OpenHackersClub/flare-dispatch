@@ -57,20 +57,26 @@ These are load-bearing. The design is mostly a consequence of them.
    Accepted cost: onboarding a vendor is consumer work, and loop-closing writeback
    *to* the vendor (ack/resolve/link) is a consumer-side adapter, out of dispatcher
    scope ([§ 12](#12-relationship-to-the-open-pr-stack)).
-3. **Credential-free agent.** The coding agent is untrusted code, like any run.
-   It never holds the GitHub App key, the HMAC secret, or a long-lived model key
-   ([07-trust-model § container escape](07-trust-model.md)). It receives a context
-   pack (data, not secrets), edits a clone, and emits a diff. The **Worker** —
-   sole credential holder — opens the PR via the existing writeback gate.
+3. **Credential-free agent — and telemetry is an injection vector.** The coding
+   agent is untrusted code, like any run: it never holds the GitHub App key, the HMAC
+   secret, or a long-lived model key ([07-trust-model § container escape](07-trust-model.md)),
+   reaches the network only through a mandatory egress allowlist (model-proxy + git
+   remote), receives a context pack (data, not secrets), and emits a diff the
+   **Worker** alone turns into a PR. Critically, the *telemetry itself is
+   attacker-controlled* — signals and logs flow into code generation — so the pack
+   separates data from instruction and the design assumes the agent may be
+   injection-steered ([§ 10.1](#101-adversarial-telemetry-is-an-injection-vector-the-gap)).
 4. **Never auto-merge. Draft only.** A self-heal PR is opened as a draft, gated on
    the same check-runs as any human PR, and is itself eligible for `pr-review`.
    The loop never merges; a human (or an explicit, separately-gated auto-merge
    policy the consumer owns) does.
-5. **A fix is only credible if it makes the red green.** The agent's diff is
-   *verified in the sandbox* — re-run the failing CI command, or the repro derived
-   from the signal — before the PR is opened. Verification outcome travels with the
-   PR as evidence. An unverifiable fix is still openable, but labelled and never
-   auto-mergeable. This is the adversarial-verify discipline applied to fixes.
+5. **A fix is only credible if it makes the red green — verified in the sandbox,
+   not in secret-bearing CI.** The agent's diff is verified by re-running the repro in
+   the credential-free, egress-restricted sandbox before any PR. A *verified* fix opens
+   a draft PR; an unverified one is silent by default. The consumer's `pull_request`
+   CI is **not** the verification gate — on a same-repo self-heal branch it runs with
+   secrets on possibly-injected code before review, so it must be gated
+   ([§ 10.1](#101-adversarial-telemetry-is-an-injection-vector-the-gap)).
 6. **Bounded cost.** Agent loops cost tokens and wall-clock and can spin. Every
    self-heal is admission-gated, iteration-capped, token-budgeted, fingerprint-
    deduped, and cooldown-throttled. See [§ 9](#9-cost--safety-governance).
@@ -398,6 +404,13 @@ flag" pattern as `WITH_BROWSER`. Declared on the run as `sandboxImage: "agent"`.
 Instance type bumped (`standard-3`/`standard-4`) since an agent loop is CPU- and
 memory-heavier than a test run. Concurrency stays admission-capped.
 
+**Mandatory egress allowlist.** Unlike the base posture ([05-byoc § Security posture](05-byoc.md#security-posture),
+egress open by default), the agent tier ships with egress **restricted to the
+model-proxy + the git remote**. The container holds the cloned (possibly private)
+repo and the pack; an injection-steered agent must not be able to `curl` them to an
+attacker ([§ 10.1](#101-adversarial-telemetry-is-an-injection-vector-the-gap)). This
+is not optional configuration — it is part of the tier definition.
+
 ### 6.3 Model access — the key decision
 
 The in-container agent **cannot** use the Worker-side `modelGateway` Effect
@@ -481,8 +494,6 @@ vendor** — by letting the **agent** pull, on demand, from the consumer's stack
   instead of *pull-at-dispatch*.
 - It runs **in the sandbox**, authenticated with the **consumer's own** vendor
   credentials, injected via `loadSecrets` ([07-trust-model § secret injection](07-trust-model.md)).
-  The agent is already untrusted code holding a clone; a read-only vendor token it
-  was *given* changes nothing about the dispatcher's posture.
 - The agent calls it like any tool: `context-pull traces --error <id> --window 1h`.
   Output folds into the agent's working context, capped like everything else.
 
@@ -491,14 +502,17 @@ no vendor — while removing the context-starvation that produces plausible-but-
 fixes. The vendor stays the store; it is simply read *fresh*, at the edge, by the
 party that already holds the credentials.
 
-> **Security note (see [§ 10](#10-trust-model-delta)).** On-demand pull *amplifies*
-> the prompt-injection surface — more attacker-influenced telemetry enters the
-> agent. Mitigations: the adapter is **read-only** (no vendor mutation), pulled
-> context is treated as untrusted like the rest of the pack, and the agent's output
-> is still gated by sandbox-verify + the writeback allowlist. Code never ships on
-> the strength of context alone. Egress for the pull is to the vendor endpoint the
-> consumer configured — lock down with Zero Trust egress rules if the threat model
-> needs it.
+> **Security note — this is V1-gated and NOT posture-neutral (see [§ 10.1](#101-adversarial-telemetry-is-an-injection-vector-the-gap)).**
+> Edge-pull injects the **consumer's vendor read-token into an injection-steered
+> container** — and most "read-only" vendor keys read the *whole* observability
+> account, so an escape/leak exposes far more than this incident. It also creates a
+> **second-order injection loop**: injected text can tell the agent to `context-pull`
+> *more* attacker-influenced telemetry, deepening the injection each hop. So the
+> controls are **mandatory**, not "if the threat model needs it": the token uses the
+> **narrowest** vendor read role; egress is **pinned to the one configured vendor
+> endpoint**; pull **count and volume are capped**; the adapter is read-only; pulled
+> output is untrusted like the rest of the pack; and output still ships only through
+> sandbox-verify + the writeback gate. Stays **out of V0**.
 
 ---
 
@@ -571,10 +585,14 @@ Most boxes are existing primitives, but **two reuse claims need qualifying**:
   Sentry Seer and Copilot Autofix both refuse to
   surface unverified fixes; this matches them by default and diverges only on
   explicit opt-in.
-- **The fix re-enters CI.** Because the PR is an ordinary branch, the consumer's
-  required check-runs (flare-dispatch itself, or their GHA) run against it. The
-  loop's claim — "this makes the red green" — is checkable by the same CI that
-  found the failure. This is the strongest possible verification and it is free.
+- **Verification is the sandbox run — NOT the consumer's secret-bearing CI.** The
+  trusted "this makes the red green" check is the credential-free, egress-restricted
+  `verify` step in the sandbox. The consumer's `pull_request` CI on the self-heal
+  branch runs with **full repo secrets on possibly-injected code before review** — it
+  is an exfil surface, not a verification gate ([§ 10.1](#101-adversarial-telemetry-is-an-injection-vector-the-gap)).
+  Enabling self-heal on a repo with CI secrets *requires* gating that CI (fork PR /
+  environment protection / label-gated workflows) so it does not run before a human
+  reviews the diff.
 - **`pr-review` on the fix.** A self-heal PR is a PR; the existing `pr-review`
   run reviews it like any other, giving an independent model a refute-pass over
   the agent's change before a human looks.
@@ -670,8 +688,20 @@ opaque `dedupKey`** the consumer's adapter fills with the vendor's native group 
 When present it *is* the fingerprint — the Dispatcher dedups on the vendor's own
 grouping **without understanding it** (vendor-aware at the edge, blind at the
 core, [principle 2](#1-principles--non-goals)); when absent, the generic
-fingerprint is the fallback. This is the dedup spine that stops an alert storm
-becoming a PR storm, at the vendor's own grouping quality.
+fingerprint is the fallback.
+
+> **`dedupKey` is attacker-controlled — treat it as untrusted.** The alert emitter
+> controls signal contents, hence the key. Two abuses: a *unique* key per alert makes
+> every alert a distinct incident → bypasses cooldown/dedup → PR/cost storm; a key
+> *colliding* with an unrelated open self-heal PR rides the `Deduped → UPDATE existing
+> PR` edge ([§ 8](#8-confidence-gate--human-in-the-loop)) to graft an injected incident
+> onto someone else's PR, or to *suppress* a legitimate fix (the real incident never
+> opens its own PR). Mitigations, all required: **namespace** the key by `source`,
+> **validate + length-cap** it, **never let a `dedupKey` collision alone trigger UPDATE
+> across differing provenance**, and put a **global distinct-key rate cap** behind it.
+> The cost storm this enables is bounded only by the global *spend* ceiling
+> ([§ 9](#9-cost--safety-governance)), not by count throttles — fingerprint evasion
+> defeats anything keyed to a single incident.
 
 The *application-class* fallback fingerprint is the weakest link, two ways at once:
 `title-normalized` collapses distinct bugs that share a generic message ("TypeError")
@@ -684,10 +714,13 @@ fingerprint `(repo, check, error-signature)` has no such problem and needs no ga
 
 ---
 
-## 10. Trust-model delta
+## 10. Threat model & trust delta
 
 Everything in [07-trust-model](07-trust-model.md) holds; the agent is untrusted
-code like any run. Two additions:
+code like any run. A security review (verdict: *rethink*) found the earlier draft
+defended the credential boundary but missed two chains — telemetry as an injection
+vector, and injection-shaped code reaching secret-bearing CI. § 10.1 adds that threat
+model; § 10.2 restates the credential-boundary delta.
 
 - **The model-proxy is a new authenticated egress.** `POST /v1/agent/:execution/inference`
   is reachable only with a per-execution capability token (minted by the Workflow,
@@ -705,12 +738,87 @@ code like any run. Two additions:
   yields no more than [07-trust-model § container escape](07-trust-model.md)
   already bounds.
 
-Residual risk worth stating: the agent writes code that lands in a draft PR. The
-mitigations are (a) draft-only + required CI + `pr-review` before any merge, (b)
-the writeback allowlist/caps and the `.github/workflows` opt-in gate, (c) the
-fix is verified against the repro before the verified label is granted. The agent
-cannot merge, cannot touch workflows without the gate, and cannot exceed the
-writeback caps.
+### 10.1 Adversarial telemetry is an injection vector (the gap)
+
+The sections above defend the *credential boundary* well — but a security review
+surfaced that the earlier draft never treated **attacker-controlled telemetry as a
+prompt-injection vector**, and let **injection-shaped code reach secret-bearing CI
+before a human looks**. Both are now first-class. The new threat model:
+
+**Untrusted input → code.** `signals/v1` `title`/`detail` and the R2 `logTail` are
+*attacker-influenced* — anyone who can emit a log line or fire an alert controls
+them. They flow verbatim into the `incident/v1` pack ([§ 5](#5-synthesis-the-incidentv1-context-pack))
+and into the agent's context, which then *writes code*. The pack caps **bytes**, not
+**trust**. So:
+
+- The pack **separates data from instruction**: every caller/log-derived string is
+  carried in clearly-fenced, explicitly-untrusted fields the agent's system prompt
+  is told never to follow as instructions. (Necessary, not sufficient — never rely
+  on the model declining; the load-bearing walls are the two below.)
+
+**The verification paradox — secret-bearing CI is the exfil vector, not the proof.**
+The earlier §8 sold "the fix re-enters the consumer's CI as the strongest
+verification." That is **wrong and dangerous**: writeback pushes a branch to the
+**same repo** (`writeback-r2.ts` — not a fork), so opening the PR fires the
+consumer's `pull_request` workflows **with full repo secrets**, on possibly-injected
+code, **before any human review**. The CI you were treating as the proof is itself an
+RCE/secret-exfil surface. Resolution:
+
+- **Verification happens only in the credential-free, egress-restricted sandbox**
+  (the `verify` step re-runs the repro). That run holds no secrets and cannot reach
+  the network beyond the allowlist below. The consumer's secret-bearing CI is **not**
+  a trusted verification gate for self-heal branches.
+- **Operator prerequisite (hard):** self-heal branches must not run secret-bearing
+  workflows before human review — via fork-based PRs, GitHub environment
+  protection/required-reviewer rules on `pull_request`, or label-gated workflows.
+  The spec must state this as a precondition for enabling self-heal on a repo with
+  CI secrets; it is not optional.
+
+**Mandatory egress allowlist on the agent tier.** [05-byoc § Security posture](05-byoc.md#security-posture)
+leaves container egress *open by default*. For the agent tier that is unacceptable —
+the container holds the cloned (possibly private) repo + the pack, and an agent (or
+injected instruction) can `curl` it out. So the agent tier ships with a **mandatory**
+egress allowlist (model-proxy + the git remote only), not the optional "lock down if
+needed" of the base posture.
+
+**Manifest/build-file gating, not just workflows.** `validateManifest` special-cases
+only `.github/workflows/**` (`allowWorkflows`). The default `src/**` allowlist
+*incidentally* blocks `package.json`/lockfiles/`Dockerfile`/`.npmrc`/`wrangler.toml`
+— but the moment an operator widens the allowlist (e.g. to fix a build), a
+`postinstall` RCE opens silently. The opt-in gate must be **extended** to package
+manifests, lockfiles, Dockerfiles, `.npmrc`, and CI config regardless of allowlist.
+
+### 10.2 Trust-model delta (credential boundary)
+
+Everything in [07-trust-model](07-trust-model.md) holds; the agent is untrusted code
+like any run. Additions:
+
+- **The model-proxy is a new authenticated egress.** `POST /v1/agent/:execution/inference`
+  is reachable only with a per-execution capability token. Liveness + rate limit + the
+  hard token budget live in the strongly-consistent [`AgentBudget` DO](#63-model-access-the-key-decision),
+  not the stateless token. It brokers container→model the way the
+  [log-viewer token](01-architecture.md#components) gates container→Worker. **But** the
+  run author's code shares the container and sees `FLARE_MODEL_PROXY` + the token for
+  the whole run — so the token is **scoped to the agent step's lifetime** with a low
+  request count and a low default budget, or it becomes a free general-purpose LLM
+  gateway for a malicious author. A leaked token buys, at most, that step's remaining
+  budget.
+- **No new *flare-dispatch* secret reaches the container.** The pack is data; the
+  proxy token is not a model key; the GitHub App key stays Worker-only — the diff
+  becomes a PR only through the writeback gate, never by the container pushing.
+- **Edge-pull (§ 6.4) is the exception and is V1-gated.** It deliberately injects the
+  *consumer's* vendor read-token into an injection-steered container. Because most
+  "read-only" vendor keys read the *whole* observability account, this is a real new
+  secret in the blast radius — so §6.4's egress lock-down is **mandatory** (narrowest
+  vendor read role, egress pinned to the one configured endpoint, capped pull
+  count/volume), and §6.4 stays out of V0.
+
+Residual risk: the agent writes code that lands in a draft PR. The walls are
+(a) draft-only + `pr-review` + **human review before secret-bearing CI**, (b) the
+extended writeback allowlist/manifest gate, (c) verification in the credential-free
+sandbox only, (d) the mandatory agent-tier egress allowlist. The agent cannot merge,
+cannot exfiltrate past the allowlist, cannot touch manifests/workflows without the
+gate, and cannot exceed the writeback caps.
 
 ---
 
@@ -734,7 +842,10 @@ export const selfHealPr = defineRun({
     commitMessage: "fix: self-heal …",                // required by WritebackSpec
     pr: { title: "fix: …", body: "…", draft: true },
     pathAllowlist: [/* operator-scoped; src/** etc. */],
-    // allowWorkflows: false  — workflows stay gated
+    // allowWorkflows: false — workflows stay gated. NOTE: the gate must ALSO cover
+    // package.json / lockfiles / Dockerfile / .npmrc / CI config (postinstall RCE) —
+    // src/** blocks them today only incidentally (§ 10.1). Widening the allowlist
+    // without extending the gate opens that door.
   },
   run: (input) => Effect.gen(function* () {
     // Fingerprint + dedup/cooldown/daily-cap BEFORE admit (don't burn a slot on a
@@ -857,9 +968,19 @@ Land the ingestion stack first. Self-heal has no value until signals flow.
 
 ## 13. Phased rollout
 
+**Security gates (from review — non-negotiable per phase).** V0 does not ship
+without: data/instruction separation in the pack + untrusted-string marking (#1);
+the **mandatory agent-tier egress allowlist** (#3); the **manifest/lockfile/Dockerfile
+gate** extension (#8); the **operator prerequisite** that self-heal branches don't run
+secret-bearing CI before human review (#2); and the agent-step-scoped proxy token +
+global **spend** ceiling (#6/#7). V1 (edge-pull §6.4 + `dedupKey` §9.2) does not ship
+without the mandatory vendor-token egress lock-down (#4) and the `dedupKey`
+untrusted-input hardening (#5). Numbers reference [§ 10.1](#101-adversarial-telemetry-is-an-injection-vector-the-gap)
+/ [§ 9.2](#92-incident-fingerprint--vendor-native-dedup).
+
 | Phase | Scope | New surface |
 |---|---|---|
-| **V0 — CI-class, verified, action-mode** | Self-heal only the strong-repro CI class. Synthesis = first-party only (no signal correlation). Agent tier image. Model via proxy (A). Verify = re-run failing command. Draft PR, verified-only. | `incident/v1` contract; agent-tier Dockerfile target; `flare-agent` adapter; `/v1/agent/:exec/inference` proxy; `self-heal-pr` run + writeback. |
+| **V0 — CI-class, verified, action-mode** | Self-heal only the strong-repro CI class. Synthesis = first-party only (no signal correlation). Agent tier image (egress-allowlisted). Model via proxy (A), step-scoped token. Verify = re-run failing command in the sandbox. Draft PR, verified-only, silent on no-fix. | `incident/v1` contract; agent-tier Dockerfile + egress allowlist; manifest-gate extension; `flare-agent` adapter; `/v1/agent/:exec/inference` proxy + `AgentBudget` DO; `self-heal-pr` run + extended writeback. |
 | **V1 — application-class (experimental) + correlation + edge pull** | Behind an experimental flag. Add signal→execution time correlation, stack-frame→file mapping, derived-repro (agent writes a failing test first). On-demand context-pull adapter ([§ 6.4](#64-on-demand-context-pull--full-context-without-a-store)). Vendor-native `dedupKey` passthrough ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)). Webhook auto-escalation. Triage escalation. | Synthesis correlation; context-pull adapter contract; `dedupKey` (additive `signals/v1`); `auto-escalate` branch; unverified-label path. |
 | **V2 — memory, governance & breadth** | Incident-memory store + fix priors ([§ 9.1](#91-incident-memory--the-one-store-worth-keeping)). Token-budget accounting into [06-cost](06-cost.md); multi-candidate (N agents, pick the one whose fix verifies — the judge-panel pattern); cooldown/fingerprint tuning; optional consumer-owned auto-merge policy gate; opt-in signal retention for APM-less consumers. | incident-memory D1 table; cost accounting; candidate fan-out via [fan-out model](01-architecture.md#fan-out-model). |
 
