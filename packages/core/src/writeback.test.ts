@@ -8,8 +8,10 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_WRITEBACK_MAX_BYTES,
   decodeManifest,
+  isSensitivePath,
   matchGlob,
   resolveHeadBranch,
+  resolvePrMeta,
   validateManifest,
   type ValidatedEntry,
   type WritebackManifest,
@@ -286,5 +288,77 @@ describe("decodeManifest", () => {
 
   it("throws on an invalid mode", () => {
     expect(() => decodeManifest({ entries: [{ path: "a", mode: "777" }] })).toThrow();
+  });
+});
+
+describe("sensitive-path gate (security review #8)", () => {
+  const sensitive = [
+    "package.json",
+    "apps/web/package.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Cargo.lock",
+    "go.sum",
+    ".npmrc",
+    ".yarnrc.yml",
+    "Dockerfile",
+    "infra/Dockerfile.sandbox",
+    "service.Dockerfile",
+    ".github/actions/x/action.yml",
+    ".gitlab-ci.yml",
+  ];
+
+  it.each(sensitive)("rejects %s without allowSensitivePaths", (path) => {
+    const r = validateManifest(spec(), manifest([{ path }]), sizeOf());
+    expect(r._kind).toBe("rejected");
+    if (r._kind === "rejected") {
+      expect(r.reasons.some((x) => x.kind === "sensitive-not-opted-in")).toBe(true);
+    }
+  });
+
+  it.each(sensitive)("allows %s with allowSensitivePaths", (path) => {
+    const r = validateManifest(spec({ allowSensitivePaths: true }), manifest([{ path }]), sizeOf());
+    expect(r._kind).toBe("ok");
+  });
+
+  it("ordinary src files are not sensitive", () => {
+    const r = validateManifest(spec(), manifest([{ path: "src/handler.ts" }]), sizeOf());
+    expect(r._kind).toBe("ok");
+  });
+
+  it("isSensitivePath classifies correctly", () => {
+    expect(isSensitivePath("package.json")).toBe(true);
+    expect(isSensitivePath("src/package.json")).toBe(true);
+    expect(isSensitivePath("src/handler.ts")).toBe(false);
+    expect(isSensitivePath("README.md")).toBe(false);
+  });
+
+  it("is case-insensitive (no cased bypass)", () => {
+    expect(isSensitivePath("Package.json")).toBe(true);
+    expect(isSensitivePath("PACKAGE.JSON")).toBe(true);
+    expect(isSensitivePath("infra/DockerFile")).toBe(true);
+    expect(isSensitivePath(".NPMRC")).toBe(true);
+    expect(isSensitivePath("Gemfile.lock")).toBe(true);
+  });
+});
+
+describe("resolvePrMeta — runtime PR body/labels override", () => {
+  const basePr = { title: "t", body: "static", labels: ["self-heal"] } as const;
+
+  it("returns the static pr when no meta", () => {
+    expect(resolvePrMeta(basePr, undefined)).toEqual(basePr);
+  });
+
+  it("overrides body and unions+dedupes labels", () => {
+    const r = resolvePrMeta(basePr, { body: "✅ verified", labels: ["self-heal", "self-heal:verified"] });
+    expect(r).not.toBe(false);
+    if (r !== false) {
+      expect(r.body).toBe("✅ verified");
+      expect([...(r.labels ?? [])].sort()).toEqual(["self-heal", "self-heal:verified"].sort());
+    }
+  });
+
+  it("ignores meta for a push-only (false) pr", () => {
+    expect(resolvePrMeta(false, { body: "x" })).toBe(false);
   });
 });

@@ -78,8 +78,39 @@ export type WritebackPr =
       readonly body: string;
       /** Open as a draft PR. Default `true` — a proposed diff wants review. */
       readonly draft?: boolean;
+      /** Static labels applied to the PR. A run can also supply runtime labels
+       * via the {@link WRITEBACK_PR_META_FILE} override (e.g. self-heal's
+       * `self-heal:verified` vs `self-heal:unverified`). Merged, deduped. */
+      readonly labels?: readonly string[];
     }
   | false;
+
+/** The runtime PR-meta override filename within the writeback artifact dir. A
+ * run that needs the PR body/labels to reflect a RUNTIME outcome (e.g.
+ * self-heal's verify result) writes this JSON beside the manifest; the Worker
+ * merges it over the spec's static `pr` (bounded + only the fields below). The
+ * spec must opt in via {@link WritebackSpec.allowPrMetaOverride}. */
+export const WRITEBACK_PR_META_FILE = "pr.json";
+
+/** Cap on a runtime-supplied PR body (bytes) — bounds untrusted-ish override. */
+export const MAX_WRITEBACK_PR_BODY_CHARS = 65_536;
+/** Cap on the number of runtime-supplied labels. */
+export const MAX_WRITEBACK_PR_LABELS = 10;
+/** Cap on a single label's length. */
+export const MAX_WRITEBACK_PR_LABEL_CHARS = 50;
+
+/** The runtime PR-meta override a run may write to {@link WRITEBACK_PR_META_FILE}. */
+export const WritebackPrMeta = Schema.Struct({
+  /** Override the PR body (e.g. embed the verify outcome). */
+  body: Schema.optional(Schema.String.pipe(Schema.maxLength(MAX_WRITEBACK_PR_BODY_CHARS))),
+  /** Labels to add (merged with the spec's static labels). */
+  labels: Schema.optional(
+    Schema.Array(Schema.String.pipe(Schema.maxLength(MAX_WRITEBACK_PR_LABEL_CHARS))).pipe(
+      Schema.maxItems(MAX_WRITEBACK_PR_LABELS),
+    ),
+  ),
+});
+export type WritebackPrMeta = Schema.Schema.Type<typeof WritebackPrMeta>;
 
 /**
  * The writeback capability a run DECLARES. Everything here is Worker-side,
@@ -122,6 +153,101 @@ export type WritebackSpec = {
    * file can be part of a writeback.
    */
   readonly allowWorkflows?: boolean;
+  /**
+   * Allow writing **sensitive build/CI files** — package manifests, lockfiles,
+   * Dockerfiles, `.npmrc`/`.yarnrc`, and CI config ({@link isSensitivePath}).
+   * Off by default: a `package.json` `postinstall` (or a poisoned lockfile /
+   * Dockerfile) is arbitrary code that runs the next time CI installs — an RCE
+   * vector identical in spirit to `.github/workflows`. A `pathAllowlist` of
+   * `src/**` blocks these only INCIDENTALLY; this gate blocks them regardless of
+   * allowlist (security review #8, specs/08-self-healing.md § 10.1). Self-heal
+   * and any agent-authored writeback must leave this off.
+   */
+  readonly allowSensitivePaths?: boolean;
+  /**
+   * Allow a run to override the PR `body`/`labels` at RUNTIME via a
+   * {@link WRITEBACK_PR_META_FILE} (`pr.json`) beside the manifest — needed when
+   * the PR text must reflect a runtime outcome (self-heal's verify result:
+   * `✅ verified` vs a `self-heal:unverified` label). Off by default; the title
+   * and the diff are never overridable this way. The runtime reads `pr.json`,
+   * validates it against {@link WritebackPrMeta}, and merges via
+   * {@link resolvePrMeta}. (security review #3, specs/08-self-healing.md § 10.2.)
+   */
+  readonly allowPrMetaOverride?: boolean;
+};
+
+/**
+ * Sensitive build/CI paths whose write is gated behind
+ * {@link WritebackSpec.allowSensitivePaths} regardless of the `pathAllowlist`.
+ * Writing any of these can execute arbitrary code on the next install / CI run
+ * (`postinstall`, a poisoned lockfile resolution, a Dockerfile `RUN`, an
+ * `.npmrc` registry pivot). `.github/workflows/**` keeps its own dedicated gate.
+ */
+export const isSensitivePath = (path: string): boolean => {
+  const rawBase = path.slice(path.lastIndexOf("/") + 1);
+  // Case-insensitive match: on a case-insensitive filesystem `Package.json`
+  // still lands as `package.json`, so the exact-equality checks below would let
+  // a cased variant slip past the gate (review #146).
+  const base = rawBase.toLowerCase();
+  // Package manifests + lockfiles (any depth).
+  if (base === "package.json") return true;
+  if (
+    base === "pnpm-lock.yaml" ||
+    base === "package-lock.json" ||
+    base === "npm-shrinkwrap.json" ||
+    base === "yarn.lock" ||
+    base === "bun.lock" ||
+    base === "bun.lockb" ||
+    base === "cargo.lock" ||
+    base === "poetry.lock" ||
+    base === "pipfile.lock" ||
+    base === "gemfile.lock" ||
+    base === "go.sum" ||
+    base === "composer.lock"
+  ) {
+    return true;
+  }
+  // Registry / package-manager config (postinstall + registry pivots).
+  if (base === ".npmrc" || base === ".yarnrc" || base === ".yarnrc.yml" || base === ".pnpmfile.cjs") {
+    return true;
+  }
+  // Dockerfiles (any `Dockerfile` or `*.Dockerfile` / `Dockerfile.*`). Compared
+  // lowercased — over-blocking a cased variant is harmless, missing one is not.
+  if (base === "dockerfile" || base.startsWith("dockerfile.") || base.endsWith(".dockerfile")) {
+    return true;
+  }
+  // CI config beyond `.github/workflows` (which has its own gate).
+  if (path.startsWith(".github/actions/")) return true;
+  if (
+    base === ".gitlab-ci.yml" ||
+    base === "jenkinsfile" ||
+    base === "azure-pipelines.yml" ||
+    path.startsWith(".circleci/")
+  ) {
+    return true;
+  }
+  return false;
+};
+
+/**
+ * Merge a runtime PR-meta override ({@link WritebackPrMeta}, from
+ * {@link WRITEBACK_PR_META_FILE}) over a spec's static `pr`. Pure. Only applied
+ * when `spec.allowPrMetaOverride` is set elsewhere by the runtime; this helper
+ * just computes the merged `{ title, body, draft, labels }`. Labels from both
+ * sides are unioned + deduped. A `false` (push-only) spec ignores meta.
+ */
+export const resolvePrMeta = (
+  pr: WritebackPr,
+  meta: WritebackPrMeta | undefined,
+): WritebackPr => {
+  if (pr === false) return false;
+  if (meta === undefined) return pr;
+  const labels = [...new Set([...(pr.labels ?? []), ...(meta.labels ?? [])])];
+  return {
+    ...pr,
+    ...(meta.body !== undefined ? { body: meta.body } : {}),
+    ...(labels.length > 0 ? { labels } : {}),
+  };
 };
 
 /** A single manifest entry — what the CONTAINER asks to change. */
@@ -152,6 +278,7 @@ export type WritebackRejection =
   | { readonly kind: "dot-segment"; readonly path: string }
   | { readonly kind: "not-allowlisted"; readonly path: string }
   | { readonly kind: "workflows-not-opted-in"; readonly path: string }
+  | { readonly kind: "sensitive-not-opted-in"; readonly path: string }
   | { readonly kind: "duplicate-path"; readonly path: string }
   | { readonly kind: "too-many-files"; readonly count: number; readonly cap: number }
   | { readonly kind: "too-large"; readonly bytes: number; readonly cap: number };
@@ -266,6 +393,15 @@ export const validateManifest = (
       continue;
     }
 
+    // Sensitive build/CI files (package.json/lockfiles/Dockerfile/.npmrc/CI
+    // config) require the explicit opt-in — a postinstall/lockfile/Dockerfile
+    // write is arbitrary code on the next CI install. Checked BEFORE the
+    // allowlist so the message is precise (security review #8).
+    if (isSensitivePath(path) && spec.allowSensitivePaths !== true) {
+      reasons.push({ kind: "sensitive-not-opted-in", path });
+      continue;
+    }
+
     if (
       spec.pathAllowlist !== undefined &&
       spec.pathAllowlist.length > 0 &&
@@ -313,6 +449,8 @@ export const describeRejection = (r: WritebackRejection): string => {
       return `path not in allowlist: ${r.path}`;
     case "workflows-not-opted-in":
       return `${r.path} is under .github/workflows/ — the run must set writeback.allowWorkflows (and the App needs the workflows permission)`;
+    case "sensitive-not-opted-in":
+      return `${r.path} is a sensitive build/CI file (manifest/lockfile/Dockerfile/.npmrc/CI config) — the run must set writeback.allowSensitivePaths (postinstall/lockfile RCE vector)`;
     case "duplicate-path":
       return `duplicate path: ${r.path}`;
     case "too-many-files":
