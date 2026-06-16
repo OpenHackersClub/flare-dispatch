@@ -19,3 +19,4 @@ export { prReview } from "./pr-review";
 export { specDriftPr } from "./spec-drift-pr";
 export { ciTriagePr } from "./ci-triage-pr";
 export { refreshFixtures } from "./refresh-fixtures";
+export { selfHealPr } from "./self-heal-pr";
