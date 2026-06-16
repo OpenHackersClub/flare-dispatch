@@ -41,15 +41,13 @@
 // repos, executions never linked anywhere, and retroactive enumeration of
 // history all stay closed.
 
+import { makeCapabilityToken } from "./capability-token";
 import type { Env } from "./env";
 
 /** HKDF `info` label — domain-separates `k_logs` from the dispatch HMAC key. */
 const HKDF_INFO = "flare-dispatch/log-link/v1";
 
-/** Token length in base64url chars — 22 chars ≈ 132 bits, ample for a cap. */
-const TOKEN_CHARS = 22;
-
-const encoder = new TextEncoder();
+const token = makeCapabilityToken(HKDF_INFO);
 
 /**
  * The valid shape of an execution id wherever it arrives in a URL path. Covers
@@ -79,76 +77,14 @@ export const resolveLogLinkSecret = (env: Env): string | undefined => {
   return undefined;
 };
 
-/** base64url (no padding) of a byte buffer. */
-const base64url = (bytes: ArrayBuffer): string => {
-  let binary = "";
-  const view = new Uint8Array(bytes);
-  for (let i = 0; i < view.length; i++) binary += String.fromCharCode(view[i]!);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-
-/** Derive the HMAC signing key `k_logs` from the input keying material. */
-const deriveKey = async (ikm: string): Promise<CryptoKey> => {
-  const base = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(ikm),
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
-  return crypto.subtle.deriveKey(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      // No per-token salt: the label provides domain separation and the id is
-      // the signed message, so a fixed (empty) salt is correct here.
-      salt: new Uint8Array(0),
-      info: encoder.encode(HKDF_INFO),
-    },
-    base,
-    { name: "HMAC", hash: "SHA-256", length: 256 },
-    false,
-    ["sign"],
-  );
-};
-
 /** Mint the capability token for `executionId` under the given key material. */
-export const signLogToken = async (
-  ikm: string,
-  executionId: string,
-): Promise<string> => {
-  const key = await deriveKey(ikm);
-  const mac = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(executionId) as BufferSource,
-  );
-  return base64url(mac).slice(0, TOKEN_CHARS);
-};
-
-/** Constant-time-ish equality for equal-length token strings. */
-const safeEqual = (a: string, b: string): boolean => {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-};
+export const signLogToken = token.sign;
 
 /**
  * Verify a presented token for `executionId`. Recomputes the expected token and
  * compares constant-time. `false` for a missing/short token or any mismatch.
  */
-export const verifyLogToken = async (
-  ikm: string,
-  executionId: string,
-  presented: string | null | undefined,
-): Promise<boolean> => {
-  if (typeof presented !== "string" || presented.length !== TOKEN_CHARS) {
-    return false;
-  }
-  const expected = await signLogToken(ikm, executionId);
-  return safeEqual(expected, presented);
-};
+export const verifyLogToken = token.verify;
 
 /**
  * Build the tokened log-viewer URL for an execution — the link embedded in the
