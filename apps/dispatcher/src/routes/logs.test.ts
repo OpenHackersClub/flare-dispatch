@@ -198,11 +198,13 @@ describe("GET /v1/executions/:id", () => {
       "exec.ndjson",
     );
     expect(body.summary).toEqual({ ok: true });
-    const arts = body.artifacts as { name: string; url: string }[];
+    const arts = body.artifacts as { name: string; url: string; size: number }[];
     expect(arts.map((a) => a.name)).toContain("pr-review.diff");
-    expect(arts.find((a) => a.name === "pr-review.diff")!.url).toContain(
-      "/v1/artifacts/",
-    );
+    const diff = arts.find((a) => a.name === "pr-review.diff")!;
+    expect(diff.url).toContain("/v1/artifacts/");
+    // Size travels with each artifact so the viewer can label it and guard
+    // large inline previews.
+    expect(diff.size).toBeGreaterThan(0);
   });
 
   it("404s an unknown execution (with a valid-shape token)", async () => {
@@ -259,6 +261,14 @@ describe("GET /logs/:execution (viewer)", () => {
     expect(html).toContain("renderSteps");
     expect(html).toContain("renderSummary");
     expect(html).toContain("renderArtifacts");
+    // Steps render as a flame chart / waterfall (bars sized by duration), not
+    // equal-width chips.
+    expect(html).toContain('id="steps" class="flame"');
+    // Artifacts open inline in a GitHub-style file viewer, with a raw
+    // open-in-new-tab link alongside.
+    expect(html).toContain("openArtifact");
+    expect(html).toContain('id="artview"');
+    expect(html).toContain("art-raw");
   });
 
   it("403s the viewer without a token", async () => {
