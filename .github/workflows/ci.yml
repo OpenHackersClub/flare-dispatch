@@ -92,6 +92,12 @@ jobs:
       - name: Verify recipe mirrors match their runs
         run: node scripts/sync-recipes.mjs --check
 
+      # The language-agnostic JSON Schema artifact for `signals/v1` is generated
+      # from `scripts/emit-signals-schema.mjs`. Fail if the committed
+      # `schemas/signals.v1.schema.json` is stale (run `pnpm emit-signals-schema`).
+      - name: Verify signals JSON Schema is in sync
+        run: node scripts/emit-signals-schema.mjs --check
+
   # The `dispatch-test` dogfood job (an `offload-test` sandbox run on every
   # PR/push) was removed: each dispatch held a sandbox container — DO +
   # container duration billing — to duplicate what the native `typecheck` job

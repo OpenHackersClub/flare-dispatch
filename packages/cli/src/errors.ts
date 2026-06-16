@@ -80,3 +80,30 @@ export class BadResponse extends Schema.TaggedError<BadResponse>()(
     reason: Schema.String,
   },
 ) {}
+
+/**
+ * The `collect-command` exited non-zero. The signals collector contract is
+ * "always exit 0 with a (possibly empty) array" — a non-zero exit means the
+ * collector itself is broken, so we fail the dispatch BEFORE signing rather
+ * than silently dropping signals. `stderrTail` carries the tail of the
+ * command's stderr for the operator.
+ */
+export class CollectCommandFailed extends Schema.TaggedError<CollectCommandFailed>()(
+  "CollectCommandFailed",
+  {
+    exitCode: Schema.Number,
+    stderrTail: Schema.String,
+  },
+) {}
+
+/**
+ * The `collect-command` ran but its stdout could not be turned into a valid
+ * `signals/v1` payload — not JSON, not a `Signal[]` / `{ signals: [...] }`
+ * shape, or it (or the merge with caller-provided signals) violated the
+ * contract caps. Rejected before signing so a malformed collector never
+ * produces a dispatch.
+ */
+export class SignalsInvalid extends Schema.TaggedError<SignalsInvalid>()(
+  "SignalsInvalid",
+  { reason: Schema.String },
+) {}

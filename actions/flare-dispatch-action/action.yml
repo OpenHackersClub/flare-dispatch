@@ -28,6 +28,22 @@ inputs:
     description: JSON object of run inputs. Validated against the run's Schema on the Worker side.
     required: false
     default: "{}"
+  collect-command:
+    description: >-
+      Optional consumer-side observability collector. When set, the command is
+      run in a shell (cwd = the workspace) and its STDOUT is parsed as a
+      `signals/v1` payload — either a bare JSON array of signals or an object
+      with a `signals` array property. The collected signals are validated
+      against the contract (max 50 items; per-field caps; required
+      source/title/detail) and merged onto any `signals` already in `inputs`
+      (caller-provided first), then folded into the dispatch. The command MUST
+      print ONLY JSON to stdout (diagnostics → stderr, passed through to the
+      log) and exit 0; a non-zero exit or malformed output fails the Action
+      BEFORE signing/dispatching. Keeps the Dispatcher vendor-blind — the
+      vendor query logic + credentials live entirely in your collector. See
+      `schemas/signals.v1.schema.json` and `specs/02-runs.md` § Signals.
+    required: false
+    default: ""
   mode:
     description: "Dispatch mode. V0 supports 'fire-and-forget' only; 'await' is deferred to V1."
     required: false

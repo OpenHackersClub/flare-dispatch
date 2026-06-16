@@ -172,5 +172,18 @@ export {
   type StepRunnerService,
 } from "./services/step-runner";
 
+// --- Signals (the vendor-blind `signals/v1` contract) -------------------------
+export {
+  SIGNALS_CONTRACT_VERSION,
+  MAX_SIGNALS,
+  MAX_SIGNAL_SOURCE_CHARS,
+  MAX_SIGNAL_TITLE_CHARS,
+  MAX_SIGNAL_DETAIL_CHARS,
+  MAX_SIGNAL_URL_CHARS,
+  Signal,
+  SignalArray,
+  type SignalT,
+} from "./signals";
+
 // --- Errors ------------------------------------------------------------------
 export * from "./errors";

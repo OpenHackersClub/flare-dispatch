@@ -19,11 +19,14 @@ import { Console, Effect, Match, Schedule } from "effect";
 import {
   BadMode,
   BadResponse,
+  CollectCommandFailed,
   InvalidEndpoint,
   MissingInput,
   PermanentFailure,
+  SignalsInvalid,
   TransientFailure,
 } from "./errors.js";
+import { collectAndMergeSignals } from "./signals.js";
 
 /**
  * Percent-encode `%`, `\r`, `\n` for safe interpolation into a GitHub Actions
@@ -173,8 +176,36 @@ export const resolveHeadSha = (env: DispatchEnv): string => {
  *   * `actor` is `undefined` when unset (and therefore omitted from the JSON).
  *   * `workflow_run_id` is `undefined` when unset or `0`.
  *   * `inputs` defaults to `{}` and is parsed from JSON.
+ *
+ * `inputsOverride` (optional): the already-resolved `inputs` object to embed
+ * verbatim instead of parsing `INPUT_INPUTS`. Used by the `collect-command`
+ * path, which parses + augments `inputs` (merging collected signals) before
+ * the body is assembled.
  */
-export const buildBody = (env: DispatchEnv): DispatchBody => {
+/**
+ * Parse the caller-supplied `inputs` action input as JSON (defaulting to `{}`).
+ * Fails with `SignalsInvalid` when it isn't valid JSON — surfaced only on the
+ * `collect-command` path, which needs the parsed object to merge signals into.
+ * (The plain path leaves `JSON.parse` inside `buildBody` so its error shape is
+ * unchanged for callers that don't use `collect-command`.)
+ */
+export const parseRawInputs = (
+  env: DispatchEnv,
+): Effect.Effect<unknown, SignalsInvalid> =>
+  Effect.try({
+    try: () => JSON.parse(readInput(env, "inputs") ?? "{}") as unknown,
+    catch: (cause) =>
+      new SignalsInvalid({
+        reason: `\`inputs\` is not valid JSON: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      }),
+  });
+
+export const buildBody = (
+  env: DispatchEnv,
+  inputsOverride?: unknown,
+): DispatchBody => {
   const runId = Number(env.GITHUB_RUN_ID ?? 0);
   const notifyEmails = parseEmailList(readInput(env, "notify-emails"));
   return {
@@ -193,7 +224,10 @@ export const buildBody = (env: DispatchEnv): DispatchBody => {
         Number(readInput(env, "installation-id") ?? 0),
       ),
     },
-    inputs: JSON.parse(readInput(env, "inputs") ?? "{}") as unknown,
+    inputs:
+      inputsOverride !== undefined
+        ? inputsOverride
+        : (JSON.parse(readInput(env, "inputs") ?? "{}") as unknown),
     trigger: {
       workflow_run_id: runId || undefined,
       job_id: env.GITHUB_JOB ? env.GITHUB_JOB : undefined,
@@ -426,6 +460,8 @@ export const runDispatch = (
   | PermanentFailure
   | TransientFailure
   | BadResponse
+  | CollectCommandFailed
+  | SignalsInvalid
 > =>
   Effect.gen(function* () {
     const env = deps.env;
@@ -477,7 +513,21 @@ export const runDispatch = (
     // the (signed) request to a different endpoint. Security review M4.
     const url = `${endpoint}/v1/dispatch/${encodeURIComponent(run)}`;
 
-    const body = buildBody(env);
+    // Optional `collect-command`: run a consumer-side observability collector,
+    // validate its `signals/v1` output, and merge it onto `inputs.signals`
+    // BEFORE the body is assembled + signed. A broken collector (non-zero exit
+    // or malformed output) fails the Action here, never producing a dispatch.
+    const collectCommand = readInput(env, "collect-command");
+    const inputsOverride =
+      collectCommand !== undefined
+        ? yield* collectAndMergeSignals({
+            command: collectCommand,
+            cwd: env.GITHUB_WORKSPACE ?? process.cwd(),
+            inputs: yield* parseRawInputs(env),
+          })
+        : undefined;
+
+    const body = buildBody(env, inputsOverride);
     // Serialize ONCE — those exact bytes are what we sign AND what we send
     // (raw-bytes contract with the verifier).
     const bytes = new TextEncoder().encode(JSON.stringify(body));
@@ -601,9 +651,27 @@ export const reportFailure = (
     | InvalidEndpoint
     | PermanentFailure
     | TransientFailure
-    | BadResponse,
+    | BadResponse
+    | CollectCommandFailed
+    | SignalsInvalid,
 ): Effect.Effect<never, never, never> =>
   Match.value(e).pipe(
+    Match.tag("CollectCommandFailed", ({ exitCode, stderrTail }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `::error::collect-command exited ${exitCode} — a signals collector must exit 0 with valid signals/v1 JSON. stderr tail: ${safeForCmd(stderrTail)}`,
+        );
+        return yield* Effect.die(e);
+      }),
+    ),
+    Match.tag("SignalsInvalid", ({ reason }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `::error::collected signals are invalid: ${safeForCmd(reason)}`,
+        );
+        return yield* Effect.die(e);
+      }),
+    ),
     Match.tag("BadMode", ({ mode }) =>
       Effect.gen(function* () {
         yield* Console.error(

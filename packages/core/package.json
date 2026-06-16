@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./primitives": "./src/primitives/index.ts",
+    "./signals": "./src/signals.ts",
     "./testing": "./src/testing.ts"
   },
   "scripts": {
