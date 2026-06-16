@@ -237,6 +237,30 @@ export interface Env {
   readonly AI?: Ai;
 
   /**
+   * AgentBudget Durable Object — one instance per self-heal execution, the
+   * single-writer home for the model-proxy's per-execution token budget +
+   * request cap + liveness (`agent-budget-do.ts`). Absent → the model-proxy
+   * route default-denies (503); other paths are unaffected. Declared in
+   * wrangler `durable_objects` + a `new_sqlite_classes` migration.
+   * Spec: specs/08-self-healing.md § 6.3.
+   */
+  readonly AGENT_BUDGET?: DurableObjectNamespace<import("./agent-budget-do").AgentBudget>;
+
+  /**
+   * Optional dedicated secret for the agent model-proxy capability token. Falls
+   * back to `HMAC_SECRET` (HKDF label keeps them independent). Neither set → the
+   * model-proxy route default-denies. `wrangler secret put AGENT_PROXY_SECRET`.
+   */
+  readonly AGENT_PROXY_SECRET?: string;
+
+  /**
+   * Optional fallback model id for the agent model-proxy when CONFIG_KV
+   * `self-heal.proxy.model` is unset. A var, not a secret (the binding is the
+   * auth). Absent → a Workers AI catalog default.
+   */
+  readonly AGENT_PROXY_MODEL?: string;
+
+  /**
    * Optional AI Gateway id the `modelGateway` routes Workers AI calls through
    * (for caching / rate-limiting / observability). A var, not a secret. Absent
    * / empty → call Workers AI directly (no gateway). Set per-deploy via the

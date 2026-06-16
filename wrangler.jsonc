@@ -111,13 +111,16 @@
   "durable_objects": {
     "bindings": [
       { "name": "RUNS_SANDBOX", "class_name": "RunSandbox" },
-      { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" }
+      { "name": "RUNS_SANDBOX_BROWSER", "class_name": "RunSandboxBrowser" },
+      // Per-execution model-proxy token budget (self-heal, specs/08 § 6.3).
+      { "name": "AGENT_BUDGET", "class_name": "AgentBudget" }
     ]
   },
 
   "migrations": [
     { "tag": "v0", "new_sqlite_classes": ["RunSandbox"] },
-    { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] }
+    { "tag": "v1", "new_sqlite_classes": ["RunSandboxBrowser"] },
+    { "tag": "v2", "new_sqlite_classes": ["AgentBudget"] }
   ],
 
   "r2_buckets": [
