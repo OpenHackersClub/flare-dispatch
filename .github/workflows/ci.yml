@@ -98,6 +98,11 @@ jobs:
       - name: Verify signals JSON Schema is in sync
         run: node scripts/emit-signals-schema.mjs --check
 
+      # Same gate for the `incident/v1` fix-side contract
+      # (`scripts/emit-incident-schema.mjs` → `schemas/incident.v1.schema.json`).
+      - name: Verify incident JSON Schema is in sync
+        run: node scripts/emit-incident-schema.mjs --check
+
   # The `dispatch-test` dogfood job (an `offload-test` sandbox run on every
   # PR/push) was removed: each dispatch held a sandbox container — DO +
   # container duration billing — to duplicate what the native `typecheck` job
