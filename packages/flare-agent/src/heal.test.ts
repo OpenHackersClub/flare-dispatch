@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   PROPOSE_FIX_TOOL,
+  isSafeRepoPath,
   parseProposeFix,
   renderUserMessage,
   runHeal,
@@ -125,4 +126,52 @@ describe("runHeal", () => {
     await runHeal({ pack, io, callModel: async () => fixCall({ outcome: "no-fix" }) });
     expect(read).toHaveBeenCalledWith("src/handler.ts");
   });
+
+  it("DROPS unsafe paths (traversal/absolute/.git) — never writes outside the clone", async () => {
+    const io = memIo({ "src/handler.ts": "old" });
+    const write = vi.spyOn(io, "writeFile");
+    const r = await runHeal({
+      pack,
+      io,
+      callModel: async () =>
+        fixCall({
+          outcome: "patched",
+          summary: "evil",
+          files: [
+            { path: "../../etc/passwd", content: "x" },
+            { path: "/etc/cron.d/x", content: "x" },
+            { path: ".git/hooks/post-checkout", content: "x" },
+            { path: "src/handler.ts", content: "safe edit" },
+          ],
+        }),
+    });
+    // Only the in-clone file was written.
+    expect([...r.changedFiles]).toEqual(["src/handler.ts"]);
+    expect(io.files["src/handler.ts"]).toBe("safe edit");
+    for (const [p] of write.mock.calls) expect(isSafeRepoPath(p)).toBe(true);
+    expect(r.summary).toContain("dropped 3 unsafe path");
+  });
+
+  it("all-unsafe fix → needs-human (not a silent no-op)", async () => {
+    const io = memIo();
+    const r = await runHeal({
+      pack,
+      io,
+      callModel: async () => fixCall({ outcome: "patched", files: [{ path: "../x", content: "y" }] }),
+    });
+    expect(r.outcome).toBe("needs-human");
+    expect(r.changedFiles).toEqual([]);
+  });
+});
+
+describe("isSafeRepoPath", () => {
+  it.each(["src/a.ts", "a/b/c.ts", "x.ts", "deep/nested/file.test.ts"])("accepts %s", (p) => {
+    expect(isSafeRepoPath(p)).toBe(true);
+  });
+  it.each(["", "/abs", "../up", "a/../b", "./a", "a//b", ".git/hooks/x", "C:\\win", "a\\..\\b"])(
+    "rejects %s",
+    (p) => {
+      expect(isSafeRepoPath(p)).toBe(false);
+    },
+  );
 });

@@ -145,6 +145,25 @@ type ProposeFix = {
   addedTests?: ReadonlyArray<string>;
 };
 
+/**
+ * Is `p` a safe repo-relative path to write? The model's proposed paths are
+ * UNTRUSTED (injection can steer them). A write must stay inside the clone — an
+ * absolute path (`/etc/…`, `~/.npmrc`) or a `..` escape lands OUTSIDE the clone
+ * BEFORE writeback ever validates the manifest, and `git status --porcelain`
+ * wouldn't even capture it (e.g. overwriting `.git/hooks/*` → RCE on the next
+ * git op). So reject absolute paths, Windows drive/UNC, any `..`/`.`/empty
+ * segment, and a leading `.git/`. The Worker-side writeback allowlist is the
+ * SECOND wall; this is the first. specs/08-self-healing.md § 6.1, § 10.1.
+ */
+export const isSafeRepoPath = (p: string): boolean => {
+  if (p.length === 0) return false;
+  if (p.startsWith("/") || p.startsWith("\\") || /^[A-Za-z]:/.test(p)) return false;
+  const segments = p.split(/[/\\]/);
+  if (segments.some((s) => s === ".." || s === "." || s === "")) return false;
+  if (segments[0] === ".git") return false;
+  return true;
+};
+
 /** Coerce a tool-call's `arguments` (object or JSON string) to ProposeFix. */
 export const parseProposeFix = (args: unknown): ProposeFix | undefined => {
   let obj = args;
@@ -202,20 +221,32 @@ export const runHeal = async (opts: {
     };
   }
 
-  // Apply the proposed edits.
+  // Apply the proposed edits — but ONLY to safe, in-clone paths. An unsafe path
+  // (absolute / `..` / `.git/`) the model returned is dropped, not written: it
+  // is an out-of-clone write that would escape the writeback gate entirely.
   const changed: string[] = [];
+  const rejected: string[] = [];
   for (const f of fix.files ?? []) {
-    if (typeof f.path === "string" && typeof f.content === "string" && f.path.length > 0) {
-      await io.writeFile(f.path, f.content);
-      changed.push(f.path);
+    if (typeof f.path !== "string" || typeof f.content !== "string") continue;
+    if (!isSafeRepoPath(f.path)) {
+      rejected.push(f.path);
+      continue;
     }
+    await io.writeFile(f.path, f.content);
+    changed.push(f.path);
   }
-  const addedTests = (fix.addedTests ?? []).filter((t): t is string => typeof t === "string");
+  const addedTests = (fix.addedTests ?? []).filter(
+    (t): t is string => typeof t === "string" && isSafeRepoPath(t),
+  );
 
   return {
     contractVersion: "v1",
-    outcome: changed.length > 0 ? "patched" : "no-fix",
-    summary: fix.summary ?? "applied a fix",
+    // An attempted-but-all-unsafe fix is needs-human, not a silent no-op.
+    outcome: changed.length > 0 ? "patched" : rejected.length > 0 ? "needs-human" : "no-fix",
+    summary:
+      rejected.length > 0
+        ? `${fix.summary ?? "applied a fix"} (dropped ${rejected.length} unsafe path(s): ${rejected.slice(0, 3).join(", ")})`
+        : fix.summary ?? "applied a fix",
     changedFiles: changed,
     confidence: typeof fix.confidence === "number" ? fix.confidence : 0.5,
     addedTests,

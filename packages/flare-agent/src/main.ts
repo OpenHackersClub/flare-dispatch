@@ -13,8 +13,8 @@
 // Spec: specs/08-self-healing.md § 6.1, § 6.3.
 
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
-import { runHeal, type CallModel, type IncidentPack } from "./heal";
+import { resolve, dirname, sep } from "node:path";
+import { isSafeRepoPath, runHeal, type CallModel, type IncidentPack } from "./heal";
 
 const RESULT_FILE = "agent-result.json";
 
@@ -78,7 +78,14 @@ const main = async (): Promise<number> => {
         }
       },
       writeFile: async (p, content) => {
-        await writeFile(resolve(p), content, "utf8");
+        // Defense in depth (runHeal already drops unsafe paths): confine every
+        // write to the clone root (cwd) so an out-of-clone path can never land.
+        const root = process.cwd();
+        const target = resolve(root, p);
+        if (!isSafeRepoPath(p) || (target !== root && !target.startsWith(root + sep))) {
+          throw new Error(`refusing out-of-clone write: ${p}`);
+        }
+        await writeFile(target, content, "utf8");
       },
     },
     callModel: makeCallModel(proxyUrl, token),
