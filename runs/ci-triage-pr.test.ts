@@ -3,7 +3,7 @@
 // (deployments) + model fakes.
 
 import { it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Either, Schema } from "effect";
 import { describe, expect } from "vitest";
 import { makeCFRuntimeTest } from "@flare-dispatch/core/testing";
 import type {
@@ -14,7 +14,17 @@ import type {
 import { ciTriagePr } from "./ci-triage-pr";
 
 const firedAt = Date.UTC(2026, 5, 3); // 2026-06-03
-const input = { firedAt } as const;
+// `run()` takes the DECODED input shape (the dispatcher's Schema decode applies
+// the `signals: []` default before the run sees it).
+const input = { firedAt, signals: [] } as const;
+
+const exceptionSignal = {
+  source: "workers-observability:my-api",
+  title: "Unhandled exception in fetch handler",
+  detail: "TypeError: Cannot read properties of undefined (reading 'id') — 12 occurrences over 24h",
+  url: "https://dash.example.com/observability?service=my-api",
+  count: 12,
+} as const;
 
 const failedRun: WorkflowRunRef = {
   repo: "owner/name",
@@ -115,5 +125,96 @@ describe("ci-triage-pr", () => {
       expect(out.prOpened).toBe(false);
       expect(handles.github.openDraftPullRequestCalls).toHaveLength(0);
     }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("triages caller-supplied signals alone and opens the PR", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config,
+      // No seeded CI/deploy failures — the signal is the only evidence.
+      github: { workflowRuns: [], now: firedAt },
+      cloudflare: { deployments: [], now: firedAt },
+      modelGateway: { responses: [triage()] },
+    });
+
+    return Effect.gen(function* () {
+      const out = yield* ciTriagePr.run({ firedAt, signals: [exceptionSignal] });
+      expect(out.actionsFailures).toBe(0);
+      expect(out.deployFailures).toBe(0);
+      expect(out.signalsCount).toBe(1);
+      expect(out.prOpened).toBe(true);
+      // The model WAS consulted — a signals-only day is not a green day.
+      expect(handles.modelGateway.requests).toHaveLength(1);
+
+      const calls = handles.github.openDraftPullRequestCalls;
+      expect(calls).toHaveLength(1);
+      const content = calls[0]!.files[0]!.content;
+      expect(content).toContain("## Raw signals");
+      expect(content).toContain(exceptionSignal.source);
+      expect(content).toContain(exceptionSignal.title);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("renders signals alongside failures in the report file", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config,
+      github: { workflowRuns: [failedRun], now: firedAt },
+      cloudflare: { deployments: [], now: firedAt },
+      modelGateway: { responses: [triage()] },
+    });
+
+    return Effect.gen(function* () {
+      const out = yield* ciTriagePr.run({ firedAt, signals: [exceptionSignal] });
+      expect(out.actionsFailures).toBe(1);
+      expect(out.signalsCount).toBe(1);
+
+      const calls = handles.github.openDraftPullRequestCalls;
+      expect(calls).toHaveLength(1);
+      const content = calls[0]!.files[0]!.content;
+      expect(content).toContain('"CI/CD"'); // the failed workflow
+      expect(content).toContain(exceptionSignal.detail); // and the signal
+      // The model saw both surfaces in one user body.
+      const request = handles.modelGateway.requests[0]!;
+      expect(JSON.stringify(request)).toContain("Observability signals to triage");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stays green when there are no failures AND no signals", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config,
+      modelGateway: { responses: [triage()] },
+    });
+    return Effect.gen(function* () {
+      const out = yield* ciTriagePr.run({ firedAt, signals: [] });
+      expect(out.prOpened).toBe(false);
+      expect(out.signalsCount).toBe(0);
+      expect(handles.modelGateway.requests).toHaveLength(0);
+      expect(handles.github.openDraftPullRequestCalls).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("ci-triage-pr input schema (dispatch-gate decode)", () => {
+  // `run()` is called with already-decoded input; the caps + default are
+  // enforced where the dispatcher decodes `inputs` against the run schema
+  // (routes/dispatch.ts). Exercise that decode directly.
+  const decode = Schema.decodeUnknownEither(ciTriagePr.inputs);
+
+  it("defaults absent signals to [] (schedule-mode shape)", () => {
+    const decoded = Either.getOrThrow(decode({ firedAt }));
+    expect(decoded.signals).toEqual([]);
+  });
+
+  it("rejects more than 50 signals", () => {
+    const signals = Array.from({ length: 51 }, (_, i) => ({
+      source: "s",
+      title: `t${i}`,
+      detail: "d",
+    }));
+    expect(Either.isLeft(decode({ firedAt, signals }))).toBe(true);
+  });
+
+  it("rejects an over-long detail", () => {
+    const signals = [{ source: "s", title: "t", detail: "x".repeat(2_001) }];
+    expect(Either.isLeft(decode({ firedAt, signals }))).toBe(true);
   });
 });
