@@ -22,6 +22,7 @@
 import type { Env } from "./env";
 import { handleAdminEvent } from "./routes/admin-events";
 import { handleArtifact } from "./routes/artifacts";
+import { handleAgentInference } from "./routes/agent-inference";
 import { handleBrowserCdp } from "./routes/browser-cdp";
 import { handleReplay } from "./routes/replay";
 import { handleDispatch } from "./routes/dispatch";
@@ -144,6 +145,24 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleSignalsWebhook(request, env, decodeURIComponent(segments[3]!));
+  }
+
+  // POST /v1/agent/:execution/inference — self-heal model-proxy. An in-sandbox
+  // agent reaches a model via the Worker (no key in container); per-execution
+  // capability token + AgentBudget DO. specs/08-self-healing.md § 6.3.
+  if (
+    segments.length === 4 &&
+    segments[0] === "v1" &&
+    segments[1] === "agent" &&
+    segments[3] === "inference"
+  ) {
+    const requestId = request.headers.get("cf-ray") ?? "no-ray";
+    return handleAgentInference(
+      request,
+      env,
+      decodeURIComponent(segments[2]!),
+      requestId,
+    );
   }
 
   // POST /v1/admin/events/:wf_id — signal a Workflow paused on step.waitForEvent.

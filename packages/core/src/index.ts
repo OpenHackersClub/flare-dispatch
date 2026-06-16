@@ -74,6 +74,19 @@ export {
   type AdmissionDecision,
 } from "./run-admission";
 
+// --- Agent token-budget (pure decision logic for the AgentBudget DO) ----------
+export {
+  DEFAULT_AGENT_TOKEN_BUDGET,
+  DEFAULT_AGENT_MAX_REQUESTS,
+  initialBudget,
+  remaining,
+  decideReserve,
+  settle,
+  kill,
+  type AgentBudgetState,
+  type ReserveDecision,
+} from "./agent-budget";
+
 // --- Capabilities ------------------------------------------------------------
 export {
   sandbox,
