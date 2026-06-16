@@ -28,8 +28,21 @@ import type { SandboxImage } from "@flare-dispatch/core";
  */
 export const selectSandboxNs = <T>(
   sandboxImage: SandboxImage | undefined,
-  bindings: { readonly lean: T; readonly browser: T | undefined },
-): T =>
-  sandboxImage === "browser" && bindings.browser !== undefined
-    ? bindings.browser
-    : bindings.lean;
+  bindings: {
+    readonly lean: T;
+    readonly browser: T | undefined;
+    readonly agent?: T | undefined;
+  },
+): T => {
+  if (sandboxImage === "browser" && bindings.browser !== undefined) {
+    return bindings.browser;
+  }
+  // `"agent"` → the agent-tier image (flare-agent + toolchain baked in, mandatory
+  // egress allowlist). Soft-degrade to lean against a missing binding (non-crash);
+  // a self-heal run on lean finds no `flare-agent` and fails — same posture as the
+  // browser tier. specs/08-self-healing.md § 6.2.
+  if (sandboxImage === "agent" && bindings.agent !== undefined) {
+    return bindings.agent;
+  }
+  return bindings.lean;
+};

@@ -44,11 +44,14 @@ RUN git init . \
  && git remote add origin https://github.com/OpenHackersClub/flare-dispatch.git \
  && git fetch --depth=1 origin "${FD_REF}" \
  && git config core.sparseCheckout true \
- && printf 'package.json\npnpm-lock.yaml\npnpm-workspace.yaml\ntsconfig.base.json\npackages/demo-agent/\n' \
+ && printf 'package.json\npnpm-lock.yaml\npnpm-workspace.yaml\ntsconfig.base.json\npackages/demo-agent/\npackages/flare-agent/\n' \
       > .git/info/sparse-checkout \
  && git checkout FETCH_HEAD
-RUN pnpm install --frozen-lockfile --filter @flare-dispatch/demo-agent...
+RUN pnpm install --frozen-lockfile --filter @flare-dispatch/demo-agent... --filter @flare-dispatch/flare-agent...
 RUN pnpm --filter @flare-dispatch/demo-agent build
+# flare-agent — the self-heal coding agent CLI, baked only into the agent tier
+# (WITH_AGENT). Built here unconditionally (tiny); COPY'd gated below.
+RUN pnpm --filter @flare-dispatch/flare-agent build
 
 # ── Stage 2 — the runtime sandbox image ──────────────────────────────────────
 FROM docker.io/cloudflare/sandbox:0.10.1
@@ -103,6 +106,27 @@ COPY --from=demo-agent-builder \
      /usr/local/bin/demo-agent
 RUN chmod +x /usr/local/bin/demo-agent \
  && demo-agent --help > /dev/null
+
+# ── flare-agent (gated by WITH_AGENT — the self-heal agent tier) ──────────────
+#
+# The self-heal coding agent (specs/08-self-healing.md § 6.1). Runs declaring
+# `sandboxImage: "agent"` (self-heal-pr) route to RunSandboxAgent, built with
+# WITH_AGENT=true. The binary is copied unconditionally (7 KB; the build stage
+# always produced it) but only the agent tier actually invokes it; the WITH_AGENT
+# arg documents the tier and gates the build-time presence check. The MANDATORY
+# egress allowlist (model-proxy + git remote only) is enforced at deploy via the
+# account/Zero-Trust egress policy — there is no per-container wrangler field for
+# it today, so it is a documented deploy prerequisite, NOT optional (§ 10.1).
+ARG WITH_AGENT=false
+COPY --from=demo-agent-builder \
+     /build/packages/flare-agent/dist/flare-agent.cjs \
+     /usr/local/bin/flare-agent
+RUN chmod +x /usr/local/bin/flare-agent \
+ && if [ "$WITH_AGENT" = "true" ]; then \
+      test -x /usr/local/bin/flare-agent && echo "flare-agent baked (agent tier)."; \
+    else \
+      echo "WITH_AGENT=false — flare-agent present but tier inactive."; \
+    fi
 
 # ── Optional native build toolchain (gated by the WITH_BUILD_TOOLS build arg) ─
 #

@@ -22,12 +22,12 @@ import { proxyToSandbox } from "@cloudflare/sandbox";
 import type { Env } from "./env";
 import { handleRequest } from "./router";
 import { handleScheduled } from "./routes/scheduled";
-import { RunSandbox, RunSandboxBrowser } from "./sandbox";
+import { RunSandbox, RunSandboxBrowser, RunSandboxAgent } from "./sandbox";
 
 // Re-export the binding classes so wrangler's `main` entry resolves them.
 export { RunWorkflow } from "./workflow";
 export { AgentBudget } from "./agent-budget-do";
-export { RunSandbox, RunSandboxBrowser };
+export { RunSandbox, RunSandboxBrowser, RunSandboxAgent };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
