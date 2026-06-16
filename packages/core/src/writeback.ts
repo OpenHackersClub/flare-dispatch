@@ -184,7 +184,11 @@ export type WritebackSpec = {
  * `.npmrc` registry pivot). `.github/workflows/**` keeps its own dedicated gate.
  */
 export const isSensitivePath = (path: string): boolean => {
-  const base = path.slice(path.lastIndexOf("/") + 1);
+  const rawBase = path.slice(path.lastIndexOf("/") + 1);
+  // Case-insensitive match: on a case-insensitive filesystem `Package.json`
+  // still lands as `package.json`, so the exact-equality checks below would let
+  // a cased variant slip past the gate (review #146).
+  const base = rawBase.toLowerCase();
   // Package manifests + lockfiles (any depth).
   if (base === "package.json") return true;
   if (
@@ -194,10 +198,10 @@ export const isSensitivePath = (path: string): boolean => {
     base === "yarn.lock" ||
     base === "bun.lock" ||
     base === "bun.lockb" ||
-    base === "Cargo.lock" ||
+    base === "cargo.lock" ||
     base === "poetry.lock" ||
-    base === "Pipfile.lock" ||
-    base === "Gemfile.lock" ||
+    base === "pipfile.lock" ||
+    base === "gemfile.lock" ||
     base === "go.sum" ||
     base === "composer.lock"
   ) {
@@ -207,17 +211,17 @@ export const isSensitivePath = (path: string): boolean => {
   if (base === ".npmrc" || base === ".yarnrc" || base === ".yarnrc.yml" || base === ".pnpmfile.cjs") {
     return true;
   }
-  // Dockerfiles (any `Dockerfile` or `*.Dockerfile` / `Dockerfile.*`).
-  if (base === "Dockerfile" || base.startsWith("Dockerfile.") || base.endsWith(".Dockerfile")) {
+  // Dockerfiles (any `Dockerfile` or `*.Dockerfile` / `Dockerfile.*`). Compared
+  // lowercased — over-blocking a cased variant is harmless, missing one is not.
+  if (base === "dockerfile" || base.startsWith("dockerfile.") || base.endsWith(".dockerfile")) {
     return true;
   }
   // CI config beyond `.github/workflows` (which has its own gate).
   if (path.startsWith(".github/actions/")) return true;
   if (
     base === ".gitlab-ci.yml" ||
-    base === "Jenkinsfile" ||
+    base === "jenkinsfile" ||
     base === "azure-pipelines.yml" ||
-    base === ".circleci/config.yml" ||
     path.startsWith(".circleci/")
   ) {
     return true;

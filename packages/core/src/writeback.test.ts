@@ -332,6 +332,14 @@ describe("sensitive-path gate (security review #8)", () => {
     expect(isSensitivePath("src/handler.ts")).toBe(false);
     expect(isSensitivePath("README.md")).toBe(false);
   });
+
+  it("is case-insensitive (no cased bypass)", () => {
+    expect(isSensitivePath("Package.json")).toBe(true);
+    expect(isSensitivePath("PACKAGE.JSON")).toBe(true);
+    expect(isSensitivePath("infra/DockerFile")).toBe(true);
+    expect(isSensitivePath(".NPMRC")).toBe(true);
+    expect(isSensitivePath("Gemfile.lock")).toBe(true);
+  });
 });
 
 describe("resolvePrMeta — runtime PR body/labels override", () => {
