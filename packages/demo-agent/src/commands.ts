@@ -25,16 +25,7 @@ import {
 import { runPlayLoop } from "./play.js";
 import { renderGifFromDir } from "./gif.js";
 import { makeLanguageModelLayer, summarizeStories } from "./model.js";
-import {
-  type AgentError,
-  CdpAttachFailed,
-  CdpCommandFailed,
-  FsFailed,
-  MissingEnv,
-  ModelCallFailed,
-  RecordingFetchFailed,
-  StoryTimeout,
-} from "./errors.js";
+import { type AgentError, FsFailed } from "./errors.js";
 import { StoriesJson } from "./schemas.js";
 import { Schema } from "effect";
 
@@ -512,14 +503,3 @@ const reportAndDie = (e: AgentError): Effect.Effect<never, never, never> =>
     ),
     Match.exhaustive,
   );
-
-// Silence unused-import warnings — these symbols are exported only for tests
-// importing the error types alongside the commands.
-export type _UnusedErrorRefs =
-  | CdpAttachFailed
-  | CdpCommandFailed
-  | RecordingFetchFailed
-  | ModelCallFailed
-  | MissingEnv
-  | FsFailed
-  | StoryTimeout;

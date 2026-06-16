@@ -15,15 +15,13 @@
 //
 // Spec: specs/08-self-healing.md § 6.3, § 10.2.
 
+import { makeCapabilityToken } from "./capability-token";
 import type { Env } from "./env";
-
-const encoder = new TextEncoder();
 
 /** Domain-separation label — DISTINCT from the log token's. */
 const HKDF_INFO = "flare-dispatch/agent-proxy/v1";
 
-/** 22 base64url chars ≈ 132 bits — matches the log-token strength. */
-const TOKEN_CHARS = 22;
+const token = makeCapabilityToken(HKDF_INFO);
 
 /**
  * Key material for the agent token: a dedicated `AGENT_PROXY_SECRET`, else the
@@ -39,68 +37,11 @@ export const resolveAgentProxySecret = (env: Env): string | undefined => {
   return undefined;
 };
 
-const base64url = (bytes: ArrayBuffer): string => {
-  let binary = "";
-  const view = new Uint8Array(bytes);
-  for (let i = 0; i < view.length; i++) binary += String.fromCharCode(view[i]!);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-
-const deriveKey = async (ikm: string): Promise<CryptoKey> => {
-  const base = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(ikm),
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
-  return crypto.subtle.deriveKey(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: new Uint8Array(0),
-      info: encoder.encode(HKDF_INFO),
-    },
-    base,
-    { name: "HMAC", hash: "SHA-256", length: 256 },
-    false,
-    ["sign"],
-  );
-};
-
 /** Mint the agent capability token for `executionId`. */
-export const signAgentToken = async (
-  ikm: string,
-  executionId: string,
-): Promise<string> => {
-  const key = await deriveKey(ikm);
-  const mac = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(executionId) as BufferSource,
-  );
-  return base64url(mac).slice(0, TOKEN_CHARS);
-};
-
-const safeEqual = (a: string, b: string): boolean => {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-};
+export const signAgentToken = token.sign;
 
 /** Verify a presented token for `executionId` (constant-time). */
-export const verifyAgentToken = async (
-  ikm: string,
-  executionId: string,
-  presented: string | null | undefined,
-): Promise<boolean> => {
-  if (typeof presented !== "string" || presented.length !== TOKEN_CHARS) {
-    return false;
-  }
-  const expected = await signAgentToken(ikm, executionId);
-  return safeEqual(expected, presented);
-};
+export const verifyAgentToken = token.verify;
 
 /** Extract a bearer token from the Authorization header (or `?token=`). */
 export const callerAgentToken = (request: Request, url: URL): string | null => {
