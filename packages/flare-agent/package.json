@@ -1,0 +1,27 @@
+{
+  "name": "@flare-dispatch/flare-agent",
+  "version": "0.0.0",
+  "description": "The self-heal coding agent (agent/v1) — a thin CLI baked into the flare-dispatch agent-tier image. Reads an incident/v1 pack, drives a fix loop through the Worker model-proxy (no model key in the container), applies edits, emits agent-result.json.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "flare-agent": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "flare-agent": "tsx src/main.ts",
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/flare-agent.cjs --banner:js=\"#!/usr/bin/env node\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.22.3",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
