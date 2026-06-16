@@ -75,10 +75,12 @@ export class AgentBudget extends DurableObject<Env> {
   }
 
   /** Reconcile a held reservation with the call's actual token usage. */
-  async settle(held: number, actualTokens: number): Promise<void> {
+  async settle(held: number, actualTokens: number): Promise<number> {
     const s = await this.load();
-    if (s === undefined) return;
-    await this.save(settle(s, held, actualTokens));
+    if (s === undefined) return 0;
+    const next = settle(s, held, actualTokens);
+    await this.save(next);
+    return remaining(next); // post-settle headroom, so the proxy can report it honestly
   }
 
   /** Mark the run no longer live (run end) — subsequent reserves deny. */

@@ -161,14 +161,15 @@ export const handleAgentInference = async (
     const actual = (result.inputTokens ?? 0) + (result.outputTokens ?? 0);
     // Settle: reconcile the held estimate with real usage (fall back to the
     // estimate when the backend reports no usage, so the cap never under-counts).
-    await budget.settle(reservation.held, actual > 0 ? actual : est);
+    // The DO returns the POST-settle remaining, so the agent can self-throttle.
+    const remainingAfter = await budget.settle(reservation.held, actual > 0 ? actual : est);
     return json(
       {
         toolCalls: result.toolCalls,
         text: result.text,
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
-        remaining: reservation.remaining,
+        remaining: remainingAfter,
       },
       200,
     );
