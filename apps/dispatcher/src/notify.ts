@@ -17,7 +17,7 @@
 // Spec: specs/04-gha-integration.md § Notifications.
 
 /** The terminal verdict — mirrors the GitHub check-run conclusion family. */
-export type NotifyStatus = "success" | "failure";
+type NotifyStatus = "success" | "failure";
 
 export type RenderResultEmailInput = {
   readonly run: string;

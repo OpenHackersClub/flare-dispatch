@@ -23,7 +23,7 @@ import type { Env } from "./env";
 const IDEMPOTENCY_TTL_SEC = 86_400;
 
 /** The `github` context block the `executions` D1 row + check-run callback use. */
-export interface GithubBlock {
+interface GithubBlock {
   readonly repo: string;
   readonly ref: string;
   readonly sha: string;

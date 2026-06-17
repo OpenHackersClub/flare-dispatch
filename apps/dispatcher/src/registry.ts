@@ -25,7 +25,7 @@ import {
 } from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
-export const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
+const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [offloadTest.name]: offloadTest as Run<unknown, unknown>,
   [cdpAcceptance.name]: cdpAcceptance as Run<unknown, unknown>,
   [deploySmoke.name]: deploySmoke as Run<unknown, unknown>,
