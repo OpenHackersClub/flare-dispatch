@@ -1,28 +1,21 @@
-// AWS Bedrock InvokeModel via Cloudflare AI Gateway — container-side twin.
+// AWS Bedrock InvokeModel via Cloudflare AI Gateway — container-side caller.
 //
-// Mirrors `packages/runtime-cf/src/bedrock-invoke.ts` (the Worker-side helper
-// pr-review's `bedrock` backend uses). Copied (not shared) because:
-//   * runtime-cf is a Worker-only package and this code runs in the demo
-//     sandbox container.
-//   * extracting both into a shared package is a follow-up; for the V0 of
-//     #114 the duplication is small (SigV4 + one body shape) and keeps the
-//     blast radius of this PR contained.
-// Keep the two implementations in lockstep — when one changes, change both.
-//
-// Dialect: Anthropic Messages on Bedrock with tool_use, since demo-agent
-// drives the play loop via toolkit calls. The Worker-side helper only ships
-// the text-only shape today (review uses generateText, not tools), so this
-// adds the tool branch the demo path needs.
+// The SigV4 + AI-Gateway signing core lives in `@flare-dispatch/bedrock-sigv4`
+// (shared with the Worker-side `runtime-cf` twin). This file is the container
+// caller: it builds the Anthropic-Messages-with-tool_use body the demo play
+// loop needs, hands it to the shared signer, and parses the response into
+// content blocks + stop reason. (The Worker side ships only the text-only body
+// shape, since review uses generateText, not tools.)
 //
 // Spec: specs/05-byoc.md § AWS federation; CF docs:
 // https://developers.cloudflare.com/ai-gateway/usage/providers/bedrock/
 
-/** Short-lived AWS credentials minted by `awsAssumeRole`. */
-export type AwsCreds = {
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
-  readonly sessionToken: string;
-};
+import {
+  type AwsCreds,
+  invokeBedrockSigned,
+} from "@flare-dispatch/bedrock-sigv4";
+
+export type { AwsCreds };
 
 /** One tool the model may call (Anthropic Messages tool shape). */
 export type AnthropicTool = {
@@ -85,17 +78,13 @@ export type BedrockInvokeResult = {
 const BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31";
 
 /**
- * SigV4-sign + POST a Bedrock InvokeModel request through the AI Gateway
- * forwarder. Signature targets the AWS hostname; the gateway forwards verbatim.
+ * Build the Anthropic-Messages-with-tool_use body, SigV4-sign + POST it through
+ * the AI Gateway (via the shared signer), and parse the response into content
+ * blocks + stop reason. Throws on non-2xx (the shared signer inlines the body).
  */
 export const invokeBedrockViaAiGateway = async (
   input: BedrockInvokeInput,
 ): Promise<BedrockInvokeResult> => {
-  const awsHost = `bedrock-runtime.${input.region}.amazonaws.com`;
-  // SigV4 canonical URI requires double URL-encoding of path segments.
-  const wirePath = `/model/${encodeURIComponent(input.modelId)}/invoke`;
-  const canonicalPath = `/model/${encodeURIComponent(encodeURIComponent(input.modelId))}/invoke`;
-
   const body: Record<string, unknown> = {
     anthropic_version: BEDROCK_ANTHROPIC_VERSION,
     messages: input.messages,
@@ -107,72 +96,17 @@ export const invokeBedrockViaAiGateway = async (
     body["tools"] = input.tools;
     if (input.toolChoice !== undefined) body["tool_choice"] = input.toolChoice;
   }
-  const payload = JSON.stringify(body);
 
-  const now = new Date();
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
-  const dateStamp = amzDate.slice(0, 8);
-  const algorithm = "AWS4-HMAC-SHA256";
-  const service = "bedrock";
-  const credentialScope = `${dateStamp}/${input.region}/${service}/aws4_request`;
-
-  const payloadHash = await sha256Hex(payload);
-
-  const canonicalHeaders =
-    `host:${awsHost}\n` +
-    `x-amz-content-sha256:${payloadHash}\n` +
-    `x-amz-date:${amzDate}\n` +
-    `x-amz-security-token:${input.creds.sessionToken}\n`;
-  const signedHeaders =
-    "host;x-amz-content-sha256;x-amz-date;x-amz-security-token";
-
-  const canonicalRequest =
-    `POST\n${canonicalPath}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
-  const stringToSign =
-    `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256Hex(canonicalRequest)}`;
-
-  const signingKey = await deriveSigningKey(
-    input.creds.secretAccessKey,
-    dateStamp,
-    input.region,
-    service,
-  );
-  const signature = await hmacHex(signingKey, stringToSign);
-
-  const authorization =
-    `${algorithm} Credential=${input.creds.accessKeyId}/${credentialScope}, ` +
-    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-  const gatewayUrl =
-    `https://gateway.ai.cloudflare.com/v1/${input.cloudflareAccountId}/${input.gatewayId}` +
-    `/aws-bedrock/bedrock-runtime/${input.region}${wirePath}`;
-  const doFetch = input.fetchImpl ?? fetch;
-
-  const headers: Record<string, string> = {
-    host: awsHost,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-    "x-amz-security-token": input.creds.sessionToken,
-    authorization,
-    "content-type": "application/json",
-    accept: "application/json",
-  };
-  if (input.gatewayAuthToken !== undefined) {
-    headers["cf-aig-authorization"] = `Bearer ${input.gatewayAuthToken}`;
-  }
-
-  const res = await doFetch(gatewayUrl, {
-    method: "POST",
-    headers,
-    body: payload,
+  const res = await invokeBedrockSigned({
+    creds: input.creds,
+    region: input.region,
+    modelId: input.modelId,
+    payload: JSON.stringify(body),
+    cloudflareAccountId: input.cloudflareAccountId,
+    gatewayId: input.gatewayId,
+    gatewayAuthToken: input.gatewayAuthToken,
+    fetchImpl: input.fetchImpl,
   });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(
-      `Bedrock InvokeModel via AI Gateway failed: HTTP ${res.status} — ${text.slice(0, 500)}`,
-    );
-  }
 
   const json = (await res.json()) as {
     content?: ReadonlyArray<AnthropicContentBlock>;
@@ -191,52 +125,4 @@ export const invokeBedrockViaAiGateway = async (
       : {}),
   };
   return result;
-};
-
-// --- SubtleCrypto helpers (no AWS SDK) ---------------------------------------
-
-const sha256Hex = async (data: string): Promise<string> => {
-  const buf = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(data),
-  );
-  return [...new Uint8Array(buf)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-};
-
-const hmac = async (
-  key: ArrayBuffer | Uint8Array,
-  msg: string,
-): Promise<ArrayBuffer> => {
-  const k = await crypto.subtle.importKey(
-    "raw",
-    key as ArrayBuffer,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return crypto.subtle.sign("HMAC", k, new TextEncoder().encode(msg));
-};
-
-const hmacHex = async (key: ArrayBuffer, msg: string): Promise<string> => {
-  const buf = await hmac(key, msg);
-  return [...new Uint8Array(buf)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-};
-
-const deriveSigningKey = async (
-  secret: string,
-  dateStamp: string,
-  region: string,
-  service: string,
-): Promise<ArrayBuffer> => {
-  const kDate = await hmac(
-    new TextEncoder().encode(`AWS4${secret}`),
-    dateStamp,
-  );
-  const kRegion = await hmac(kDate, region);
-  const kService = await hmac(kRegion, service);
-  return hmac(kService, "aws4_request");
 };

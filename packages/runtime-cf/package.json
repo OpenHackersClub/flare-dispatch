@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@cloudflare/sandbox": "0.10.1",
+    "@flare-dispatch/bedrock-sigv4": "workspace:*",
     "@flare-dispatch/core": "workspace:*",
     "@flare-dispatch/github-app": "workspace:*",
     "effect": "^3.10.0"
