@@ -128,11 +128,19 @@ export const selfHealPr = defineRun({
         prStaged: false,
       });
 
-      // V0: only the strong-repro CI class self-heals. Anything else needs the
-      // V1 derived-repro path (experimental) — fold into triage instead.
-      if (pack.class !== "ci" || pack.repro?.kind !== "command" || pack.repro.command === undefined) {
+      // Self-heal needs a COMMAND repro — the deterministic oracle the verify
+      // step re-runs in the credential-free sandbox. The `ci` class supplies the
+      // exact failing command; the `demo` class supplies a TEST command (a demo
+      // failure is verified by the agent writing a regression test, NOT by
+      // re-running the browser demo — the sandbox has no Browser Run, the fix
+      // lands in the repo not the deploy, and an LLM re-judging an LLM is
+      // circular; spec § 8 + the demo-incident review). Anything without a
+      // command repro (generic `application`, or a `demo` with no test command
+      // configured) is left to triage — the V1 derived path stays experimental.
+      const eligibleClass = pack.class === "ci" || pack.class === "demo";
+      if (!eligibleClass || pack.repro?.kind !== "command" || pack.repro.command === undefined) {
         yield* step("log-skip", () =>
-          io.log("info", `self-heal-pr: incident ${pack.incidentId} has no command repro (class=${pack.class}) — V0 skips`),
+          io.log("info", `self-heal-pr: incident ${pack.incidentId} has no command repro (class=${pack.class}) — skipping`),
         );
         return empty("skipped", false);
       }

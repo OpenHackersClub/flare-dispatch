@@ -20,6 +20,7 @@ import { resolve } from "node:path";
 // Caps — MUST equal the exports in packages/core/src/incident.ts. The
 // packages/core incident test fails CI if these diverge from the TS constants.
 const MAX_INCIDENT_CI_FAILURES = 20;
+const MAX_INCIDENT_DEMO_CHAPTERS = 20;
 const MAX_INCIDENT_SUSPECT_FILES = 50;
 const MAX_INCIDENT_LOGTAIL_CHARS = 4_000;
 const MAX_INCIDENT_TEXT_CHARS = 2_000;
@@ -53,7 +54,7 @@ const schema = {
   properties: {
     contractVersion: { const: "v1" },
     incidentId: str(MAX_INCIDENT_SHORT_CHARS, "Dedup identity of the failure (not the alert delivery)."),
-    class: { type: "string", enum: ["ci", "application"] },
+    class: { type: "string", enum: ["ci", "application", "demo"] },
     repo: str(MAX_INCIDENT_SHORT_CHARS, "owner/name."),
     suspectRef: {
       type: "object",
@@ -109,6 +110,26 @@ const schema = {
           command: str(MAX_INCIDENT_TEXT_CHARS, "The exact failing command (CI-class repro)."),
           logTail: str(MAX_INCIDENT_LOGTAIL_CHARS, "Bounded stderr/stdout tail from R2."),
           url: str(MAX_INCIDENT_URL_CHARS, "Link to the failure."),
+        },
+      },
+    },
+    demoChapters: {
+      type: "array",
+      maxItems: MAX_INCIDENT_DEMO_CHAPTERS,
+      description: "Failed product-demo chapters (`demo` class) — `narrative` is ATTACKER-INFLUENCEABLE (an LLM summary of a live page).",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: {
+          name: str(MAX_INCIDENT_SHORT_CHARS, "Chapter name (operator-authored)."),
+          narrative: str(MAX_INCIDENT_LOGTAIL_CHARS, "UNTRUSTED — the LLM's summary of the page."),
+          chapterStartMs: { type: "number", description: "rrweb chapter start offset (ms)." },
+          chapterEndMs: { type: "number", description: "rrweb chapter end offset (ms)." },
+          replayUri: str(MAX_INCIDENT_URL_CHARS, "Human deep-link to the replay (not agent-fetched)."),
+          keyScreenshotUri: str(MAX_INCIDENT_URL_CHARS, "Human deep-link to the key screenshot."),
+          failedRuns: { type: "number", description: "k-of-n: failing runs that gated escalation." },
+          totalRuns: { type: "number", description: "k-of-n: total confirmation runs." },
         },
       },
     },

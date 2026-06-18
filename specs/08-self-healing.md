@@ -237,7 +237,7 @@ history is offered, with retention controls; off by default.)
 
 ---
 
-## 4. The two error classes, sourced
+## 4. The error classes, sourced
 
 | | **CI error** | **Application / runtime error** |
 |---|---|---|
@@ -251,6 +251,36 @@ The two converge at the **synthesis** step into one `incident/v1` pack, so the
 agent loop downstream is identical. The difference is entirely in *where the
 context comes from* and *how strong the repro is* — both recorded in the pack so
 the agent and the confidence gate can reason about them.
+
+### 4.1 The `demo` class — product-demo journey failures
+
+A failed [`product-demo`](../recipes/product-demo/) chapter is a **third class**
+(`class: "demo"`) — first-party like CI, but it drives a *deployed URL, not the
+repo*, and its verdict is a *non-deterministic LLM `done` call*. That combination
+breaks the CI-class verify (you can't re-run the browser demo in the
+credential-free agent sandbox — no Browser Run — and the fix lands in the repo,
+not the live deploy; an LLM re-judging an LLM is circular). So the demo class
+**does not verify by re-running the demo.** Instead:
+
+- **Only assertion failures escalate.** `product-demo` tags each failed chapter
+  `failureKind ∈ {assertion, timeout, infra, unparseable}`; only `assertion`
+  (the journey ran and the app misbehaved) becomes a signal/incident. The rest
+  are flake/environment ([`packages/core/src/demo-signals.ts`](../packages/core/src/demo-signals.ts)).
+- **Repro = a regression test, run as a command.** The agent writes a
+  deterministic test reproducing the journey failure (guided by the chapter
+  `narrative` + replay), and verify runs the configured test **command** — so a
+  demo incident carries `repro.kind: "command"` and flows through the *same*
+  verify→writeback gate as CI. No Browser Run, no circular oracle.
+- **`narrative` is UNTRUSTED** (an LLM summary of a possibly attacker-influenced
+  page) — fenced in `demoChapters[].narrative` + `signals[].detail`, never in the
+  trusted `diagnosis`. The fingerprint keys off the operator-authored chapter
+  **name**, so a reworded flake can't defeat dedup ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)).
+- **`suspectRef` is advisory.** The demo proves the deployed app is broken, not
+  which commit broke it; the synthesized `suspectRef` is low-confidence/advisory.
+
+`storyResultsToIncident` builds the `demo`-class pack; `self-heal-pr` accepts it
+exactly when it carries a command (test) repro — otherwise it is left to triage,
+like the experimental application class.
 
 ---
 
