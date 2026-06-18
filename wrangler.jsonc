@@ -62,9 +62,24 @@
     //       the Worker there).
     // See specs/07-trust-model.md § Operator → Dispatcher (viewer) for the
     // one-time Access-application setup recipe (CF API, not the dashboard).
-    // "ACCESS_AUD": "<access-application-audience-tag>",
-    // "ACCESS_TEAM_DOMAIN": "<your-team>.cloudflareaccess.com",
-    // "VIEWER_ACCESS_MODE": "token-only"
+    //
+    // LIVE for this deploy: the "FlareDispatch viewer" Access application
+    // (app 71c67926-741a-41eb-84ce-ed4d00146fa9) fronts the viewer paths on the
+    // custom domain below, with an Allow policy for emails @fractalbox.dev.
+    // ACCESS_AUD is that app's Audience tag; ACCESS_TEAM_DOMAIN is the Zero-Trust
+    // team. Access cannot front *.workers.dev, so the worker MUST be reached via
+    // the `routes` custom domain (see below) — that is where the Access app sits.
+    "ACCESS_AUD": "798a196263789437498a9c113156cba102a3e1f6338ef95fc0ddcbd083643913",
+    "ACCESS_TEAM_DOMAIN": "fractalbox.cloudflareaccess.com",
+    // VIEWER_ACCESS_MODE unset ≡ "required" (secure). Set "token-only" only to
+    // deliberately fall back to the capability token alone.
+
+    // PUBLIC_ORIGIN — the dispatcher's own public origin, prefixed onto the
+    //   `/v1/artifacts/...` links runs embed in GitHub check-run summaries.
+    //   Points at the Access-fronted custom domain so viewer links (and the
+    //   product-demo dogfood `/logs` + `/replay` links) land on the host the
+    //   Access app actually protects, not the bare *.workers.dev origin.
+    "PUBLIC_ORIGIN": "https://flare-dispatch.openhackers.club",
     // EMAIL_FROM — verified Email Routing sender for completion-notify email
     //   (the `notify.emails` dispatch field). Must be an address on the zone the
     //   `send_email` binding below is attached to. Uncomment + set once Email
@@ -74,6 +89,19 @@
     // "EMAIL_FROM": "flare-dispatch@<your-zone>",
     // "EMAIL_FROM_NAME": "FlareDispatch"
   },
+
+  // Custom domain — the worker's public hostname on a zone we control
+  // (openhackers.club, the ohc default `<project>.openhackers.club`). REQUIRED
+  // for Cloudflare Access on the viewer surfaces: Access cannot be placed in
+  // front of `*.workers.dev`, only a hostname on an account zone. `wrangler
+  // deploy` provisions the DNS record + edge cert and binds it to this worker
+  // (the deploy CLOUDFLARE_API_TOKEN needs Workers Routes + DNS:Edit on the
+  // zone, in addition to the existing Workers/Containers scopes). The
+  // "FlareDispatch viewer" Access app (see ACCESS_AUD above) sits over the
+  // viewer paths on exactly this host.
+  "routes": [
+    { "pattern": "flare-dispatch.openhackers.club", "custom_domain": true }
+  ],
 
   // Email Routing `send_email` binding — backs the `email` capability + the
   // Workflow's completion-notify. Cloudflare delivers ONLY to addresses

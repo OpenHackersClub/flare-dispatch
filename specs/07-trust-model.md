@@ -304,23 +304,27 @@ Each control below is implemented at HEAD and pointed at the file that does the 
 
 **Why both factors.** The capability token stops *derivation* of viewer URLs (private repos, never-linked executions, history enumeration — see `log-token.ts`), but a token embedded in a check-run is shareable by anyone who can read that check-run. Cloudflare Access adds *identity*: only authenticated members of the operator's Zero-Trust org reach the surface at all. Edge-side Access enforcement keeps unauthenticated users off the Worker entirely; the Worker-side verify here is defence-in-depth against a request that reaches the origin without traversing the Access app.
 
-**Operator setup (one-time, CF API — not the dashboard).** Create a self-hosted Access application over the viewer paths and a policy scoping who may enter, then wire the two vars. Sketch:
+**Operator setup (one-time, CF API — not the dashboard).** Cloudflare Access **cannot front `*.workers.dev`** — it applies only to a hostname on a zone in your account. So the worker first needs a **custom domain** (`routes: [{ pattern, custom_domain: true }]` in wrangler.jsonc; `wrangler deploy` provisions DNS + cert, and the deploy token needs Workers Routes + DNS:Edit). Then create a path-scoped Access application over the viewer paths on that host, attach an Allow policy, and wire the two vars. Sketch:
 
 ```sh
-# 1. Create the Access application over the viewer paths (returns an `aud`).
+# 1. Create the path-scoped Access application (returns an `aud`). Path-scoped
+#    `destinations` leave the machine paths (/v1/dispatch, /v1/webhooks, …) and
+#    /v1/artifacts reachable without SSO.
 curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
   -H "Authorization: Bearer $CF_ACCESS_API_TOKEN" -H "content-type: application/json" \
-  -d '{"name":"FlareDispatch viewer","type":"self_hosted",
-       "domain":"flare-dispatch.example.com/logs",
-       "self_hosted_domains":["flare-dispatch.example.com/logs",
-                               "flare-dispatch.example.com/demos",
-                               "flare-dispatch.example.com/replay",
-                               "flare-dispatch.example.com/v1/executions"]}'
-# 2. Attach a policy (e.g. emails ending @your-org.com) to the returned app id.
-# 3. Wire the worker:
+  -d '{"name":"FlareDispatch viewer","type":"self_hosted","session_duration":"24h",
+       "destinations":[{"type":"public","uri":"flare-dispatch.example.com/logs"},
+                       {"type":"public","uri":"flare-dispatch.example.com/demos"},
+                       {"type":"public","uri":"flare-dispatch.example.com/replay"},
+                       {"type":"public","uri":"flare-dispatch.example.com/v1/executions"}]}'
+# 2. Attach an Allow policy to the returned app id (e.g. an email domain):
+curl -s -X POST ".../access/apps/<app_id>/policies" -H "Authorization: Bearer $CF_ACCESS_API_TOKEN" \
+  -d '{"name":"Allow org","decision":"allow","include":[{"email_domain":{"domain":"your-org.com"}}]}'
+# 3. Wire the worker via the `vars` block in wrangler.jsonc (wrangler deploy):
 #      ACCESS_AUD          = the app's `aud` tag from step 1
 #      ACCESS_TEAM_DOMAIN  = <your-team>.cloudflareaccess.com
-#    via the `vars` block in wrangler.jsonc (wrangler deploy).
+#    and point PUBLIC_ORIGIN / the dispatch endpoint at the custom domain so the
+#    viewer links land on the Access-fronted host, not the bare *.workers.dev one.
 ```
 
 **Spec.** `apps/dispatcher/src/access-auth.ts` (file header is the canonical reference); [05-byoc § Security posture](05-byoc.md#security-posture).
