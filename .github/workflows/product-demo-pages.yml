@@ -1,0 +1,106 @@
+# FlareDispatch dogfood — product-demo of its OWN product-demo viewer.
+#
+# On every PR (and on demand) this dispatches the `product-demo` run against the
+# deployed dispatcher's self-hosted product-demo viewer (#155), driving the
+# walkthrough in `.github/product-demo/demo-pages.md`. On completion the run
+# posts a PR comment with the holistic summary AND an animated GIF of the
+# walkthrough embedded inline — so a reviewer sees the viewer feature work
+# without opening anything. This is recursive dogfood: a product-demo that
+# demos the product-demo page.
+#
+# Fire-and-forget, exactly like the log-viewer dogfood: the GHA step returns on
+# HTTP 202; the real verdict + the GIF comment land on the
+# `flare-dispatch/product-demo` check-run + PR comment for the head SHA.
+#
+# Configure (same-repo only — fork PRs get no secrets):
+#   * repo var    FLAREDISPATCH_ENDPOINT  — the deployed dispatcher base URL
+#   * repo secret FLAREDISPATCH_HMAC      — the dispatch HMAC secret
+#   * repo var    DEMO_PAGE_DEMO_URL      — a representative tokened viewer URL on
+#                 the deployed dispatcher: `<origin>/demos/<execution>?t=<token>`
+#                 (point it at a retained, SUCCEEDED product-demo execution — so
+#                 the viewer always has a hero replay + chapter gallery to show).
+# Unset ⇒ the job logs a clear "skipped" notice instead of failing.
+
+name: product-demo (viewer page)
+
+on:
+  # Re-demo the viewer whenever the dispatcher's product-demo surfaces change.
+  pull_request:
+    paths:
+      - "apps/dispatcher/src/routes/product-demos.ts"
+      - "apps/dispatcher/src/log-token.ts"
+      - "apps/dispatcher/src/log-auth.ts"
+      - "apps/dispatcher/src/executions-read.ts"
+      - "runs/product-demo.ts"
+      - ".github/product-demo/demo-pages.md"
+  # On demand against any tokened viewer URL (defaults to the repo var).
+  workflow_dispatch:
+    inputs:
+      demo_url:
+        description: "Tokened product-demo viewer URL to drive (defaults to vars.DEMO_PAGE_DEMO_URL)"
+        required: false
+
+jobs:
+  product-demo-pages:
+    name: dispatch product-demo (viewer page)
+    runs-on: ubuntu-latest
+    # Same-repo PRs only — fork PRs have no access to FLAREDISPATCH_HMAC, so the
+    # HMAC dispatch can't authenticate. workflow_dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: FlareDispatch not configured — skipping
+        if: vars.FLAREDISPATCH_ENDPOINT == '' || (vars.DEMO_PAGE_DEMO_URL == '' && github.event.inputs.demo_url == '')
+        run: |
+          echo "::notice::product-demo-pages skipped — set FLAREDISPATCH_ENDPOINT + FLAREDISPATCH_HMAC and DEMO_PAGE_DEMO_URL (a tokened /demos/<exec>?t=<token> URL)."
+
+      # Read the tracked walkthrough markdown into a step output, so the story
+      # script lives as readable docs (each `## ` = one story) rather than
+      # inline JSON. This is the `storiesMarkdown` authoring pattern from
+      # recipes/product-demo/README.md § "Authoring stories".
+      - name: Load demo stories
+        id: stories
+        if: vars.FLAREDISPATCH_ENDPOINT != '' && (vars.DEMO_PAGE_DEMO_URL != '' || github.event.inputs.demo_url != '')
+        run: |
+          { echo 'md<<DEMO_STORIES_EOF'; cat .github/product-demo/demo-pages.md; echo DEMO_STORIES_EOF; } >> "$GITHUB_OUTPUT"
+
+      # `installationId` resolves the installation from the repo→installation map
+      # when the Dispatcher posts the comment + check-run (specs/04-gha-integration.md
+      # § Check-runs callback). `pr` is what enables the GIF-on-completion comment;
+      # on workflow_dispatch there is no PR, so it's omitted and the run reports
+      # via the check-run only.
+      - name: Dispatch product-demo against the viewer page
+        id: dispatch
+        if: vars.FLAREDISPATCH_ENDPOINT != '' && (vars.DEMO_PAGE_DEMO_URL != '' || github.event.inputs.demo_url != '')
+        uses: ./actions/flare-dispatch-action
+        with:
+          run: product-demo
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          # App-mode writeback (check-run + GIF comment). Same repo var as the
+          # other dogfoods; unset ⇒ action sends 0 ⇒ Dispatcher posts nothing.
+          installation-id: ${{ vars.FLAREDISPATCH_INSTALLATION_ID }}
+          mode: fire-and-forget
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.event.pull_request.head.sha || github.sha }}",
+              "deployedUrl": ${{ toJSON(github.event.inputs.demo_url || vars.DEMO_PAGE_DEMO_URL) }},
+              "storiesMarkdown": ${{ toJSON(steps.stories.outputs.md) }},
+              "viewportPreset": "desktop"${{ github.event.pull_request.number && format(', "pr": {0}', github.event.pull_request.number) || '' }}
+            }
+
+      # On a manual run there is no PR — so there is no check-run / GIF comment
+      # to carry the replay link. Poll the execution to completion and print the
+      # replay link (+ recorded artifacts) into THIS run's log + job summary.
+      # On PR events the check-run already carries it, so this step is skipped.
+      - name: Surface the replay link (workflow_dispatch — no PR)
+        if: github.event_name == 'workflow_dispatch' && vars.FLAREDISPATCH_ENDPOINT != '' && steps.dispatch.outputs.execution-id != ''
+        env:
+          ENDPOINT: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          EXECUTION_ID: ${{ steps.dispatch.outputs.execution-id }}
+          LOGS_URL: ${{ steps.dispatch.outputs.logs-url }}
+        run: ./scripts/surface-replay-link.sh

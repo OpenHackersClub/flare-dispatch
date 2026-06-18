@@ -143,6 +143,14 @@ export type GifRenderOptions = {
   readonly maxFrames: number;
   readonly maxBytes: number;
   readonly delayMs: number;
+  /**
+   * Only stitch frames whose filename starts with this prefix. The play loop
+   * names frames `${story}-NNNN.png`, so passing `"${story}-"` selects exactly
+   * one chapter's frames — how the `product-demo` run renders a per-chapter GIF
+   * out of the same shared `framesDir`. Omit to stitch EVERY frame (the
+   * combined walkthrough GIF).
+   */
+  readonly match?: string;
 };
 
 export type GifRenderResult = {
@@ -166,7 +174,11 @@ export const renderGifFromDir = (opts: GifRenderOptions): GifRenderResult => {
   const files = fs.existsSync(opts.framesDir)
     ? fs
         .readdirSync(opts.framesDir)
-        .filter((f) => f.toLowerCase().endsWith(".png"))
+        .filter(
+          (f) =>
+            f.toLowerCase().endsWith(".png") &&
+            (opts.match === undefined || f.startsWith(opts.match)),
+        )
         .sort()
     : [];
   if (files.length === 0) {

@@ -5,15 +5,16 @@ Hand a list of user stories in prose and a deployed URL; get back one continuous
 ## Files
 
 - [`product-demo.run.ts`](product-demo.run.ts) — the typed Run: attach CDP (with `?recording=true`) → record start (set viewport, capture sessionId) → for each story drive the agent → record stop (close session, pull rrweb events from Browser Run's REST API, upload JSON to R2) → write the holistic summary. The canonical, registered copy lives at [`runs/product-demo.ts`](../../runs/product-demo.ts) (this file is the teaching illustration the doc site renders).
-- [`ci.yml`](ci.yml) — the GitHub Actions workflow that dispatches the run (Action mode, fire-and-forget). Triggers on `pull_request` against `apps/**` and on manual `workflow_dispatch` with a custom story list.
+- [`ci.yml`](ci.yml) — the GitHub Actions workflow that dispatches the run (Action mode, fire-and-forget). Triggers on `pull_request` against `apps/**` and on manual `workflow_dispatch` with an optional inline script override.
+- [`demo-stories.md`](demo-stories.md) — the worked story script `ci.yml` reads by default (each `## ` heading = one chapter). Edit it like docs; see § "Authoring stories".
 - [`Dockerfile.example`](Dockerfile.example) — drop-in layers that add the `demo-agent` binary to your own `Dockerfile.sandbox`. FlareDispatch ships no hosted image for the agent; the operator's sandbox image IS the integration point.
 
 ## Authoring stories
 
 The run accepts the story script in either of two shapes — pass **exactly one** (`stories` wins if both are present):
 
-- **`stories`** — the structured array, `[{ "name": "...", "prose": "..." }]`. What [`ci.yml`](ci.yml) and the `schedules[].inputs` block pass.
-- **`storiesMarkdown`** — a markdown document where **each level-2 heading (`## `) is one story**: the heading text is the story `name`, everything down to the next `## ` is the `prose`. Content before the first heading (a `# Title`, a preamble) is ignored. Lets you keep the demo script as a readable `.md` and edit it like documentation instead of hand-maintaining JSON.
+- **`storiesMarkdown`** — a markdown document where **each level-2 heading (`## `) is one story**: the heading text is the story `name`, everything down to the next `## ` is the `prose`. Content before the first heading (a `# Title`, a preamble) is ignored. Lets you keep the demo script as a readable `.md` and edit it like documentation instead of hand-maintaining JSON. This is what [`ci.yml`](ci.yml) ships by default — it reads the tracked [`demo-stories.md`](demo-stories.md) into the dispatch input.
+- **`stories`** — the structured array, `[{ "name": "...", "prose": "..." }]`. Drop in for a programmatically-generated script, or what a `schedules[].inputs` block returns.
 
 ```markdown
 # Checkout demo
@@ -79,7 +80,7 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 
 1. Deploy FlareDispatch and install the GitHub App — see [specs/05-byoc.md](../../specs/05-byoc.md).
 2. Add `product-demo.run.ts` to your repo's `runs/` directory.
-3. Copy `ci.yml` into `.github/workflows/`. Set `vars.PREVIEW_URL` (or adjust the inline URL convention) so the `pull_request` trigger knows where to drive the demo. Keep the `pr: ${{ github.event.pull_request.number }}` input on the dispatch — that's what enables the completion comment; drop it and the run silently reverts to check-run-only reporting. For the GIF to render inline, the deploy's artifact route (`/v1/artifacts/...`) must be set public — GitHub's image proxy fetches it server-side; on a private deploy the comment carries a plain link instead.
+3. Copy `ci.yml` into `.github/workflows/` and `demo-stories.md` alongside your repo (the workflow reads `recipes/product-demo/demo-stories.md` — adjust the path to wherever you keep it). Edit the story script to match your app's journey. Set `vars.PREVIEW_URL` (or adjust the inline URL convention) so the `pull_request` trigger knows where to drive the demo. Keep the `pr: ${{ github.event.pull_request.number }}` input on the dispatch — that's what enables the completion comment; drop it and the run silently reverts to check-run-only reporting. For the GIF to render inline, the deploy's artifact route (`/v1/artifacts/...`) must be set public — GitHub's image proxy fetches it server-side; on a private deploy the comment carries a plain link instead.
 4. **Bake the `demo-agent` binary into your sandbox image.** Open [`Dockerfile.example`](Dockerfile.example) — it's a two-stage layer pair (build `demo-agent` from a pinned `flare-dispatch` ref, copy the bundle into a stock `cloudflare/sandbox` runtime). Paste the two stages into your own `Dockerfile.sandbox` (the one referenced by `wrangler.jsonc` `containers[].image`); `wrangler deploy` does the rest. No registry credentials, no `flare-dispatch-demo` pull — your sandbox image IS the integration. Pin `FD_REF` to a tag for reproducible builds.
 5. **Point at a Cloudflare AI Gateway.** The agent speaks the OpenAI wire protocol via `@effect/ai`'s provider-agnostic `LanguageModel` and always routes through a Cloudflare AI Gateway. You don't paste a full URL — the agent **derives** the `/v1/<account>/<gateway>/compat` endpoint from `CLOUDFLARE_ACCOUNT_ID` + the gateway slug `CF_AI_GATEWAY_ID`. The gateway fans out to the upstream provider (OpenAI, Workers AI, Anthropic-via-compat, Bedrock, …). Run the gateway in **BYOK** mode so the container never holds an upstream key — the gateway holds it. Two optional auth knobs layer on top, each on its own axis:
    - `MODEL_API_KEY` — the **upstream provider** key (`Authorization: Bearer`). Leave unset under BYOK; set it only to bypass BYOK with a direct provider credential.
