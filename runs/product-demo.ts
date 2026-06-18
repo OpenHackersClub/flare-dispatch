@@ -53,6 +53,9 @@ import {
   DemoFailureKind,
   SignalArray,
   storyResultsToSignals,
+  storyResultsToIncident,
+  spawnChildRun,
+  type DemoChapterResult,
   type DemoFailureKindT,
   type Container,
 } from "@flare-dispatch/core";
@@ -1256,6 +1259,153 @@ export const productDemo = defineRun({
         );
       yield* persistJsonArtifact("stories.json", storiesWithGifs);
       yield* persistJsonArtifact("signals.json", signals);
+
+      // 3.95. (gated, OFF by default) Auto-dispatch self-heal for assertion
+      //       failures. A demo verdict is LLM-driven, so a single red chapter is
+      //       NOT ground truth — re-play each assertion failure k-of-n times and
+      //       escalate only the ones that fail DETERMINISTICALLY. Confirmed
+      //       chapters become a `demo`-class incident/v1 pack (verified later by
+      //       a regression test the agent writes — never a browser re-run; see
+      //       specs/08 § 4.1) dispatched to `self-heal-pr` as a child run.
+      //
+      //       COST POSTURE (specs/08 § 9): every control is opt-in + bounded.
+      //       OFF unless `self-heal.demo.enabled=true`; each confirm re-play is a
+      //       full browser+model loop, so `confirm-runs` is clamped (≤5) and only
+      //       up to `max-chapters` (≤10) assertion failures are confirmed per
+      //       run; per-heal model spend is bounded by the AgentBudget DO; child
+      //       dedup is the deterministic instanceId (incidentId + sha). Best-
+      //       effort throughout — never flips the demo verdict.
+      const demoHealEnabled =
+        (yield* config.get("self-heal.demo.enabled")) === "true";
+      if (demoHealEnabled) {
+        const clampInt = (raw: string | undefined, def: number, lo: number, hi: number) => {
+          const n = Number.parseInt(raw ?? "", 10);
+          return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+        };
+        const testCommand = yield* config.get("self-heal.demo.test-command");
+        const confirmRuns = clampInt(yield* config.get("self-heal.demo.confirm-runs"), 2, 1, 5);
+        const threshold = Math.min(
+          confirmRuns,
+          clampInt(yield* config.get("self-heal.demo.confirm-threshold"), 2, 1, 5),
+        );
+        const maxChapters = clampInt(yield* config.get("self-heal.demo.max-chapters"), 3, 1, 10);
+        const proseByName = new Map(resolvedStories.map((s) => [s.name, s.prose]));
+
+        // One confirmation re-play on a fresh NON-recording session (cheaper than
+        // playStory: no rrweb, no frames, no uploads). Returns the agent verdict,
+        // or "inconclusive" on any infra/parse failure — an inconclusive re-play
+        // is NOT counted as a failure, so flake/infra can only ever REDUCE the
+        // confidence to escalate, never manufacture it.
+        const confirmPlay = (name: string, prose: string, tag: string) =>
+          Effect.gen(function* () {
+            const attached = yield* browser.newCDPSession({
+              targetUrl: input.deployedUrl,
+              recording: false,
+            });
+            const res = yield* runAgent({
+              tag,
+              argv: [
+                "demo-agent", "play",
+                "--cdp-ws", attached.wsEndpoint,
+                "--name", name,
+                "--prose", prose,
+                "--screenshots", "/tmp/demo/confirm",
+                "--frames-dir", "/tmp/demo/confirm",
+                "--max-sec", String(perStorySec),
+                "--model", playModel,
+                "--url", input.deployedUrl,
+              ],
+              killAfterSec: perStorySec + 60,
+              pollBudgetSec: perStorySec + 90,
+            });
+            const parsed = tryParseLastJson<PlayJson>(res.stdout);
+            return (parsed?.status ?? "inconclusive") as
+              | "passed"
+              | "failed"
+              | "inconclusive";
+          }).pipe(Effect.catchAll(() => Effect.succeed("inconclusive" as const)));
+
+        const toConfirm = storiesWithGifs
+          .filter((s) => s.status === "failed" && s.failureKind === "assertion")
+          .slice(0, maxChapters);
+
+        const confirmed: DemoChapterResult[] = [];
+        for (let ci = 0; ci < toConfirm.length; ci++) {
+          const s = toConfirm[ci]!;
+          const prose = proseByName.get(s.name) ?? "";
+          let failures = 1; // the original assertion failure
+          let conclusive = 1;
+          for (let r = 1; r < confirmRuns; r++) {
+            const verdict = yield* step(`confirm-${ci}-${r}`, () =>
+              confirmPlay(s.name, prose, `confirm-${ci}-${r}`),
+            { timeoutSec: perStorySec + 330, retries: 0 }).pipe(
+              Effect.catchAll(() => Effect.succeed("inconclusive" as const)),
+            );
+            if (verdict !== "inconclusive") conclusive += 1;
+            if (verdict === "failed") failures += 1;
+          }
+          yield* io.log(
+            "info",
+            `product-demo: chapter '${s.name}' confirm ${failures}/${conclusive} failed (threshold ${threshold})`,
+          );
+          if (failures >= threshold) {
+            confirmed.push({
+              name: s.name,
+              status: "failed",
+              failureKind: "assertion",
+              narrative: s.narrative,
+              replayUri: s.replayUri,
+              replayJsonUri: s.replayJsonUri,
+              keyScreenshotUri: s.keyScreenshotUri,
+              chapterStartMs: s.chapterStartMs,
+              chapterEndMs: s.chapterEndMs,
+              failedRuns: failures,
+              totalRuns: conclusive,
+            });
+          }
+        }
+
+        if (confirmed.length === 0) {
+          yield* io.log("info", "product-demo: no chapters confirmed deterministically — no self-heal");
+        } else if ((testCommand ?? "") === "") {
+          yield* io.log(
+            "warn",
+            `product-demo: ${confirmed.length} confirmed failure(s) but self-heal.demo.test-command is unset — cannot verify a fix, skipping self-heal`,
+          );
+        } else {
+          const incident = storyResultsToIncident(confirmed, {
+            repo: input.repo,
+            deployedUrl: input.deployedUrl,
+            headSha: input.sha,
+            testCommand,
+          });
+          if (incident !== null) {
+            yield* step("dispatch-self-heal", () =>
+              spawnChildRun({
+                run: "self-heal-pr",
+                input: { incident },
+                // Deterministic dedup: same failing chapter-set on the same head
+                // SHA collapses to one heal (CF create({id}) no-op on replay /
+                // re-dispatch). A new commit re-heals.
+                instanceId: `self-heal:${incident.incidentId}:${input.sha}`.slice(0, 200),
+              }),
+            ).pipe(
+              Effect.flatMap((handle) =>
+                io.log(
+                  "info",
+                  `product-demo: dispatched self-heal-pr ${handle.executionId} for ${confirmed.length} confirmed chapter(s)${handle.created ? "" : " (deduped — already dispatched)"}`,
+                ),
+              ),
+              Effect.catchAllCause((cause) =>
+                io.log(
+                  "warn",
+                  `product-demo: self-heal dispatch failed (best-effort) — ${Cause.pretty(cause).slice(0, 400)}`,
+                ),
+              ),
+            );
+          }
+        }
+      }
 
       if (input.pr !== undefined) {
         const commentBody = [

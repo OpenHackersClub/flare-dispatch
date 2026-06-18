@@ -201,3 +201,88 @@ describe("product-demo honest check (issue #85)", () => {
     },
   );
 });
+
+describe("product-demo self-heal auto-dispatch (gated)", () => {
+  // A play that returns a PARSEABLE failed verdict ⇒ failureKind "assertion".
+  const assertionFailProgram = {
+    ".done": { exitCode: 0, stdout: "DONE:0" },
+    "play-0.out": {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        status: "failed",
+        durationMs: 1,
+        chapterStartMs: 0,
+        chapterEndMs: 1,
+        narrative: "the checkout button did nothing",
+        keyScreenshotPath: "",
+      }),
+    },
+  };
+  const secrets = {
+    "product-demo.secret/CF_AI_GATEWAY_ID": "gw",
+    "product-demo.secret/CLOUDFLARE_ACCOUNT_ID": "acct",
+    "product-demo.secret/CLOUDFLARE_API_TOKEN": "tok",
+    "product-demo.model.play": "claude-opus-4-7",
+  };
+  const story = { name: "checkout", prose: "Buy an item." };
+
+  it.effect("dispatches a demo-class self-heal-pr for a confirmed assertion failure", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: {
+        ...secrets,
+        "self-heal.demo.enabled": "true",
+        "self-heal.demo.test-command": "pnpm test",
+        // confirm-runs 1 ⇒ no re-play needed; the original failure alone meets
+        // threshold (clamped to ≤ confirm-runs).
+        "self-heal.demo.confirm-runs": "1",
+      },
+      sandboxProgram: assertionFailProgram,
+    });
+    return Effect.gen(function* () {
+      // The run fails the honest check (0/1 passed) AFTER dispatching — assert
+      // the spawn happened regardless of the terminal Exit.
+      yield* Effect.exit(
+        productDemo.run({ ...baseInput, stories: [story] } as Parameters<
+          typeof productDemo.run
+        >[0]),
+      );
+      expect(handles.childRuns.spawned).toHaveLength(1);
+      const spawn = handles.childRuns.spawned[0]!;
+      expect(spawn.run).toBe("self-heal-pr");
+      expect(spawn.instanceId).toContain("self-heal:demo:");
+      const incident = (spawn.input as { incident: { class: string; repo: string; repro?: { command?: string } } }).incident;
+      expect(incident.class).toBe("demo");
+      expect(incident.repro?.command).toBe("pnpm test");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does NOT dispatch when self-heal.demo.enabled is unset", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: { ...secrets, "self-heal.demo.test-command": "pnpm test" },
+      sandboxProgram: assertionFailProgram,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.exit(
+        productDemo.run({ ...baseInput, stories: [story] } as Parameters<
+          typeof productDemo.run
+        >[0]),
+      );
+      expect(handles.childRuns.spawned).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does NOT dispatch when no test-command is configured (can't verify)", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: { ...secrets, "self-heal.demo.enabled": "true", "self-heal.demo.confirm-runs": "1" },
+      sandboxProgram: assertionFailProgram,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.exit(
+        productDemo.run({ ...baseInput, stories: [story] } as Parameters<
+          typeof productDemo.run
+        >[0]),
+      );
+      expect(handles.childRuns.spawned).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
+});

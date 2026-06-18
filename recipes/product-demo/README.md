@@ -77,6 +77,22 @@ The run exposes these two ways, so both the green and the **red** path keep them
 - `Output.signals` — the derived `signals/v1` array, returned on the success path.
 - `artifacts/<execId>/signals.json` and `artifacts/<execId>/stories.json` — persisted to R2 on **both** paths. The dispatcher discards the Output (`summary_json`) on a failed Exit — exactly the run that most warrants triage — so a consumer reads the structured per-chapter results (status, `failureKind`, replay URIs) and the signals from R2 even on a fully-red demo.
 
+### Auto-dispatch self-heal (opt-in, OFF by default)
+
+When enabled, the run escalates **confirmed** assertion failures to [`self-heal-pr`](../../specs/08-self-healing.md#41-the-demo-class--product-demo-journey-failures) as a `demo`-class incident. Because a demo verdict is LLM-driven, a single red chapter isn't ground truth: the run re-plays each assertion failure **k-of-n** times and escalates only those that fail deterministically. The agent then fixes the bug and verifies by writing a **regression test** (run as `test-command`) — never by re-running the browser demo (the agent sandbox has no Browser Run; an LLM re-judging an LLM is circular).
+
+Cost is bounded by design: OFF unless `enabled=true`; each confirm re-play is a full browser+model loop, so `confirm-runs` is clamped (≤5) and only up to `max-chapters` (≤10) failures are confirmed per run; per-heal model spend is capped by the `AgentBudget` DO; the child `self-heal-pr` dedups on a deterministic instance id (incident + head SHA).
+
+```sh
+wrangler kv key put --binding=CONFIG_KV self-heal.demo.enabled            true
+wrangler kv key put --binding=CONFIG_KV self-heal.demo.test-command       "pnpm test"   # REQUIRED — the deterministic verify oracle; without it the run won't dispatch
+wrangler kv key put --binding=CONFIG_KV self-heal.demo.confirm-runs       3   # default 3, clamp 1..5 — total plays per failed chapter
+wrangler kv key put --binding=CONFIG_KV self-heal.demo.confirm-threshold  2   # default 2, ≤ confirm-runs — failures needed to escalate
+wrangler kv key put --binding=CONFIG_KV self-heal.demo.max-chapters       3   # default 3, clamp 1..10 — chapters confirmed per run
+```
+
+Self-heal itself (the agent tier, model proxy, `AgentBudget`, the `self-heal-pr` run + writeback) must already be set up per [specs/08-self-healing.md](../../specs/08-self-healing.md) § 11. This switch only wires product-demo failures into it.
+
 ## Why this lives on FlareDispatch
 
 The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline.yml)):
