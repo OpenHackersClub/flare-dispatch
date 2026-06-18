@@ -50,6 +50,10 @@ import {
   ExecFailed,
   ExecTimeout,
   AcceptanceFailed,
+  DemoFailureKind,
+  SignalArray,
+  storyResultsToSignals,
+  type DemoFailureKindT,
   type Container,
 } from "@flare-dispatch/core";
 import { awsAssumeRole, loadSecrets } from "@flare-dispatch/core/primitives";
@@ -247,6 +251,12 @@ const Input = Schema.Struct({
 const StoryResult = Schema.Struct({
   name: Schema.String,
   status: Schema.Literal("passed", "failed"),
+  // Why a failed chapter failed — the keystone discriminator. Only "assertion"
+  // (the agent played the journey and the app misbehaved) is a code-fix signal;
+  // "infra"/"timeout"/"unparseable" are flake/environment. Absent on a pass.
+  // `storyResultsToSignals` gates emission on this so flake never reaches the
+  // triage PR (or a future self-heal). See packages/core/src/demo-signals.ts.
+  failureKind: Schema.optional(DemoFailureKind),
   durationMs: Schema.Number,
   // rrweb timestamps in ms from session start — a reviewer can jump straight
   // to a story's chapter in the replay player by seeking to chapterStartMs.
@@ -278,6 +288,12 @@ const Output = Schema.Struct({
   replayJsonUri: Schema.String,
   summaryMd: Schema.String,       // the holistic LLM-written summary
   stories: Schema.Array(StoryResult),
+  // `signals/v1` derived from the assertion-failed chapters — the first-party
+  // adapter output a consumer folds into `ci-triage-pr` (and, later, a heal).
+  // Empty on a fully-green run or when every failure was flake/infra. Also
+  // persisted as the `signals.json` artifact so the FAILED path (whose Output
+  // the dispatcher discards) keeps it. See packages/core/src/demo-signals.ts.
+  signals: Schema.optionalWith(SignalArray, { default: () => [] }),
   // Stable artifact URL (`/v1/artifacts/<exec>/demo.gif`) to the walkthrough
   // GIF the run stitched from the per-action frames + embedded in the PR
   // comment. Absent when no frames were captured or the encode was skipped.
@@ -583,17 +599,23 @@ export const productDemo = defineRun({
           return { stdout, stderr, exitCode };
         });
 
-      // Defensive parse of an agent's last JSON stdout line — one bad story
-      // marks itself failed, never throws and sinks the run.
-      const parseLastJson = <T>(stdout: string, fallback: T): T => {
+      // Defensive parse of an agent's last JSON stdout line — returns null when
+      // the agent left no parseable verdict (crash / empty / non-JSON). Lets
+      // the caller TELL a real verdict from a synthesized fallback, which is
+      // how `failureKind` distinguishes an assertion failure (parseable verdict
+      // with status "failed") from infra/timeout/unparseable noise.
+      const tryParseLastJson = <T>(stdout: string): T | null => {
         const lastLine = stdout.trim().split("\n").pop() ?? "";
-        if (lastLine === "") return fallback;
+        if (lastLine === "") return null;
         try {
           return JSON.parse(lastLine) as T;
         } catch {
-          return fallback;
+          return null;
         }
       };
+      // One bad story marks itself failed, never throws and sinks the run.
+      const parseLastJson = <T>(stdout: string, fallback: T): T =>
+        tryParseLastJson<T>(stdout) ?? fallback;
       type PlayJson = {
         status: "passed" | "failed";
         durationMs: number;
@@ -606,6 +628,7 @@ export const productDemo = defineRun({
       type StoryOutcome = {
         name: string;
         status: "passed" | "failed";
+        failureKind?: DemoFailureKindT;
         durationMs: number;
         chapterStartMs: number;
         chapterEndMs: number;
@@ -824,14 +847,31 @@ export const productDemo = defineRun({
             ),
           );
 
-          const pj = parseLastJson<PlayJson>(playResult.stdout, {
+          const playParsed = tryParseLastJson<PlayJson>(playResult.stdout);
+          const pj: PlayJson = playParsed ?? {
             status: "failed",
             durationMs: 0,
             chapterStartMs: 0,
             chapterEndMs: 0,
             narrative: `play produced no parseable result (exit ${playResult.exitCode}). stderr tail: ${playResult.stderr.slice(-400)}`,
             keyScreenshotPath: "",
-          });
+          };
+          // Classify WHY a chapter failed (the keystone gate). A parseable
+          // verdict with status "failed" = the agent played the journey and the
+          // app misbehaved (assertion — heal-worthy). No parseable verdict =
+          // flake/environment: exit -2 is the wall-clock kill (timeout), -3 the
+          // step/poll death (infra), anything else a crash (unparseable). Only
+          // "assertion" ever becomes a signal — see storyResultsToSignals.
+          const failureKind: DemoFailureKindT | undefined =
+            pj.status === "passed"
+              ? undefined
+              : playParsed !== null
+                ? "assertion"
+                : playResult.exitCode === -2
+                  ? "timeout"
+                  : playResult.exitCode === -3
+                    ? "infra"
+                    : "unparseable";
           const rs = parseLastJson<RecordStopJson>(recordStopResult.stdout, {
             sessionId: "",
             eventCount: 0,
@@ -905,6 +945,7 @@ export const productDemo = defineRun({
           return {
             name: story.name,
             status: pj.status,
+            ...(failureKind !== undefined ? { failureKind } : {}),
             durationMs: pj.durationMs,
             chapterStartMs: pj.chapterStartMs,
             chapterEndMs: pj.chapterEndMs,
@@ -915,11 +956,14 @@ export const productDemo = defineRun({
           };
         }).pipe(
           // One story's INFRA failure (a failed attach, a dropped session)
-          // must not sink the parallel run — mark that one story failed.
+          // must not sink the parallel run — mark that one story failed. This
+          // path is by definition `infra` (the pipeline itself broke, not the
+          // app), so it never becomes a heal signal.
           Effect.catchAll((cause) =>
             Effect.succeed<StoryOutcome>({
               name: story.name,
               status: "failed",
+              failureKind: "infra",
               durationMs: 0,
               chapterStartMs: 0,
               chapterEndMs: 0,
@@ -1150,6 +1194,69 @@ export const productDemo = defineRun({
           : s,
       );
 
+      // 3.8. Derive `signals/v1` from the ASSERTION-failed chapters (the pure,
+      //      unit-tested adapter — packages/core/src/demo-signals.ts). Flake,
+      //      infra, timeout, and passing chapters produce nothing, so the
+      //      output is heal-worthy by construction. The chapter NARRATIVE is
+      //      UNTRUSTED (an LLM summary of a live, possibly attacker-influenced
+      //      page); the adapter fences it into `detail` and fingerprints on the
+      //      operator-authored chapter name.
+      const signals = storyResultsToSignals(storiesWithGifs, {
+        repo: input.repo,
+        deployedUrl: input.deployedUrl,
+      });
+      yield* io.log(
+        "info",
+        `product-demo: ${signals.length} signal(s) from assertion failures`,
+      );
+
+      // 3.9. Persist the STRUCTURED chapter results + derived signals as R2
+      //      artifacts on BOTH paths. The dispatcher discards `summary_json`
+      //      (the Output) on a FAILED Exit — exactly the run that most warrants
+      //      triage — so without this the structured data (per-chapter status,
+      //      failureKind, replay URIs) and the signals are lost on red. A
+      //      consumer (ci-triage-pr today; self-heal later) reads
+      //      `artifacts/<execId>/signals.json`. Best-effort: a diagnostics
+      //      upload never changes the verdict. `write-prior` writes `--data`
+      //      verbatim; shellQuote keeps the JSON intact through the shell.
+      const persistJsonArtifact = (name: string, value: unknown) =>
+        step(`upload-${name}`, () =>
+          sandbox
+            .exec({
+              container,
+              command: [
+                "demo-agent", "write-prior",
+                "--out", `/tmp/demo/${name}`,
+                "--data", JSON.stringify(value),
+              ]
+                .map(shellQuote)
+                .join(" "),
+            })
+            .pipe(
+              Effect.timeout("60 seconds"),
+              Effect.andThen(
+                artifact.upload({
+                  name,
+                  path: `/tmp/demo/${name}`,
+                  container,
+                  contentType: "application/json",
+                  signedUrlTTL: "30 days",
+                }),
+              ),
+              Effect.timeout("3 minutes"),
+              Effect.catchAllCause((cause) =>
+                io
+                  .log(
+                    "warn",
+                    `product-demo: ${name} upload failed (best-effort) — ${Cause.pretty(cause).slice(0, 400)}`,
+                  )
+                  .pipe(Effect.as("")),
+              ),
+            ),
+        );
+      yield* persistJsonArtifact("stories.json", storiesWithGifs);
+      yield* persistJsonArtifact("signals.json", signals);
+
       if (input.pr !== undefined) {
         const commentBody = [
           summaryMd,
@@ -1207,6 +1314,7 @@ export const productDemo = defineRun({
         replayJsonUri: primary?.replayJsonUri ?? "",
         summaryMd,
         stories: storiesWithGifs,
+        signals,
         ...(gifUri !== "" ? { gifUri } : {}),
       };
     }),
