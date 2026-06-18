@@ -39,12 +39,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-# Sparse + shallow clone — only `packages/demo-agent` is needed to bundle.
+# Sparse + shallow clone — only the agent packages + their workspace deps are
+# needed to bundle. `packages/bedrock-sigv4/` is a workspace dependency of
+# demo-agent (since #153 extracted the SigV4 signer); omit it and esbuild fails
+# to resolve `@flare-dispatch/bedrock-sigv4`. Keep this list in sync when an
+# agent package gains a new in-repo dependency.
 RUN git init . \
  && git remote add origin https://github.com/OpenHackersClub/flare-dispatch.git \
  && git fetch --depth=1 origin "${FD_REF}" \
  && git config core.sparseCheckout true \
- && printf 'package.json\npnpm-lock.yaml\npnpm-workspace.yaml\ntsconfig.base.json\npackages/demo-agent/\npackages/flare-agent/\n' \
+ && printf 'package.json\npnpm-lock.yaml\npnpm-workspace.yaml\ntsconfig.base.json\npackages/demo-agent/\npackages/flare-agent/\npackages/bedrock-sigv4/\n' \
       > .git/info/sparse-checkout \
  && git checkout FETCH_HEAD
 RUN pnpm install --frozen-lockfile --filter @flare-dispatch/demo-agent... --filter @flare-dispatch/flare-agent...
