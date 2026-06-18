@@ -181,4 +181,30 @@ describe("renderResultEmail", () => {
     });
     expect(html).not.toContain("Results");
   });
+
+  it("renders the product-demo viewer link as a watch-the-demo CTA", () => {
+    const demoUrl =
+      "https://dispatcher.example/demos/01J0EXEC?t=tok.sig";
+    const { html, text } = renderResultEmail({
+      ...base,
+      run: "product-demo",
+      status: "success",
+      demoUrl,
+      output: { replayUri: "https://dispatcher.example/replay/run-level" },
+    });
+    expect(html).toContain(`<a href="${demoUrl}"`);
+    expect(html).toContain("Watch the product demo");
+    expect(text).toContain(`Watch the product demo: ${demoUrl}`);
+  });
+
+  it("omits the demo CTA on a failed run (no viewer page exists)", () => {
+    const { html, text } = renderResultEmail({
+      ...base,
+      run: "product-demo",
+      status: "failure",
+      demoUrl: "https://dispatcher.example/demos/01J0EXEC?t=tok.sig",
+    });
+    expect(html).not.toContain("Watch the product demo");
+    expect(text).not.toContain("Watch the product demo");
+  });
 });

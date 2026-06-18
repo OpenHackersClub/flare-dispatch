@@ -929,6 +929,10 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
           repo: payload.github.repo,
           sha: payload.github.sha,
           ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+          // The product-demo viewer page — same link the check-run summary
+          // carries, surfaced as the email's watch-the-demo CTA. `undefined`
+          // for non-product-demo runs and on failure (no summary_json to view).
+          ...(demoUrl !== undefined ? { demoUrl } : {}),
           output: Exit.match(exit, {
             onSuccess: (out) => out,
             onFailure: () => undefined,
