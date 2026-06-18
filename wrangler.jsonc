@@ -79,7 +79,7 @@
     //   Points at the Access-fronted custom domain so viewer links (and the
     //   product-demo dogfood `/logs` + `/replay` links) land on the host the
     //   Access app actually protects, not the bare *.workers.dev origin.
-    "PUBLIC_ORIGIN": "https://flare-dispatch.openhackers.club",
+    "PUBLIC_ORIGIN": "https://flare-dispatch-app.openhackers.club",
     // EMAIL_FROM — verified Email Routing sender for completion-notify email
     //   (the `notify.emails` dispatch field). Must be an address on the zone the
     //   `send_email` binding below is attached to. Uncomment + set once Email
@@ -91,7 +91,8 @@
   },
 
   // Custom domain — the worker's public hostname on a zone we control
-  // (openhackers.club, the ohc default `<project>.openhackers.club`). REQUIRED
+  // (openhackers.club). NB the bare `flare-dispatch.openhackers.club` is the
+  // docs Pages site, so the dispatcher uses the `-app` subdomain. REQUIRED
   // for Cloudflare Access on the viewer surfaces: Access cannot be placed in
   // front of `*.workers.dev`, only a hostname on an account zone. `wrangler
   // deploy` provisions the DNS record + edge cert and binds it to this worker
@@ -100,7 +101,7 @@
   // "FlareDispatch viewer" Access app (see ACCESS_AUD above) sits over the
   // viewer paths on exactly this host.
   "routes": [
-    { "pattern": "flare-dispatch.openhackers.club", "custom_domain": true }
+    { "pattern": "flare-dispatch-app.openhackers.club", "custom_domain": true }
   ],
 
   // Email Routing `send_email` binding — backs the `email` capability + the
