@@ -26,6 +26,36 @@ export interface Env {
    */
   readonly LOG_LINK_SECRET?: string;
 
+  /**
+   * Cloudflare Access application AUD tag — gates every human-facing VIEWER
+   * surface (`/logs`, `/demos`, `/replay`, `/v1/executions/...`) behind
+   * Zero-Trust SSO. A var, not a secret (the AUD is
+   * a public application identifier, not a credential). Pairs with
+   * `ACCESS_TEAM_DOMAIN`. With `VIEWER_ACCESS_MODE` unset/"required" and EITHER
+   * of these absent, the viewer routes **default-DENY** (`503
+   * access_not_configured`) — never silently open. See `access-auth.ts`.
+   */
+  readonly ACCESS_AUD?: string;
+
+  /**
+   * Cloudflare Access team domain (`myteam.cloudflareaccess.com`, or the full
+   * `https://...` URL) — the issuer the viewer-Access gate validates `iss`
+   * against and fetches the verifying JWKS from
+   * (`<issuer>/cdn-cgi/access/certs`). A var, not a secret. Pairs with
+   * `ACCESS_AUD`; see that field for the default-deny posture.
+   */
+  readonly ACCESS_TEAM_DOMAIN?: string;
+
+  /**
+   * Viewer Access enforcement mode. Unset / "required" (the secure default):
+   * every viewer surface requires a verified Cloudflare Access JWT. The single
+   * explicit opt-out is "token-only" — fall back to the per-execution
+   * capability token alone (the pre-Access behaviour, and what `wrangler dev`
+   * / local smokes use, since no Access app fronts the Worker there). A var.
+   * See `access-auth.ts`.
+   */
+  readonly VIEWER_ACCESS_MODE?: string;
+
   /** Workflow binding — instantiates RunWorkflow executions. */
   readonly RUNS_WORKFLOW: Workflow;
 

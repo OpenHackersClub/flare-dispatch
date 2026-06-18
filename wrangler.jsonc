@@ -40,7 +40,31 @@
     //   launch-failure burst the gate exists to prevent. Operators may set it
     //   slightly BELOW max_instances (e.g. "14") for slot-turnover headroom.
     //   Unset → code defaults to 16.
-    "ADMISSION_CAP": "16"
+    "ADMISSION_CAP": "16",
+
+    // --- Cloudflare Access for the human-facing VIEWER surfaces ------------
+    // The log viewer (/logs), product-demo viewer (/demos), rrweb replay
+    // (/replay), and executions read API (/v1/executions/...) sit behind
+    // Cloudflare Access (Zero-Trust SSO), enforced IN-WORKER
+    // (apps/dispatcher/src/access-auth.ts) — default-secure. (/v1/artifacts is
+    // intentionally NOT gated: its media is embedded in GitHub check-runs.)
+    //
+    // DEFAULT IS SECURE: with VIEWER_ACCESS_MODE unset, these surfaces require a
+    // verified Access JWT; a deploy that has not configured ACCESS_AUD +
+    // ACCESS_TEAM_DOMAIN returns 503 on every viewer route (it refuses to serve
+    // rather than fall open). To turn the viewer on you MUST either:
+    //   (a) put the routes behind a Cloudflare Access application and set the two
+    //       vars below (ACCESS_AUD = the app's Audience tag, ACCESS_TEAM_DOMAIN =
+    //       your `<team>.cloudflareaccess.com`), OR
+    //   (b) consciously opt out with VIEWER_ACCESS_MODE="token-only" — falls back
+    //       to the per-execution capability token alone (the pre-Access behaviour;
+    //       also what `wrangler dev` / local smokes use, since no Access app fronts
+    //       the Worker there).
+    // See specs/07-trust-model.md § Operator → Dispatcher (viewer) for the
+    // one-time Access-application setup recipe (CF API, not the dashboard).
+    // "ACCESS_AUD": "<access-application-audience-tag>",
+    // "ACCESS_TEAM_DOMAIN": "<your-team>.cloudflareaccess.com",
+    // "VIEWER_ACCESS_MODE": "token-only"
     // EMAIL_FROM — verified Email Routing sender for completion-notify email
     //   (the `notify.emails` dispatch field). Must be an address on the zone the
     //   `send_email` binding below is attached to. Uncomment + set once Email

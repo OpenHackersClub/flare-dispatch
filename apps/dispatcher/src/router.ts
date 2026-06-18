@@ -23,6 +23,7 @@ import type { Env } from "./env";
 import { handleAdminEvent } from "./routes/admin-events";
 import { handleArtifact } from "./routes/artifacts";
 import { handleAgentInference } from "./routes/agent-inference";
+import { gateViewerAccess } from "./access-auth";
 import { handleBrowserCdp } from "./routes/browser-cdp";
 import { handleReplay } from "./routes/replay";
 import { handleDispatch } from "./routes/dispatch";
@@ -48,6 +49,34 @@ const json = (body: unknown, status: number): Response =>
     headers: { "content-type": "application/json" },
   });
 
+/**
+ * Is this path a human-facing VIEWER surface that must sit behind Cloudflare
+ * Access? Covers the HTML viewers (`/logs`, `/demos`, `/replay`) and the
+ * executions read API they (and check-run links) drive (`/v1/executions/...`,
+ * which serves the COMPLETE raw logs of a run).
+ *
+ * NOT here, deliberately:
+ *   * `/v1/artifacts/...` — an operator-CURATED, ULID-addressed open surface
+ *     (only what a run `artifact.upload`s). Its bytes are embedded as media in
+ *     GitHub check-run summaries (fetched server-side by GitHub's image proxy,
+ *     which carries no Access identity) and in the `/demos` viewer's `<img>`
+ *     gallery — gating it would break both. The viewer PAGE that frames them is
+ *     gated; the promoted media stay openly addressable, as today.
+ *   * machine surfaces — dispatch, webhooks, agent inference, browser-cdp, the
+ *     OIDC well-knowns, `/health`, the install flow — authenticate by their own
+ *     mechanism (HMAC / webhook secret / capability token / public-by-design)
+ *     and cannot do interactive SSO.
+ *
+ * See `access-auth.ts`.
+ */
+const isViewerSurface = (segments: readonly string[]): boolean => {
+  const [a, b] = segments;
+  if (segments.length === 2 && (a === "logs" || a === "demos" || a === "replay")) {
+    return true;
+  }
+  return a === "v1" && b === "executions";
+};
+
 /** Route an inbound request to its handler. */
 export const handleRequest = async (
   request: Request,
@@ -56,6 +85,14 @@ export const handleRequest = async (
   const url = new URL(request.url);
   // Split into non-empty segments: "/v1/dispatch/x" → ["v1","dispatch","x"].
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
+
+  // Cloudflare Access gate — FIRST factor on every viewer surface, ahead of any
+  // capability-token check in the handler. Default-secure: enforced unless the
+  // deploy explicitly opts out via VIEWER_ACCESS_MODE=token-only (access-auth.ts).
+  if (isViewerSurface(segments)) {
+    const denied = await gateViewerAccess(env, request);
+    if (denied !== null) return denied;
+  }
 
   // GET /health
   if (segments.length === 1 && segments[0] === "health") {

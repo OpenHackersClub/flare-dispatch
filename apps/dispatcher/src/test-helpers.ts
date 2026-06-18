@@ -236,9 +236,17 @@ export const makeFakeEnv = (opts: {
   metadata?: FakeD1;
   publicOrigin?: string;
   cloudflareAccountId?: string;
+  /**
+   * Viewer Cloudflare-Access mode (access-auth.ts). Defaults to "token-only" —
+   * the local/no-Access-app equivalent — so router-driven tests exercise the
+   * capability-token gate, not the Access gate (which has its own unit tests).
+   * Pass "required" to drive the Access path through `handleRequest`.
+   */
+  viewerAccessMode?: "required" | "token-only";
 }): Env =>
   ({
     HMAC_SECRET: opts.hmacSecret,
+    VIEWER_ACCESS_MODE: opts.viewerAccessMode ?? "token-only",
     RUNS_WORKFLOW: opts.workflow.binding,
     RUNS_STORAGE: opts.storage.binding,
     ...(opts.idempotencyKv !== undefined
