@@ -321,13 +321,28 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
     // public origin or no log-link key material (then both fall back to their
     // historical, link-less forms).
     const logSecret = resolveLogLinkSecret(this.env);
-    const logsBaseUrl =
+    // The capability token gates BOTH the log viewer and the product-demo
+    // viewer (same `?t=` scheme), so sign it once and reuse.
+    const logToken =
       publicOrigin !== undefined && logSecret !== undefined
-        ? buildLogsUrl(
-            publicOrigin,
+        ? await signLogToken(logSecret, payload.executionId)
+        : undefined;
+    const logsBaseUrl =
+      publicOrigin !== undefined && logToken !== undefined
+        ? buildLogsUrl(publicOrigin, payload.executionId, logToken)
+        : undefined;
+    // The product-demo viewer (`/demos/:execution`) — only meaningful for a
+    // `product-demo` run, and only once it succeeds (a failed run persists no
+    // `summary_json` for the page to render). Appended to the check-run success
+    // summary so a reviewer reaches the hero replay + per-chapter gallery in one
+    // click, not just the raw replay link the run posts in its PR comment.
+    const demoUrl =
+      payload.run === "product-demo" &&
+      publicOrigin !== undefined &&
+      logToken !== undefined
+        ? `${publicOrigin.replace(/\/$/, "")}/demos/${encodeURIComponent(
             payload.executionId,
-            await signLogToken(logSecret, payload.executionId),
-          )
+          )}?t=${logToken}`
         : undefined;
 
     // Self-heal agent-tier setup (specs/08-self-healing.md § 6.3): for a
@@ -872,6 +887,10 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       const viewLogsSuffix =
         logsBaseUrl !== undefined ? ` — [view full logs ↗](${logsBaseUrl})` : "";
       const logsSuffix = `${cfLogsSuffix}${viewLogsSuffix}`;
+      // Only surfaced on the success branch below — a failed `product-demo`
+      // has no `summary_json` for `/demos/:execution` to render.
+      const demoSuffix =
+        demoUrl !== undefined ? ` — [▶ view product demo ↗](${demoUrl})` : "";
       const writebackSuffix =
         writebackLine !== undefined ? `\n\n${writebackLine}` : "";
       yield* checks.update({
@@ -883,7 +902,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
           title: checkRunName,
           summary: Exit.match(exit, {
             onSuccess: () =>
-              `✓ ${payload.run} — execution succeeded.${logsSuffix}${writebackSuffix}`,
+              `✓ ${payload.run} — execution succeeded.${logsSuffix}${demoSuffix}${writebackSuffix}`,
             // The run's own markdown (when the failure carries one) renders
             // beneath the generic line + logs link, truncated to GitHub's
             // 65535-char summary limit.
