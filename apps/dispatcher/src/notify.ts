@@ -28,6 +28,15 @@ export type RenderResultEmailInput = {
   /** Cloudflare Workflows instance page, when `CLOUDFLARE_ACCOUNT_ID` is set. */
   readonly detailsUrl?: string;
   /**
+   * The token-gated product-demo viewer page (`/demos/:execution?t=…`) — the
+   * hero replay + per-chapter gallery. Set only for a successful `product-demo`
+   * run (a failed run persists no `summary_json` for the page to render).
+   * Rendered as a prominent call-to-action at the top of the email so a
+   * stakeholder lands on the watchable gallery in one click, rather than
+   * scanning per-chapter links in the Results table. Ignored when absent.
+   */
+  readonly demoUrl?: string;
+  /**
    * The run's output object (the `Exit` success value), or `undefined` on a
    * failed run (no output produced). Rendered as a labelled link/value table.
    */
@@ -223,12 +232,21 @@ export const renderResultEmail = (
       ? `<p style="margin:16px 0 0;font-size:14px;"><a href="${esc(input.detailsUrl)}">View step logs in Cloudflare →</a></p>`
       : "";
 
+  // Prominent watch-the-demo call-to-action — only for a successful run that
+  // carries a viewer URL (product-demo). A button-styled anchor placed above
+  // the Results table so it's the first thing a stakeholder clicks.
+  const demoCtaHtml =
+    input.status === "success" && isHttpUrl(input.demoUrl)
+      ? `<p style="margin:16px 0 4px;"><a href="${esc(input.demoUrl)}" style="display:inline-block;padding:10px 18px;border-radius:6px;background:#1f6feb;color:#fff;font-size:14px;font-weight:600;text-decoration:none;">▶ Watch the product demo</a></p>`
+      : "";
+
   const html = `<!DOCTYPE html><html><body style="margin:0;padding:24px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1f2328;">
 <table style="max-width:600px;border-collapse:collapse;">
 <tr><td>
 <span style="display:inline-block;padding:4px 10px;border-radius:6px;background:${badge.color};color:#fff;font-size:13px;font-weight:600;">${esc(badge.label)}</span>
 <h2 style="margin:12px 0 4px;font-size:18px;">${esc(input.run)}</h2>
 <table style="border-collapse:collapse;font-size:14px;margin-top:8px;">${metaHtml}</table>
+${demoCtaHtml}
 ${resultsHtml}
 ${detailsHtml}
 <p style="margin:24px 0 0;font-size:12px;color:#8c959f;">Sent by FlareDispatch.</p>
@@ -244,6 +262,9 @@ ${detailsHtml}
     `Commit:     ${input.sha}`,
     `Execution:  ${input.executionId}`,
   ];
+  if (input.status === "success" && isHttpUrl(input.demoUrl)) {
+    textLines.push("", `▶ Watch the product demo: ${input.demoUrl}`);
+  }
   if (rows.length > 0) {
     textLines.push("", "Results:");
     for (const [label, value] of rows) {
