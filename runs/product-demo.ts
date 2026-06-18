@@ -254,6 +254,12 @@ const StoryResult = Schema.Struct({
   chapterEndMs: Schema.Number,
   narrative: Schema.String,
   keyScreenshotUri: Schema.String,
+  // Stable artifact URL (`/v1/artifacts/<exec>/chapter-<i>.gif`) to THIS
+  // chapter's own animated GIF — the per-action frames for just this story,
+  // stitched on its own. Powers the per-chapter gallery the `/demos/:execution`
+  // page renders. Absent when the chapter captured no frames or the encode was
+  // skipped.
+  chapterGifUri: Schema.optional(Schema.String),
   // Each story now records on its OWN CDP session (the run plays stories in
   // parallel), so the replay links are per-story, not one shared timeline.
   replayUri: Schema.String,
@@ -1068,6 +1074,82 @@ export const productDemo = defineRun({
                 ),
             );
 
+      // 3.7. Render ONE GIF per chapter from that chapter's own frames (the
+      //      play loop names every frame `${story}-NNNN.png`, so `--match` on
+      //      the story name selects exactly one chapter out of the shared
+      //      frames dir). These power the per-chapter gallery on the
+      //      `/demos/:execution` page — the combined `demo.gif` above stays the
+      //      single walkthrough the PR comment embeds. Best-effort per chapter:
+      //      an encode/upload failure leaves that chapter's `chapterGifUri`
+      //      unset (the page falls back to its key screenshot) and never flips
+      //      the verdict. Indexed by the chapter's position in `stories`.
+      const chapterGifUris = yield* Effect.forEach(
+        stories,
+        (s, i) =>
+          step(`render-chapter-gif-${i}`, () =>
+            sandbox
+              .exec({
+                container,
+                command: [
+                  "demo-agent", "gif",
+                  "--frames", framesDir,
+                  "--match", `${s.name}-`,
+                  "--out", `/tmp/demo/chapter-${i}.gif`,
+                  "--max-width", "800",
+                  "--max-bytes", "10000000",
+                ]
+                  .map(shellQuote)
+                  .join(" "),
+              })
+              .pipe(
+                Effect.timeout("120 seconds"),
+                Effect.map((r) => r.stdout),
+                Effect.catchAll(() => Effect.succeed("")),
+              ),
+          ).pipe(
+            Effect.flatMap((stdout) => {
+              const cj = parseLastJson<GifJson>(stdout, {
+                gifPath: "",
+                frameCount: 0,
+                bytes: 0,
+              });
+              if (cj.gifPath === "" || cj.frameCount === 0) {
+                return Effect.succeed("");
+              }
+              return step(`upload-chapter-gif-${i}`, () =>
+                artifact
+                  .upload({
+                    name: `chapter-${i}.gif`,
+                    path: `/tmp/demo/chapter-${i}.gif`,
+                    container,
+                    contentType: "image/gif",
+                    signedUrlTTL: "30 days",
+                  })
+                  .pipe(
+                    Effect.timeout("90 seconds"),
+                    Effect.catchAllCause((cause) =>
+                      io
+                        .log(
+                          "warn",
+                          `product-demo: chapter-${i}.gif upload failed — ${Cause.pretty(cause).slice(0, 400)}`,
+                        )
+                        .pipe(Effect.as("")),
+                    ),
+                  ),
+              );
+            }),
+          ),
+        { concurrency: PER_STORY_CONCURRENCY },
+      );
+
+      // Fold each chapter's GIF URL back onto its story result so the page (and
+      // any downstream consumer of `summary_json`) gets it inline.
+      const storiesWithGifs = stories.map((s, i) =>
+        chapterGifUris[i] !== undefined && chapterGifUris[i] !== ""
+          ? { ...s, chapterGifUri: chapterGifUris[i]! }
+          : s,
+      );
+
       if (input.pr !== undefined) {
         const commentBody = [
           summaryMd,
@@ -1124,7 +1206,7 @@ export const productDemo = defineRun({
         replayUri: primary?.replayUri ?? "",
         replayJsonUri: primary?.replayJsonUri ?? "",
         summaryMd,
-        stories,
+        stories: storiesWithGifs,
         ...(gifUri !== "" ? { gifUri } : {}),
       };
     }),

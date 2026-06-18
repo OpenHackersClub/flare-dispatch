@@ -289,6 +289,12 @@ const delayMsOption = Options.integer("delay-ms").pipe(
   Options.withDefault(600),
   Options.withDescription("Per-frame delay in milliseconds."),
 );
+const matchOption = Options.text("match").pipe(
+  Options.withDescription(
+    "Optional: only stitch frames whose filename starts with this prefix (e.g. a story name like `Sign up-`) — how the run renders one per-chapter GIF from the shared frames dir. Omit to stitch every frame.",
+  ),
+  Options.optional,
+);
 
 const gifCommand = Command.make(
   "gif",
@@ -299,9 +305,11 @@ const gifCommand = Command.make(
     maxFrames: maxFramesOption,
     maxBytes: maxBytesOption,
     delayMs: delayMsOption,
+    match: matchOption,
   },
-  ({ frames, out, maxWidth, maxFrames, maxBytes, delayMs }) =>
+  ({ frames, out, maxWidth, maxFrames, maxBytes, delayMs, match }) =>
     Effect.gen(function* () {
+      const matchPrefix = Option.getOrUndefined(match);
       const result = yield* Effect.try({
         try: () =>
           renderGifFromDir({
@@ -311,6 +319,7 @@ const gifCommand = Command.make(
             maxFrames,
             maxBytes,
             delayMs,
+            ...(matchPrefix !== undefined ? { match: matchPrefix } : {}),
           }),
         catch: (e) =>
           new FsFailed({

@@ -38,6 +38,7 @@ import {
   handleLogViewer,
 } from "./routes/logs";
 import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
+import { handleProductDemo } from "./routes/product-demos";
 import { handleGithubWebhook } from "./routes/webhook";
 import { handleSignalsWebhook } from "./routes/signals-webhook";
 
@@ -71,6 +72,16 @@ export const handleRequest = async (
       return json({ error: "method_not_allowed" }, 405);
     }
     return handleReplay(env, decodeURIComponent(segments[1]!));
+  }
+
+  // GET /demos/:execution — the token-gated product-demo viewer: hero rrweb
+  // replay over a per-chapter GIF gallery (same `?t=` capability token as the
+  // log viewer). Reads the execution's persisted `summary_json`.
+  if (segments.length === 2 && segments[0] === "demos") {
+    if (request.method !== "GET") {
+      return json({ error: "method_not_allowed" }, 405);
+    }
+    return handleProductDemo(env, decodeURIComponent(segments[1]!), url);
   }
 
   // GET /logs/:execution — the self-contained HTML log viewer (capability

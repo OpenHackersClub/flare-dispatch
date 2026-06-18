@@ -143,6 +143,45 @@ describe("renderGifFromDir", () => {
     expect(written.slice(0, 6).toString("ascii")).toBe("GIF89a");
   });
 
+  it("with `match`, stitches only the frames for one chapter", () => {
+    const dir = mkdir();
+    // Two chapters share the frames dir, named `${story}-NNNN.png`.
+    fs.writeFileSync(path.join(dir, "Sign up-0000.png"), toPng(solid(20, 16, 255, 0, 0)));
+    fs.writeFileSync(path.join(dir, "Sign up-0001.png"), toPng(solid(20, 16, 0, 255, 0)));
+    fs.writeFileSync(path.join(dir, "Checkout-0000.png"), toPng(solid(20, 16, 0, 0, 255)));
+    const out = path.join(dir, "chapter-0.gif");
+    const res = renderGifFromDir({
+      framesDir: dir,
+      out,
+      maxWidth: 800,
+      maxFrames: 60,
+      maxBytes: 10_000_000,
+      delayMs: 400,
+      match: "Sign up-",
+    });
+    // Only the two "Sign up-" frames — the "Checkout-" frame is excluded.
+    expect(res.frameCount).toBe(2);
+    expect(res.gifPath).toBe(out);
+    expect(fs.readFileSync(out).slice(0, 6).toString("ascii")).toBe("GIF89a");
+  });
+
+  it("with a `match` that hits no frames, is a clean no-op", () => {
+    const dir = mkdir();
+    fs.writeFileSync(path.join(dir, "story-0000.png"), toPng(solid(20, 16, 255, 0, 0)));
+    const out = path.join(dir, "chapter-9.gif");
+    const res = renderGifFromDir({
+      framesDir: dir,
+      out,
+      maxWidth: 800,
+      maxFrames: 60,
+      maxBytes: 10_000_000,
+      delayMs: 400,
+      match: "nonexistent-",
+    });
+    expect(res).toEqual({ gifPath: "", frameCount: 0, bytes: 0, width: 0, height: 0 });
+    expect(fs.existsSync(out)).toBe(false);
+  });
+
   it("respects the byte budget by dropping frames, not failing", () => {
     const dir = mkdir();
     // 24 noisy frames so the unbudgeted GIF is comfortably large.
