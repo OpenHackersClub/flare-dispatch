@@ -63,6 +63,20 @@ flowchart LR
 
 Each story's play captures a pixel frame after every action into a shared frames dir — the GIF's source, since the rrweb stream is DOM events, not pixels. The `render gif` step is the bundled `demo-agent gif` subcommand (pure-JS `pngjs` + `gifenc`, no ffmpeg in the image); it downscales to ≤ 800 px and drops frames evenly to stay under GitHub's ~10 MB image-proxy limit. The comment is best-effort: a GIF or comment failure logs but never fails the run, and a firing with no PR (Schedule mode, or a `workflow_dispatch` with no PR) skips it entirely. See [specs/02-runs.md § PR comment on completion](../../specs/02-runs.md#pr-comment-on-completion-gif--summary) for the full contract, and [`.github/workflows/product-demo-logviewer.yml`](../../.github/workflows/product-demo-logviewer.yml) for the worked dogfood that demos this repo's own log viewer.
 
+## Failure signals (self-heal input)
+
+A product-demo failure is a richer diagnostic than an OTel alert — it carries the journey that broke, the replay, and the screenshot. The run turns the **assertion-failed** chapters into `signals/v1` (the same vendor-blind contract a Datadog/SigNoz collector prints, [`packages/core/src/signals.ts`](../../packages/core/src/signals.ts)), so they can be folded into [`ci-triage-pr`](../ci-triage-pr/) today and a self-heal later — the same path an e2e or OTel finding takes.
+
+Two rules make the output heal-worthy by construction (enforced by the pure, unit-tested [`storyResultsToSignals`](../../packages/core/src/demo-signals.ts)):
+
+- **Only assertion failures emit a signal.** Each chapter result now carries a `failureKind` (`assertion` \| `timeout` \| `infra` \| `unparseable`). A demo verdict is an LLM-driven, non-deterministic browser loop, so a single red chapter is *not* ground truth — only `assertion` (the agent played the journey and the app misbehaved) becomes a signal. `infra`/`timeout`/`unparseable` are flake/environment and are dropped before emission, so the triage PR never drowns in flake.
+- **The narrative is untrusted.** The demo drives a deployed app that may render attacker-influenced content, and the chapter `narrative` is an LLM *summary* of what it saw on-page — a carrier, not a sanitizer. It rides `signals/v1`'s already-fenced `detail` field; the signal's fingerprint (source + title) keys off the operator-authored chapter **name**, never the narrative, so a reworded flake can't mint a fresh incident identity and defeat downstream dedup.
+
+The run exposes these two ways, so both the green and the **red** path keep them:
+
+- `Output.signals` — the derived `signals/v1` array, returned on the success path.
+- `artifacts/<execId>/signals.json` and `artifacts/<execId>/stories.json` — persisted to R2 on **both** paths. The dispatcher discards the Output (`summary_json`) on a failed Exit — exactly the run that most warrants triage — so a consumer reads the structured per-chapter results (status, `failureKind`, replay URIs) and the signals from R2 even on a fully-red demo.
+
 ## Why this lives on FlareDispatch
 
 The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline.yml)):

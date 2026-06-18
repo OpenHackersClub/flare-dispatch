@@ -205,6 +205,15 @@ export {
   type SignalT,
 } from "./signals";
 
+// --- Demo→signals adapter (product-demo failures as `signals/v1`) -------------
+export {
+  DemoFailureKind,
+  storyResultsToSignals,
+  type DemoFailureKindT,
+  type DemoChapterResult,
+  type DemoSignalContext,
+} from "./demo-signals";
+
 // --- Incident (the fix-side `incident/v1` context-pack contract) --------------
 export {
   INCIDENT_CONTRACT_VERSION,
