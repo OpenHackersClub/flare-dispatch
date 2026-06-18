@@ -25,7 +25,8 @@
       "type": "string",
       "enum": [
         "ci",
-        "application"
+        "application",
+        "demo"
       ]
     },
     "repo": {
@@ -178,6 +179,56 @@
             "type": "string",
             "maxLength": 1000,
             "description": "Link to the failure."
+          }
+        }
+      }
+    },
+    "demoChapters": {
+      "type": "array",
+      "maxItems": 20,
+      "description": "Failed product-demo chapters (`demo` class) — `narrative` is ATTACKER-INFLUENCEABLE (an LLM summary of a live page).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Chapter name (operator-authored)."
+          },
+          "narrative": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "UNTRUSTED — the LLM's summary of the page."
+          },
+          "chapterStartMs": {
+            "type": "number",
+            "description": "rrweb chapter start offset (ms)."
+          },
+          "chapterEndMs": {
+            "type": "number",
+            "description": "rrweb chapter end offset (ms)."
+          },
+          "replayUri": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Human deep-link to the replay (not agent-fetched)."
+          },
+          "keyScreenshotUri": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Human deep-link to the key screenshot."
+          },
+          "failedRuns": {
+            "type": "number",
+            "description": "k-of-n: failing runs that gated escalation."
+          },
+          "totalRuns": {
+            "type": "number",
+            "description": "k-of-n: total confirmation runs."
           }
         }
       }

@@ -18,6 +18,7 @@ const baseIncident: IncidentT = {
   suspectRef: { base: "aaa", head: "bbb" },
   signals: [],
   ciFailures: [{ kind: "run-step", name: "test", conclusion: "failure", command: "pnpm test" }],
+  demoChapters: [],
   suspectFiles: ["src/handler.ts"],
   repro: { kind: "command", command: "pnpm test" },
 };
@@ -63,6 +64,42 @@ describe("self-heal-pr", () => {
     return Effect.gen(function* () {
       const out = yield* selfHealPr.run({ incident: baseIncident, signals: [] });
       expect(out.outcome).toBe("no-fix");
+      expect(out.prStaged).toBe(false);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("demo class with a test-command repro is eligible (verify runs the test)", () => {
+    // The demo failure verifies via the regression-test command — NOT a browser
+    // re-run — so it flows through the same verify→writeback gate as the CI class.
+    const incident: IncidentT = {
+      ...baseIncident,
+      class: "demo",
+      incidentId: "demo:owner_name:Sign in",
+      demoChapters: [{ name: "Sign in", narrative: "dashboard never rendered" }],
+      ciFailures: [],
+      repro: { kind: "command", command: "pnpm test", note: "write a regression test" },
+    };
+    const { layer } = makeCFRuntimeTest({ config, sandboxProgram: program({ verifyExit: 0, outcome: "patched" }) });
+    return Effect.gen(function* () {
+      const out = yield* selfHealPr.run({ incident, signals: [] });
+      expect(out.outcome).toBe("patched");
+      expect(out.verified).toBe(true);
+      expect(out.prStaged).toBe(true);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("demo class WITHOUT a command repro is skipped (left to triage)", () => {
+    const incident: IncidentT = {
+      ...baseIncident,
+      class: "demo",
+      demoChapters: [{ name: "Sign in" }],
+      ciFailures: [],
+      repro: { kind: "derived", note: "write a regression test" },
+    };
+    const { layer } = makeCFRuntimeTest({ config, sandboxProgram: program({ verifyExit: 0, outcome: "patched" }) });
+    return Effect.gen(function* () {
+      const out = yield* selfHealPr.run({ incident, signals: [] });
+      expect(out.outcome).toBe("skipped");
       expect(out.prStaged).toBe(false);
     }).pipe(Effect.provide(layer));
   });

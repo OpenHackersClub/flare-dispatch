@@ -17,6 +17,7 @@ import {
   Incident,
   INCIDENT_CONTRACT_VERSION,
   MAX_INCIDENT_CI_FAILURES,
+  MAX_INCIDENT_DEMO_CHAPTERS,
   MAX_INCIDENT_LOGTAIL_CHARS,
   MAX_INCIDENT_PATH_CHARS,
   MAX_INCIDENT_SHORT_CHARS,
@@ -57,6 +58,34 @@ describe("Incident schema (incident/v1)", () => {
 
   it("rejects an unknown class", () => {
     expect(Either.isLeft(decode({ ...minimal, class: "infra" }))).toBe(true);
+  });
+
+  it("accepts a demo-class incident with chapters + a command (test) repro", () => {
+    const inc = {
+      ...minimal,
+      class: "demo",
+      demoChapters: [
+        { name: "Sign in", narrative: "dashboard never rendered", replayUri: "https://r/1" },
+      ],
+      repro: { kind: "command", command: "pnpm test", note: "write a regression test" },
+      suspectRef: { base: "a".repeat(40), head: "a".repeat(40), advisory: true, confidence: 0.3 },
+    };
+    expect(Either.isRight(decode(inc))).toBe(true);
+  });
+
+  it("rejects more than MAX_INCIDENT_DEMO_CHAPTERS chapters", () => {
+    const one = { name: "c" } as const;
+    const inc = { ...minimal, class: "demo", demoChapters: Array.from({ length: MAX_INCIDENT_DEMO_CHAPTERS + 1 }, () => one) };
+    expect(Either.isLeft(decode(inc))).toBe(true);
+  });
+
+  it("rejects an over-long demoChapters narrative", () => {
+    const inc = {
+      ...minimal,
+      class: "demo",
+      demoChapters: [{ name: "c", narrative: "x".repeat(MAX_INCIDENT_LOGTAIL_CHARS + 1) }],
+    };
+    expect(Either.isLeft(decode(inc))).toBe(true);
   });
 
   it.each([
@@ -105,6 +134,7 @@ describe("schemas/incident.v1.schema.json mirrors the TS caps", () => {
 
   it("array caps equal the TS constants", () => {
     expect(props.ciFailures.maxItems).toBe(MAX_INCIDENT_CI_FAILURES);
+    expect(props.demoChapters.maxItems).toBe(MAX_INCIDENT_DEMO_CHAPTERS);
     expect(props.suspectFiles.maxItems).toBe(MAX_INCIDENT_SUSPECT_FILES);
   });
 
@@ -116,9 +146,11 @@ describe("schemas/incident.v1.schema.json mirrors the TS caps", () => {
     expect(props.ciFailures.items.properties.command.maxLength).toBe(MAX_INCIDENT_TEXT_CHARS);
     expect(props.ciFailures.items.properties.url.maxLength).toBe(MAX_INCIDENT_URL_CHARS);
     expect(props.diagnosis.properties.title.maxLength).toBe(MAX_INCIDENT_TEXT_CHARS);
+    expect(props.demoChapters.items.properties.name.maxLength).toBe(MAX_INCIDENT_SHORT_CHARS);
+    expect(props.demoChapters.items.properties.narrative.maxLength).toBe(MAX_INCIDENT_LOGTAIL_CHARS);
   });
 
   it("the class enum matches", () => {
-    expect([...props.class.enum].sort()).toEqual(["application", "ci"].sort());
+    expect([...props.class.enum].sort()).toEqual(["application", "ci", "demo"].sort());
   });
 });

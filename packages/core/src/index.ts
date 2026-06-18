@@ -209,15 +209,18 @@ export {
 export {
   DemoFailureKind,
   storyResultsToSignals,
+  storyResultsToIncident,
   type DemoFailureKindT,
   type DemoChapterResult,
   type DemoSignalContext,
+  type DemoIncidentContext,
 } from "./demo-signals";
 
 // --- Incident (the fix-side `incident/v1` context-pack contract) --------------
 export {
   INCIDENT_CONTRACT_VERSION,
   MAX_INCIDENT_CI_FAILURES,
+  MAX_INCIDENT_DEMO_CHAPTERS,
   MAX_INCIDENT_SUSPECT_FILES,
   MAX_INCIDENT_LOGTAIL_CHARS,
   MAX_INCIDENT_TEXT_CHARS,
@@ -227,11 +230,13 @@ export {
   IncidentClass,
   Diagnosis,
   CiFailure,
+  DemoChapter,
   SuspectRef,
   Repro,
   Incident,
   type IncidentClassT,
   type IncidentT,
+  type IncidentInput,
 } from "./incident";
 
 // --- Errors ------------------------------------------------------------------

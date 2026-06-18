@@ -37,6 +37,14 @@ import {
   MAX_SIGNALS,
   type SignalT,
 } from "./signals";
+import {
+  MAX_INCIDENT_DEMO_CHAPTERS,
+  MAX_INCIDENT_LOGTAIL_CHARS,
+  MAX_INCIDENT_SHORT_CHARS,
+  MAX_INCIDENT_TEXT_CHARS,
+  MAX_INCIDENT_URL_CHARS,
+  type IncidentInput,
+} from "./incident";
 
 /**
  * Why a product-demo chapter ended `failed`. Only `"assertion"` (the agent
@@ -70,6 +78,11 @@ export interface DemoChapterResult {
   readonly replayUri?: string;
   readonly replayJsonUri?: string;
   readonly keyScreenshotUri?: string;
+  readonly chapterStartMs?: number;
+  readonly chapterEndMs?: number;
+  /** k-of-n confirmation that gated escalation (deterministic, not flake). */
+  readonly failedRuns?: number;
+  readonly totalRuns?: number;
 }
 
 export interface DemoSignalContext {
@@ -127,4 +140,113 @@ export const storyResultsToSignals = (
         ...(url !== undefined ? { url } : {}),
       } satisfies SignalT;
     });
+};
+
+export interface DemoIncidentContext extends DemoSignalContext {
+  /**
+   * The deterministic verify command (e.g. `pnpm test`). A demo failure is
+   * NEVER verified by re-running the browser demo — the agent sandbox has no
+   * Browser Run, the fix lands in the repo not the deploy, and an LLM
+   * re-judging an LLM is circular. Instead the agent writes a regression test
+   * and verify runs THIS command. Without it the incident is `repro.kind:
+   * "derived"`, which self-heal-pr leaves to triage (no auto-PR). spec § 8.
+   */
+  readonly testCommand?: string;
+  /**
+   * The PR head SHA the demo ran against, if known. Set ⇒ an ADVISORY,
+   * low-confidence suspectRef — the demo proves the deployed app is broken, not
+   * which commit broke it (it runs against a deployed URL, not the repo).
+   */
+  readonly headSha?: string;
+}
+
+const TRUSTED_DEMO_NOTE =
+  "This is a product-demo user-journey failure. Reproduce it with a regression " +
+  "TEST (a deterministic test that fails before your fix and passes after) — do " +
+  "NOT attempt to drive a browser or re-run the demo. Then make the test pass.";
+
+/**
+ * Map a product-demo run's chapters to an `incident/v1` pack of class `demo`.
+ * Only ASSERTION failures are carried (same gate as `storyResultsToSignals`);
+ * a run with none yields `null` (nothing to heal).
+ *
+ * The pack verifies via the regression-test path (see `DemoIncidentContext.
+ * testCommand`), so it carries a `command` repro and self-heal-pr can process
+ * it like the CI class — no Browser Run in the sandbox, no circular oracle.
+ * The UNTRUSTED narrative rides `demoChapters[].narrative` + `signals[].detail`
+ * (both fenced by the agent); the fingerprint keys off the chapter NAMEs.
+ *
+ * Pure + deterministic (no Date/random/I/O) — unit-testable on fixtures.
+ */
+export const storyResultsToIncident = (
+  chapters: ReadonlyArray<DemoChapterResult>,
+  ctx: DemoIncidentContext,
+): IncidentInput | null => {
+  const failed = chapters
+    .filter((c) => c.status === "failed" && c.failureKind === "assertion")
+    .slice(0, MAX_INCIDENT_DEMO_CHAPTERS);
+  if (failed.length === 0) return null;
+
+  // Fingerprint = repo + the sorted operator-authored chapter NAMEs (stable;
+  // a reworded narrative can't mint a fresh identity → dedup/cooldown hold).
+  const names = failed.map((c) => c.name).sort();
+  const incidentId = clamp(
+    `demo:${ctx.repo}:${names.join("|")}`,
+    MAX_INCIDENT_SHORT_CHARS,
+  );
+
+  const demoChapters = failed.map((c) => ({
+    name: clamp(c.name, MAX_INCIDENT_SHORT_CHARS),
+    narrative: clamp(c.narrative, MAX_INCIDENT_LOGTAIL_CHARS),
+    ...(c.chapterStartMs !== undefined ? { chapterStartMs: c.chapterStartMs } : {}),
+    ...(c.chapterEndMs !== undefined ? { chapterEndMs: c.chapterEndMs } : {}),
+    ...((c.replayUri ?? "") !== "" ? { replayUri: clamp(c.replayUri!, MAX_INCIDENT_URL_CHARS) } : {}),
+    ...((c.keyScreenshotUri ?? "") !== ""
+      ? { keyScreenshotUri: clamp(c.keyScreenshotUri!, MAX_INCIDENT_URL_CHARS) }
+      : {}),
+    ...(c.failedRuns !== undefined ? { failedRuns: c.failedRuns } : {}),
+    ...(c.totalRuns !== undefined ? { totalRuns: c.totalRuns } : {}),
+  }));
+
+  // diagnosis is TRUSTED (rendered outside the agent's UNTRUSTED fence), so it
+  // is built ONLY from trusted parts — chapter names + the deployed URL + our
+  // own note. The narrative NEVER enters it.
+  const diagnosis = {
+    title: clamp(
+      `product-demo: ${failed.length} chapter(s) failed`,
+      MAX_INCIDENT_TEXT_CHARS,
+    ),
+    area: "product-demo",
+    diagnosis: clamp(
+      `The deployed app at ${ctx.deployedUrl} failed ${failed.length} user-journey ` +
+        `chapter(s): ${names.join(", ")}.`,
+      MAX_INCIDENT_TEXT_CHARS,
+    ),
+    suggestedFix: clamp(TRUSTED_DEMO_NOTE, MAX_INCIDENT_TEXT_CHARS),
+  };
+
+  const repro =
+    (ctx.testCommand ?? "") !== ""
+      ? {
+          kind: "command" as const,
+          command: clamp(ctx.testCommand!, MAX_INCIDENT_TEXT_CHARS),
+          note: clamp(TRUSTED_DEMO_NOTE, MAX_INCIDENT_TEXT_CHARS),
+        }
+      : { kind: "derived" as const, note: clamp(TRUSTED_DEMO_NOTE, MAX_INCIDENT_TEXT_CHARS) };
+
+  const suspectRef =
+    (ctx.headSha ?? "") !== ""
+      ? { base: ctx.headSha!, head: ctx.headSha!, confidence: 0.3, advisory: true }
+      : undefined;
+
+  return {
+    incidentId,
+    class: "demo",
+    repo: clamp(ctx.repo, MAX_INCIDENT_SHORT_CHARS),
+    diagnosis,
+    signals: [...storyResultsToSignals(failed, ctx)],
+    demoChapters,
+    repro,
+    ...(suspectRef !== undefined ? { suspectRef } : {}),
+  } satisfies IncidentInput;
 };
