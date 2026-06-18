@@ -19,27 +19,38 @@ on:
   # deploy-env URL — configure per repo).
   pull_request:
     paths: ["apps/**"]
-  # On-demand against any URL (preview, staging, prod) with a custom story
-  # list. Useful for QA, release sign-off, marketing screenshots.
+  # On-demand against any URL (preview, staging, prod). Optionally override the
+  # tracked markdown script inline. Useful for QA, release sign-off, marketing.
   workflow_dispatch:
     inputs:
       deployed_url:
         description: "URL to drive (preview / staging / prod)"
         required: true
-      stories_json:
-        description: 'JSON array of {name, prose}'
+      stories_markdown:
+        description: "Markdown story script (each `## ` heading = one chapter). Blank ⇒ the tracked demo-stories.md."
         required: false
-        default: |
-          [
-            {"name":"sign-in",        "prose":"Open the site, click Sign in, log in with the demo account, and land on the dashboard."},
-            {"name":"create-project", "prose":"From the dashboard, create a new project called Demo, confirm the empty-state CTA appears."},
-            {"name":"invite-member",  "prose":"Open the new project, invite a teammate by email, confirm the pending-invite chip shows."}
-          ]
 
 jobs:
   product-demo:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # The story script lives as readable markdown (each `## ` heading = one
+      # chapter; see the README § "Authoring stories"), not inline JSON. Read
+      # the tracked demo-stories.md into a step output — unless the dispatch
+      # passed an inline override. The run parses `storiesMarkdown` into the
+      # same {name, prose} list the structured `stories` array produces.
+      - name: Load demo stories
+        id: stories
+        run: |
+          { echo 'md<<DEMO_STORIES_EOF'
+            if [ -n "${OVERRIDE}" ]; then printf '%s\n' "${OVERRIDE}"; else cat recipes/product-demo/demo-stories.md; fi
+            echo DEMO_STORIES_EOF
+          } >> "$GITHUB_OUTPUT"
+        env:
+          OVERRIDE: ${{ github.event.inputs.stories_markdown }}
+
       - uses: openhackersclub/flare-dispatch-action@v1
         with:
           run: product-demo
@@ -50,11 +61,7 @@ jobs:
               "repo": "${{ github.repository }}",
               "sha": "${{ github.event.pull_request.head.sha || github.sha }}",
               "deployedUrl": ${{ toJSON(github.event.inputs.deployed_url || vars.PREVIEW_URL) }},
-              "stories": ${{ github.event.inputs.stories_json || '[
-                {"name":"sign-in",        "prose":"Open the site, click Sign in, log in with the demo account, and land on the dashboard."},
-                {"name":"create-project", "prose":"From the dashboard, create a new project called Demo, confirm the empty-state CTA appears."},
-                {"name":"invite-member",  "prose":"Open the new project, invite a teammate by email, confirm the pending-invite chip shows."}
-              ]' }},
+              "storiesMarkdown": ${{ toJSON(steps.stories.outputs.md) }},
               "viewportPreset": "desktop"${{ github.event.pull_request.number && format(', "pr": {0}', github.event.pull_request.number) || '' }}
             }
           # `pr` is what enables the GIF-on-completion comment: on a `pull_request`
@@ -63,17 +70,10 @@ jobs:
           # run reports via the `flare-dispatch/product-demo` check-run only. For
           # the GIF to render inline, the deploy's `/v1/artifacts/...` route must
           # be public (GitHub's image proxy fetches it server-side).
-          # Prefer authoring the script as markdown? Keep it in a tracked
-          # `demo-stories.md` (each `## ` heading = one story; see the README §
-          # "Authoring stories") and swap the `"stories"` line above for:
-          #     "storiesMarkdown": ${{ toJSON(... the file's contents ...) }},
-          # e.g. read it in a prior step —
-          #   - id: stories
-          #     run: |
-          #       { echo 'md<<EOF'; cat demo-stories.md; echo EOF; } >> "$GITHUB_OUTPUT"
-          # then pass `"storiesMarkdown": ${{ toJSON(steps.stories.outputs.md) }}`.
-          # The run parses it into the same {name, prose} list; `stories` wins
-          # if both are supplied.
+          #
+          # Prefer the structured array? Swap the `"storiesMarkdown"` line for
+          # `"stories": [{ "name": "...", "prose": "..." }]` and drop the "Load
+          # demo stories" step — `stories` wins if both are supplied.
 
 # Fire-and-forget: this GHA step succeeds as soon as the dispatch is
 # accepted; the actual demo runs on Cloudflare and reports back through the

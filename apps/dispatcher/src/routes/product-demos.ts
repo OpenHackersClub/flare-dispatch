@@ -96,14 +96,23 @@ const STYLE = `
   header .meta{color:#8b949e;font-size:13px}
   main{max-width:1180px;margin:0 auto;padding:20px}
   h2{font-size:18px;margin:28px 0 14px;border-bottom:1px solid #21262d;padding-bottom:8px}
-  .hero{position:relative;width:100%;aspect-ratio:16/9;background:#010409;border:1px solid #21262d;border-radius:10px;overflow:hidden}
+  figure.hero{margin:0}
+  .hero .stage{position:relative;width:100%;aspect-ratio:16/9;background:#010409;border:1px solid #21262d;border-radius:10px;overflow:hidden}
   .hero iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
   .hero .placeholder{display:flex;align-items:center;justify-content:center;height:100%;color:#8b949e;text-align:center;padding:20px}
+  .hero figcaption{color:#8b949e;font-size:13px;margin-top:8px}
+  .hero figcaption b{color:#c9d1d9}
   .chapters{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
-  .card{background:#161b22;border:1px solid #21262d;border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
-  .card .frame{aspect-ratio:16/9;background:#010409;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .card{background:#161b22;border:1px solid #21262d;border-radius:10px;overflow:hidden;display:flex;flex-direction:column;transition:border-color .15s,box-shadow .15s}
+  .card.clickable{cursor:pointer}
+  .card.clickable:hover{border-color:#58a6ff}
+  .card.active{border-color:#58a6ff;box-shadow:0 0 0 1px #58a6ff}
+  .card .frame{position:relative;aspect-ratio:16/9;background:#010409;display:flex;align-items:center;justify-content:center;overflow:hidden}
   .card .frame img{width:100%;height:100%;object-fit:cover;display:block}
   .card .frame .none{color:#6e7681;font-size:13px}
+  .card.clickable .frame::after{content:"▶ play in viewer";position:absolute;inset:auto 0 0 0;padding:4px 8px;font-size:11px;background:rgba(1,4,9,.7);color:#58a6ff;opacity:0;transition:opacity .15s}
+  .card.clickable:hover .frame::after,.card.active .frame::after{opacity:1}
+  .card.active .frame::after{content:"▶ now playing"}
   .card .body{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
   .card .title{display:flex;align-items:center;gap:8px;font-weight:600}
   .card .num{color:#6e7681;font-variant-numeric:tabular-nums}
@@ -115,18 +124,32 @@ const STYLE = `
   .empty{padding:48px 20px;text-align:center;color:#8b949e}
 `;
 
-const heroSection = (replayUri: string | undefined): string => {
+const heroSection = (
+  replayUri: string | undefined,
+  activeName: string | undefined,
+): string => {
   if (replayUri === undefined || replayUri === "") {
-    return `<div class="hero"><div class="placeholder">No replay was recorded for this demo. Browse the chapters below.</div></div>`;
+    return `<figure class="hero"><div class="stage"><div class="placeholder">No replay was recorded for this demo. Browse the chapters below.</div></div></figure>`;
   }
   // The replay page is same-origin (the run's `docsBase` points at this
-  // Worker), so the iframe embed loads without a frame-ancestors fight.
-  return `<div class="hero"><iframe src="${escapeHtml(
+  // Worker), so the iframe embed loads without a frame-ancestors fight. The
+  // iframe is ONE player; clicking a chapter below swaps its `src` (see the
+  // page script) so the gallery drives a single hero, not N detached tabs.
+  return `<figure class="hero">
+  <div class="stage"><iframe id="hero" src="${escapeHtml(
     replayUri,
-  )}" title="Product demo replay" allow="autoplay" loading="lazy"></iframe></div>`;
+  )}" title="Product demo replay" allow="autoplay" loading="lazy"></iframe></div>
+  <figcaption>Now playing: <b id="hero-cap">${escapeHtml(
+    activeName ?? "walkthrough",
+  )}</b> — pick a chapter below to jump the player.</figcaption>
+</figure>`;
 };
 
-const chapterCard = (c: Chapter, i: number): string => {
+const chapterCard = (
+  c: Chapter,
+  i: number,
+  activeReplay: string | undefined,
+): string => {
   const media =
     c.chapterGifUri !== undefined
       ? `<img src="${escapeHtml(c.chapterGifUri)}" alt="${escapeHtml(
@@ -145,13 +168,24 @@ const chapterCard = (c: Chapter, i: number): string => {
     c.narrative !== ""
       ? `<p class="desc">${escapeHtml(c.narrative)}</p>`
       : "";
-  const link =
-    c.replayUri !== undefined
-      ? `<div class="links"><a href="${escapeHtml(
-          c.replayUri,
-        )}" target="_blank" rel="noopener">▶ Scrub this chapter's replay</a></div>`
-      : "";
-  return `<article class="card">
+  // A chapter with a replay is clickable — clicking loads it into the single
+  // hero player (the page script reads `data-replay` / `data-name`). The
+  // secondary link opens the same replay full-screen in a new tab.
+  const hasReplay = c.replayUri !== undefined;
+  const isActive = hasReplay && c.replayUri === activeReplay;
+  const dataAttrs = hasReplay
+    ? ` data-replay="${escapeHtml(c.replayUri!)}" data-name="${escapeHtml(
+        c.name,
+      )}"`
+    : "";
+  const link = hasReplay
+    ? `<div class="links"><a href="${escapeHtml(
+        c.replayUri!,
+      )}" target="_blank" rel="noopener" data-open>Open full-screen ↗</a></div>`
+    : "";
+  return `<article class="card${hasReplay ? " clickable" : ""}${
+    isActive ? " active" : ""
+  }"${dataAttrs}>
     <div class="frame">${media}</div>
     <div class="body">
       <div class="title"><span class="num">${i + 1}.</span><span>${escapeHtml(
@@ -169,10 +203,15 @@ const page = (
   demo: DemoSummary,
 ): string => {
   const passed = demo.stories.filter((s) => s.status === "passed").length;
+  // The hero opens on the run's primary replay; mark the matching chapter
+  // active so the gallery and the player agree on first paint.
+  const activeName = demo.stories.find(
+    (s) => s.replayUri !== undefined && s.replayUri === demo.replayUri,
+  )?.name;
   const chapters =
     demo.stories.length > 0
       ? `<div class="chapters">${demo.stories
-          .map((c, i) => chapterCard(c, i))
+          .map((c, i) => chapterCard(c, i, demo.replayUri))
           .join("\n")}</div>`
       : `<div class="empty">This demo recorded no chapters.</div>`;
   return `<!doctype html>
@@ -187,12 +226,34 @@ const page = (
   )}</span></header>
 <main>
   <h2>Walkthrough</h2>
-  ${heroSection(demo.replayUri)}
+  ${heroSection(demo.replayUri, activeName)}
   <h2>Chapters <span style="color:#8b949e;font-weight:400;font-size:14px">— ${passed}/${
     demo.stories.length
   } passed</span></h2>
   ${chapters}
 </main>
+<script>
+  (function () {
+    var hero = document.getElementById('hero');
+    var cap = document.getElementById('hero-cap');
+    if (!hero) return;
+    document.querySelectorAll('.card.clickable').forEach(function (card) {
+      card.addEventListener('click', function (e) {
+        // Let the "Open full-screen ↗" link open its own tab.
+        if (e.target.closest('[data-open]')) return;
+        var uri = card.getAttribute('data-replay');
+        if (!uri || hero.getAttribute('src') === uri) return;
+        hero.setAttribute('src', uri);
+        if (cap) cap.textContent = card.getAttribute('data-name') || 'chapter';
+        document.querySelectorAll('.card.active').forEach(function (a) {
+          a.classList.remove('active');
+        });
+        card.classList.add('active');
+        hero.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  })();
+</script>
 </body></html>`;
 };
 

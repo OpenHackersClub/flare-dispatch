@@ -92,8 +92,8 @@ describe("GET /demos/:execution", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     const html = await res.text();
-    // Hero = the primary chapter's replay, embedded in an iframe.
-    expect(html).toContain(`<iframe src="${ORIGIN}/replay/sess-aaaaaaaa"`);
+    // Hero = the single player, opened on the primary chapter's replay.
+    expect(html).toContain(`<iframe id="hero" src="${ORIGIN}/replay/sess-aaaaaaaa"`);
     // Both chapter names + their narratives render.
     expect(html).toContain("Sign up");
     expect(html).toContain("The visitor creates an account");
@@ -105,6 +105,11 @@ describe("GET /demos/:execution", () => {
     // Pass/fail badges.
     expect(html).toContain("pass");
     expect(html).toContain("fail");
+    // Chapter 0 has a replay → clickable + active (it IS the hero's replay) and
+    // carries the data the hero-swap script reads; chapter 1 (no replay) is not.
+    expect(html).toContain(`data-replay="${ORIGIN}/replay/sess-aaaaaaaa" data-name="Sign up"`);
+    expect(html).toMatch(/class="card clickable active"/);
+    expect(html).toContain("Open full-screen ↗");
   });
 
   it("405s on a non-GET method", async () => {
