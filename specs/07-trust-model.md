@@ -71,6 +71,7 @@ Every arrow here is live at HEAD. The dashed `wrangler secret put` arrow is the 
 | GitHub App webhook → Dispatcher | `X-Hub-Signature-256` over raw body, verified against `GITHUB_WEBHOOK_SECRET` (`webhook.ts`) | Yes — **opt-in**: off until `GITHUB_WEBHOOK_SECRET` is set; the route 503s otherwise |
 | Cron Trigger → Dispatcher `scheduled()` | None — internal-to-Cloudflare; the runtime delivers `controller.cron` + `controller.scheduledTime` | Yes |
 | Operator → Dispatcher (admin) | `ADMIN_TOKEN` bearer, constant-time compared Worker-side (`admin-events.ts`); CF Access in front is operator-configured | Partial — the bearer gate ships and 503s without `ADMIN_TOKEN`; the Access JWT layer is operator-deployed, not enforced in repo |
+| Operator → Dispatcher (viewer) | **Cloudflare Access JWT, verified Worker-side** (`access-auth.ts`), AND the per-execution capability token (`log-token.ts`). Covers `/logs`, `/demos`, `/replay`, `/v1/executions/...` (not `/v1/artifacts` — see below) | Yes — **enforced in repo, default-secure**: viewer surfaces require a verified Access JWT unless `VIEWER_ACCESS_MODE=token-only`; an unconfigured deploy 503s rather than falls open |
 | Operator → Dispatcher (secrets) | `wrangler` CLI authenticated against the operator's CF account | Yes |
 | Dispatcher → GitHub API | App JWT (RS256, ≤10 min) exchanged for installation token (1h TTL) | Yes |
 | Container → Dispatcher → Browser Rendering CDP | container dials `wss://…/v1/browser/cdp` with `BROWSER_CDP_API_TOKEN` (bearer or `?token=`); the Worker re-dials CF Browser Rendering over the `env.BROWSER` binding (`browser-cdp.ts`) | Yes |
@@ -292,6 +293,41 @@ Each control below is implemented at HEAD and pointed at the file that does the 
 **Contract.** App JWTs are RS256-signed with the PKCS#8 PEM from `GITHUB_APP_PRIVATE_KEY`, lifetime ≤10 min (the App-side maximum). The JWT is exchanged for an installation token (1h TTL) scoped to one installation. At V0 the token is cached in **Worker memory only**; KV-backed `INSTALL_TOKEN_KV` (55min TTL across Worker recycles) is Planned (V1). No long-lived PATs anywhere.
 
 **Spec.** [04-gha-integration § Check-runs callback](04-gha-integration.md#check-runs-callback-shared-by-all-modes).
+
+### Cloudflare Access on the viewer surfaces — default-secure
+
+**File.** `apps/dispatcher/src/access-auth.ts` (the gate), `apps/dispatcher/src/router.ts` (`isViewerSurface` — where it is wired).
+
+**Contract.** Every human-facing read surface — the HTML log viewer (`/logs/:execution`), the product-demo viewer (`/demos/:execution`), the rrweb replay player (`/replay/:sessionId`), and the executions read API (`/v1/executions/...`, which serves the complete raw logs) — is gated by Cloudflare Access **before** the per-execution capability token (`log-token.ts`) runs. Both factors must pass. `/v1/artifacts/...` is deliberately **out of scope**: it is an operator-curated, ULID-addressed open surface (only what a run `artifact.upload`s) whose bytes are embedded as media in GitHub check-run summaries — fetched server-side by GitHub's image proxy, which carries no Access identity — and in the `/demos` `<img>` gallery; gating it would break both. The viewer *page* that frames the media is gated; the promoted media stay openly addressable. The gate verifies the `Cf-Access-Jwt-Assertion` header (or the `CF_Authorization` cookie) Cloudflare injects on requests that traversed an Access application: RS256 signature against the team's JWKS (`<issuer>/cdn-cgi/access/certs`, cached in isolate memory), `iss` = the configured team domain, `aud` = `ACCESS_AUD`, and `exp`/`nbf` within a 60 s skew. A non-RS256 `alg` is refused (alg-confusion guard).
+
+**Default-secure.** Enforcement is ON by default (`VIEWER_ACCESS_MODE` unset ≡ `"required"`). A deploy that has not set `ACCESS_AUD` + `ACCESS_TEAM_DOMAIN` returns **503 `access_not_configured`** on every viewer route — it refuses to serve rather than fall open. A configured deploy that receives a request with no / an invalid Access JWT returns **403 `access_denied`** (e.g. someone dialing the `*.workers.dev` origin directly to bypass an Access app bound to a custom domain). The single explicit opt-out is `VIEWER_ACCESS_MODE=token-only`, which falls back to the capability token alone — also what `wrangler dev` / local smokes use, since no Access app fronts the Worker there.
+
+**Why both factors.** The capability token stops *derivation* of viewer URLs (private repos, never-linked executions, history enumeration — see `log-token.ts`), but a token embedded in a check-run is shareable by anyone who can read that check-run. Cloudflare Access adds *identity*: only authenticated members of the operator's Zero-Trust org reach the surface at all. Edge-side Access enforcement keeps unauthenticated users off the Worker entirely; the Worker-side verify here is defence-in-depth against a request that reaches the origin without traversing the Access app.
+
+**Operator setup (one-time, CF API — not the dashboard).** Cloudflare Access **cannot front `*.workers.dev`** — it applies only to a hostname on a zone in your account. So the worker first needs a **custom domain** (`routes: [{ pattern, custom_domain: true }]` in wrangler.jsonc; `wrangler deploy` provisions DNS + cert, and the deploy token needs Workers Routes + DNS:Edit). Then create a path-scoped Access application over the viewer paths on that host, attach an Allow policy, and wire the two vars. Sketch:
+
+```sh
+# 1. Create the path-scoped Access application (returns an `aud`). Path-scoped
+#    `destinations` leave the machine paths (/v1/dispatch, /v1/webhooks, …) and
+#    /v1/artifacts reachable without SSO.
+curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access/apps" \
+  -H "Authorization: Bearer $CF_ACCESS_API_TOKEN" -H "content-type: application/json" \
+  -d '{"name":"FlareDispatch viewer","type":"self_hosted","session_duration":"24h",
+       "destinations":[{"type":"public","uri":"flare-dispatch.example.com/logs"},
+                       {"type":"public","uri":"flare-dispatch.example.com/demos"},
+                       {"type":"public","uri":"flare-dispatch.example.com/replay"},
+                       {"type":"public","uri":"flare-dispatch.example.com/v1/executions"}]}'
+# 2. Attach an Allow policy to the returned app id (e.g. an email domain):
+curl -s -X POST ".../access/apps/<app_id>/policies" -H "Authorization: Bearer $CF_ACCESS_API_TOKEN" \
+  -d '{"name":"Allow org","decision":"allow","include":[{"email_domain":{"domain":"your-org.com"}}]}'
+# 3. Wire the worker via the `vars` block in wrangler.jsonc (wrangler deploy):
+#      ACCESS_AUD          = the app's `aud` tag from step 1
+#      ACCESS_TEAM_DOMAIN  = <your-team>.cloudflareaccess.com
+#    and point PUBLIC_ORIGIN / the dispatch endpoint at the custom domain so the
+#    viewer links land on the Access-fronted host, not the bare *.workers.dev one.
+```
+
+**Spec.** `apps/dispatcher/src/access-auth.ts` (file header is the canonical reference); [05-byoc § Security posture](05-byoc.md#security-posture).
 
 ### Dispatch body Schema validation
 

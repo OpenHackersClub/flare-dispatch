@@ -40,7 +40,46 @@
     //   launch-failure burst the gate exists to prevent. Operators may set it
     //   slightly BELOW max_instances (e.g. "14") for slot-turnover headroom.
     //   Unset → code defaults to 16.
-    "ADMISSION_CAP": "16"
+    "ADMISSION_CAP": "16",
+
+    // --- Cloudflare Access for the human-facing VIEWER surfaces ------------
+    // The log viewer (/logs), product-demo viewer (/demos), rrweb replay
+    // (/replay), and executions read API (/v1/executions/...) sit behind
+    // Cloudflare Access (Zero-Trust SSO), enforced IN-WORKER
+    // (apps/dispatcher/src/access-auth.ts) — default-secure. (/v1/artifacts is
+    // intentionally NOT gated: its media is embedded in GitHub check-runs.)
+    //
+    // DEFAULT IS SECURE: with VIEWER_ACCESS_MODE unset, these surfaces require a
+    // verified Access JWT; a deploy that has not configured ACCESS_AUD +
+    // ACCESS_TEAM_DOMAIN returns 503 on every viewer route (it refuses to serve
+    // rather than fall open). To turn the viewer on you MUST either:
+    //   (a) put the routes behind a Cloudflare Access application and set the two
+    //       vars below (ACCESS_AUD = the app's Audience tag, ACCESS_TEAM_DOMAIN =
+    //       your `<team>.cloudflareaccess.com`), OR
+    //   (b) consciously opt out with VIEWER_ACCESS_MODE="token-only" — falls back
+    //       to the per-execution capability token alone (the pre-Access behaviour;
+    //       also what `wrangler dev` / local smokes use, since no Access app fronts
+    //       the Worker there).
+    // See specs/07-trust-model.md § Operator → Dispatcher (viewer) for the
+    // one-time Access-application setup recipe (CF API, not the dashboard).
+    //
+    // LIVE for this deploy: the "FlareDispatch viewer" Access application
+    // (app 71c67926-741a-41eb-84ce-ed4d00146fa9) fronts the viewer paths on the
+    // custom domain below, with an Allow policy for emails @fractalbox.dev.
+    // ACCESS_AUD is that app's Audience tag; ACCESS_TEAM_DOMAIN is the Zero-Trust
+    // team. Access cannot front *.workers.dev, so the worker MUST be reached via
+    // the `routes` custom domain (see below) — that is where the Access app sits.
+    "ACCESS_AUD": "798a196263789437498a9c113156cba102a3e1f6338ef95fc0ddcbd083643913",
+    "ACCESS_TEAM_DOMAIN": "fractalbox.cloudflareaccess.com",
+    // VIEWER_ACCESS_MODE unset ≡ "required" (secure). Set "token-only" only to
+    // deliberately fall back to the capability token alone.
+
+    // PUBLIC_ORIGIN — the dispatcher's own public origin, prefixed onto the
+    //   `/v1/artifacts/...` links runs embed in GitHub check-run summaries.
+    //   Points at the Access-fronted custom domain so viewer links (and the
+    //   product-demo dogfood `/logs` + `/replay` links) land on the host the
+    //   Access app actually protects, not the bare *.workers.dev origin.
+    "PUBLIC_ORIGIN": "https://flare-dispatch-app.openhackers.club",
     // EMAIL_FROM — verified Email Routing sender for completion-notify email
     //   (the `notify.emails` dispatch field). Must be an address on the zone the
     //   `send_email` binding below is attached to. Uncomment + set once Email
@@ -50,6 +89,20 @@
     // "EMAIL_FROM": "flare-dispatch@<your-zone>",
     // "EMAIL_FROM_NAME": "FlareDispatch"
   },
+
+  // Custom domain — the worker's public hostname on a zone we control
+  // (openhackers.club). NB the bare `flare-dispatch.openhackers.club` is the
+  // docs Pages site, so the dispatcher uses the `-app` subdomain. REQUIRED
+  // for Cloudflare Access on the viewer surfaces: Access cannot be placed in
+  // front of `*.workers.dev`, only a hostname on an account zone. `wrangler
+  // deploy` provisions the DNS record + edge cert and binds it to this worker
+  // (the deploy CLOUDFLARE_API_TOKEN needs Workers Routes + DNS:Edit on the
+  // zone, in addition to the existing Workers/Containers scopes). The
+  // "FlareDispatch viewer" Access app (see ACCESS_AUD above) sits over the
+  // viewer paths on exactly this host.
+  "routes": [
+    { "pattern": "flare-dispatch-app.openhackers.club", "custom_domain": true }
+  ],
 
   // Email Routing `send_email` binding — backs the `email` capability + the
   // Workflow's completion-notify. Cloudflare delivers ONLY to addresses

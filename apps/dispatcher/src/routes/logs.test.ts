@@ -277,3 +277,58 @@ describe("GET /logs/:execution (viewer)", () => {
     expect(res.status).toBe(403);
   });
 });
+
+// The router's Cloudflare-Access gate (access-auth.ts) runs AHEAD of the token
+// gate on every viewer surface, and is enforced by default. These cover the
+// wiring: which paths the gate fronts (and which it must NOT), in the
+// default-secure "required" mode with no Access configured (→ 503).
+describe("router viewer-Access gate (default-secure)", () => {
+  const requiredEnv = () => {
+    const { env } = fixture({ adminToken: "admin-tok" });
+    return { ...env, VIEWER_ACCESS_MODE: "required" } as typeof env;
+  };
+  const t = async () => signLogToken(SECRET, EXEC);
+
+  it.each([
+    ["/logs", async () => `/logs/${encodeURIComponent(EXEC)}?t=${await t()}`],
+    ["/demos", async () => `/demos/${encodeURIComponent(EXEC)}?t=${await t()}`],
+    ["/replay", async () => `/replay/${"a".repeat(16)}`],
+    ["/v1/executions", async () => `/v1/executions`],
+    ["/v1/executions/:id", async () => `/v1/executions/${encodeURIComponent(EXEC)}?t=${await t()}`],
+    ["/v1/executions/:id/logs", async () => `/v1/executions/${encodeURIComponent(EXEC)}/logs?t=${await t()}`],
+  ])("503 access_not_configured on the viewer surface %s", async (_label, path) => {
+    const res = await get(requiredEnv(), await path());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: "access_not_configured" });
+  });
+
+  it("does NOT gate /v1/artifacts (curated media, embedded in GitHub check-runs)", async () => {
+    // Even in required mode the artifact surface is reachable — it streams the
+    // stored object directly, never the Access 503.
+    const res = await get(requiredEnv(), `/v1/artifacts/${encodeURIComponent(EXEC)}/pr-review.diff`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("diff --git");
+  });
+
+  it("does NOT gate GET /health", async () => {
+    const res = await get(requiredEnv(), "/health");
+    expect(res.status).toBe(200);
+  });
+
+  it("does NOT gate the public OIDC well-known (reaches its own handler, not the Access 503)", async () => {
+    // OIDC isn't configured in this fixture, so the handler itself 503s — the
+    // point is the body is NOT the Access gate's access_not_configured error.
+    const res = await get(requiredEnv(), "/.well-known/openid-configuration");
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).not.toBe("access_not_configured");
+  });
+
+  it("does NOT gate POST /v1/dispatch (HMAC surface) — reaches its own 401, not the Access 503", async () => {
+    const res = await handleRequest(
+      new Request(`${ORIGIN}/v1/dispatch/offload-test`, { method: "POST", body: "{}" }),
+      requiredEnv(),
+    );
+    expect(res.status).not.toBe(503);
+    expect(res.status).toBe(401);
+  });
+});
