@@ -15,7 +15,7 @@ import { GithubApiError } from "./errors";
 export const DEFAULT_API_BASE = "https://api.github.com";
 
 /** The GitHub REST API version every call pins. Bump in one place. */
-export const GITHUB_API_VERSION = "2022-11-28";
+const GITHUB_API_VERSION = "2022-11-28";
 
 /** Split an `"owner/repo"` slug; throws on a malformed slug. */
 export const splitRepo = (repo: string): { owner: string; name: string } => {

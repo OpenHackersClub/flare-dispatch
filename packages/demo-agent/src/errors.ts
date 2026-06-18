@@ -85,21 +85,10 @@ export class FsFailed extends Schema.TaggedError<FsFailed>()("FsFailed", {
   message: Schema.String,
 }) {}
 
-/** A play story exceeded its --max-sec budget without the model signalling done. */
-export class StoryTimeout extends Schema.TaggedError<StoryTimeout>()(
-  "StoryTimeout",
-  {
-    name: Schema.String,
-    maxSec: Schema.Number,
-    actionsApplied: Schema.Number,
-  },
-) {}
-
 export type AgentError =
   | CdpAttachFailed
   | CdpCommandFailed
   | RecordingFetchFailed
   | ModelCallFailed
   | MissingEnv
-  | FsFailed
-  | StoryTimeout;
+  | FsFailed;

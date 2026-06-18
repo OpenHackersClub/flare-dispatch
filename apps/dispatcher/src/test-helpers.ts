@@ -13,10 +13,10 @@
 import type { Env } from "./env";
 
 /** A recorded `RUNS_WORKFLOW.create({ id, params })` call. */
-export type WorkflowCreateCall = { readonly id: string; readonly params: unknown };
+type WorkflowCreateCall = { readonly id: string; readonly params: unknown };
 
 /** A recorded `RUNS_WORKFLOW.get(id).sendEvent({type, payload})` call. */
-export type WorkflowSendEventCall = {
+type WorkflowSendEventCall = {
   readonly wfId: string;
   readonly type: string;
   readonly payload: unknown;

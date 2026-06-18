@@ -189,7 +189,7 @@ export const resolveHeadSha = (env: DispatchEnv): string => {
  * (The plain path leaves `JSON.parse` inside `buildBody` so its error shape is
  * unchanged for callers that don't use `collect-command`.)
  */
-export const parseRawInputs = (
+const parseRawInputs = (
   env: DispatchEnv,
 ): Effect.Effect<unknown, SignalsInvalid> =>
   Effect.try({

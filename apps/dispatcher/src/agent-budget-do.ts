@@ -27,7 +27,7 @@ import type { Env } from "./env";
 
 const STATE_KEY = "state";
 
-export type ReserveResult =
+type ReserveResult =
   | { readonly ok: true; readonly held: number; readonly remaining: number }
   | {
       readonly ok: false;

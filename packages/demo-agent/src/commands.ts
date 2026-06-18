@@ -196,7 +196,7 @@ const recordStop = Command.make(
     }).pipe(Effect.catchAll(reportAndDie)),
 );
 
-export const recordCommand = Command.make("record", {}).pipe(
+const recordCommand = Command.make("record", {}).pipe(
   Command.withSubcommands([recordStart, recordStop]),
 );
 
@@ -489,14 +489,6 @@ const reportAndDie = (e: AgentError): Effect.Effect<never, never, never> =>
       Effect.gen(function* () {
         yield* Console.error(
           `error: fs ${err.op} ${err.path}: ${err.message}`,
-        );
-        return yield* Effect.die(err);
-      }),
-    ),
-    Match.tag("StoryTimeout", (err) =>
-      Effect.gen(function* () {
-        yield* Console.error(
-          `error: story ${err.name} timed out after ${err.maxSec}s (${err.actionsApplied} actions applied)`,
         );
         return yield* Effect.die(err);
       }),

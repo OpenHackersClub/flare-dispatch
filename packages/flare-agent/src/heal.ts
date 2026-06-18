@@ -41,15 +41,15 @@ export type AgentResult = {
   tokensUsed: number;
 };
 
-export type ModelToolCall = { name: string; arguments: unknown };
-export type ModelResponse = {
+type ModelToolCall = { name: string; arguments: unknown };
+type ModelResponse = {
   toolCalls: ReadonlyArray<ModelToolCall>;
   text: string;
   inputTokens?: number;
   outputTokens?: number;
 };
 export type ModelTool = { name: string; description?: string; parameters?: unknown };
-export type ModelRequest = { system: string; user: string; tools?: ReadonlyArray<ModelTool> };
+type ModelRequest = { system: string; user: string; tools?: ReadonlyArray<ModelTool> };
 /** Injected: one turn against the Worker model-proxy. Throws on 429/5xx. */
 export type CallModel = (req: ModelRequest) => Promise<ModelResponse>;
 
