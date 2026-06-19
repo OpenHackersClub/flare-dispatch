@@ -236,14 +236,27 @@ export const attachCdp = (
               );
               continue;
             }
+            // Set the cookie by `url`, NOT bare `domain`. The persistent Browser
+            // Rendering page is on `about:blank` when this short-lived attach
+            // runs (`newCDPSession` does not navigate), so a `{domain}` cookie
+            // for an origin the page has never visited is silently dropped by
+            // Chrome's CDP `Network.setCookie` — the browser then loads the app
+            // with no cookie and hits the Access login wall (every chapter
+            // "gated behind Cloudflare Access", with no error). The `url` form
+            // supplies the origin explicitly, so the cookie is accepted before
+            // the first navigation. `sameSite: "None"` + `secure: true` matches
+            // what Access itself sets (24h, cross-site).
             await page.setCookie({
               name: "CF_Authorization",
               value: token,
-              domain: host,
+              url: `https://${host}/`,
               path: "/",
               secure: true,
               sameSite: "None",
             });
+            console.error(
+              `cf-access: set CF_Authorization for https://${host}/ (service-token exchange ok)`,
+            );
           }
         },
         catch: (e) =>
