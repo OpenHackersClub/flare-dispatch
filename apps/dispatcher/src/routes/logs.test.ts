@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { handleRequest } from "../router";
 import { signLogToken } from "../log-token";
-import { makeNdjsonTextTransform, recordToText } from "./logs";
+import { isHousekeeping, makeNdjsonTextTransform, recordToText } from "./logs";
 import {
   makeFakeD1,
   makeFakeEnv,
@@ -114,6 +114,37 @@ describe("NDJSON → text", () => {
       stream.pipeThrough(makeNdjsonTextTransform()),
     ).text();
     expect(out).toBe("$ echo\none\ntwo\n[stderr] err\n");
+  });
+});
+
+describe("isHousekeeping — section noise classifier", () => {
+  // The demo runner emits dozens of polling probes per run; these must collapse
+  // so the few signal records surface. Cases are drawn from a real product-demo
+  // run's exec logs.
+  it("treats a `.done`/`.err`/`.out` probe with only a DONE sentinel as housekeeping", () => {
+    expect(isHousekeeping("cat /tmp/demo/play-0.done 2>/dev/null || true", ["DONE:0"])).toBe(true);
+    expect(isHousekeeping("cat /tmp/demo/record-start-3.done 2>/dev/null || true", [])).toBe(true);
+    expect(isHousekeeping("cat /tmp/demo/play-0.err 2>/dev/null || true", [])).toBe(true);
+  });
+
+  it("treats pure setup/teardown commands as housekeeping", () => {
+    expect(isHousekeeping("pkill -9 -f 'demo-agent (play|record)' 2>/dev/null; mkdir -p /tmp/demo/screenshots; true", [])).toBe(true);
+    expect(isHousekeeping("mkdir -p /tmp/demo/screenshots; demo-agent --help >/dev/null 2>&1 || true", [])).toBe(true);
+  });
+
+  it("keeps any section that produced real output", () => {
+    // The chapter narrative — the whole point of the run.
+    expect(isHousekeeping("cat /tmp/demo/play-0.out 2>/dev/null || true", ['{"status":"failed","narrative":"…"}'])).toBe(false);
+    // A gif/write command that reports a result.
+    expect(isHousekeeping("demo-agent gif --out /tmp/demo/demo.gif", ['{"gifPath":"/tmp/demo/demo.gif","bytes":85029}'])).toBe(false);
+    // A real test command with normal output is never housekeeping.
+    expect(isHousekeeping("pnpm test", ["building…", "ok"])).toBe(false);
+  });
+
+  it("does not over-match: a non-probe command with no output is kept", () => {
+    // e.g. `demo-agent write-prior --data '<summary table>'` produces no stdout
+    // but is the only place the summary text appears — keep it.
+    expect(isHousekeeping("demo-agent write-prior --out /tmp/demo/summary.md --data '# product-demo'", [])).toBe(false);
   });
 });
 
@@ -269,6 +300,13 @@ describe("GET /logs/:execution (viewer)", () => {
     expect(html).toContain("openArtifact");
     expect(html).toContain('id="artview"');
     expect(html).toContain("art-raw");
+    // Sections are titled by the command (not the meaningless exec-N.ndjson),
+    // and internal probe/setup noise collapses behind a housekeeping toggle.
+    expect(html).toContain('id="showHousekeeping"');
+    expect(html).toContain("isHousekeeping");
+    expect(html).toContain("show-housekeeping");
+    // The classifier is inlined verbatim from the shared module, not re-typed.
+    expect(html).toContain("var isHousekeeping = ");
   });
 
   it("403s the viewer without a token", async () => {
