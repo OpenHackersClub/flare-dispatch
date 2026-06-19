@@ -66,6 +66,42 @@ export const recordToText = (rec: LogRecord): string | null => {
 };
 
 /**
+ * Decide whether an exec-log section is "housekeeping" — an internal probe the
+ * orchestrator emits (poll a `.done`/`.err` sentinel, `pkill`/`mkdir` setup)
+ * that carries no signal for a human reading the run. The demo runner alone
+ * emits dozens of these per run (`cat …/play-0.done` → `DONE:0`, …); surfacing
+ * them as headline sections, each titled by its meaningless `exec-N.ndjson`
+ * filename, buries the few records that matter (the narrative JSON, the gif
+ * outputs, the summary table).
+ *
+ * Signal = any stdout/stderr line that isn't a bare `DONE:<n>` sentinel. A
+ * section with real output is always kept; one with only sentinels (or no
+ * output) is housekeeping iff its command is a known probe/setup shape.
+ *
+ * `command` is the meta line's command (without the leading `$ `); `outputs`
+ * are the rendered stdout/stderr text lines (meta excluded). Exported for unit
+ * tests, and inlined verbatim into the viewer script via `.toString()` so the
+ * classifier has exactly one definition.
+ */
+export const isHousekeeping = (
+  command: string,
+  outputs: readonly string[],
+): boolean => {
+  const hasSignal = outputs.some((l) => {
+    const t = l.trim();
+    return t !== "" && !/^DONE:\d+$/.test(t);
+  });
+  if (hasSignal) return false;
+  const c = command.trim();
+  return (
+    /\bcat\b[^|]*\.(done|err|out)\b/.test(c) || // poll a sentinel / empty capture
+    /(^|;|\s)pkill\b/.test(c) ||
+    /(^|;|\s)mkdir\b/.test(c) ||
+    c === ""
+  );
+};
+
+/**
  * A `TransformStream` that turns an NDJSON byte stream into plain-text bytes,
  * line-buffered so a chunk boundary mid-line is handled. Used for `?format=text`.
  */
@@ -305,10 +341,18 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .controls input[type=search]{background:var(--surface);border:1px solid var(--hairline-strong);color:var(--ink);border-radius:6px;padding:4px 8px;min-width:220px;font-family:inherit}
   .controls label{color:var(--muted);font-size:12px;user-select:none}
   details{border-bottom:1px solid var(--hairline)}
-  summary{cursor:pointer;padding:8px 16px;background:var(--paper-soft);list-style:none;position:sticky;top:96px}
+  details.housekeeping{display:none}
+  details.housekeeping summary{background:var(--paper)}
+  details.housekeeping summary .cmd{color:var(--ink-soft)}
+  body.show-housekeeping details.housekeeping{display:block}
+  summary{cursor:pointer;padding:8px 16px;background:var(--paper-soft);list-style:none;position:sticky;top:96px;display:flex;align-items:baseline;gap:8px}
   summary::-webkit-details-marker{display:none}
-  summary .cmd{color:var(--accent)}
-  summary .sz{color:var(--muted);font-size:11px;margin-left:8px}
+  /* The command that ran is the section's identity — the exec-N.ndjson
+     filename is an internal artifact and carries no signal, so it's demoted to
+     a muted suffix. Long commands ellipsize rather than wrap the summary. */
+  summary .cmd{color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+  summary .sz{color:var(--muted);font-size:11px;flex:none}
+  summary .fn{color:var(--muted-soft);font-size:11px;flex:none}
   .log{padding:4px 0;overflow-x:auto}
   .ln{display:flex;white-space:pre;padding:0 16px}
   .ln:hover{background:var(--surface)}
@@ -335,14 +379,18 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .summary details{border:none}
   .summary summary{position:static;background:none;padding:0;top:auto;color:var(--muted);font-size:12px;cursor:pointer}
   .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:var(--paper-soft);border:1px solid var(--hairline);border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
-  .arts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--hairline)}
-  .arts .lbl{color:var(--muted);font-size:12px}
-  .art{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:2px 6px 2px 9px;font-size:12px}
+  /* Artifacts are a scrollable rows list (one file per row), not a wrapping
+     chip strip — a run can produce many files and the row layout keeps name,
+     size, and the raw link aligned in columns. */
+  .arts{display:block;padding:8px 16px;border-bottom:1px solid var(--hairline)}
+  .arts .lbl{color:var(--muted);font-size:12px;display:block;margin-bottom:6px}
+  .arts-list{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow:auto}
+  .art{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:4px 8px 4px 10px;font-size:12px}
   .art.active{border-color:var(--accent);background:var(--accent-soft)}
-  .art-name{background:none;border:none;color:var(--accent);font-family:inherit;font-size:12px;cursor:pointer;padding:0}
+  .art-name{background:none;border:none;color:var(--accent);font-family:inherit;font-size:12px;cursor:pointer;padding:0;flex:1 1 auto;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .art-name:hover{text-decoration:underline}
-  .art-sz{color:var(--muted);font-size:11px}
-  .art-raw{color:var(--muted);text-decoration:none;font-size:12px;line-height:1;padding:0 3px;border-radius:4px}
+  .art-sz{color:var(--muted);font-size:11px;flex:none;font-variant-numeric:tabular-nums}
+  .art-raw{color:var(--muted);text-decoration:none;font-size:12px;line-height:1;padding:0 3px;border-radius:4px;flex:none}
   .art-raw:hover{color:var(--accent)}
   /* GitHub-style inline file viewer for a clicked artifact. */
   .artview{border-bottom:1px solid var(--hairline);background:var(--paper-soft)}
@@ -365,6 +413,7 @@ const viewerPage = (nonce: string): string => `<!doctype html>
 <div class="controls">
   <input type="search" id="filter" placeholder="filter lines…" autocomplete="off">
   <label><input type="checkbox" id="stderrOnly"> stderr only</label>
+  <label><input type="checkbox" id="showHousekeeping"> <span id="hkLabel">housekeeping</span></label>
   <span id="status"></span>
 </div>
 <div id="sections"><div class="empty">Loading…</div></div>
@@ -378,7 +427,10 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   var API = "/v1/executions/" + encodeURIComponent(id);
   var sectionsEl = document.getElementById("sections");
   var statusEl = document.getElementById("status");
-  var files = {}; // file -> { section, body, lines:[{text,err}], finalized }
+  var files = {}; // file -> { section, body, cmdEl, lines:[{text,err}], finalized, housekeeping }
+
+  // Shared with the server module so the heuristic has exactly one definition.
+  var isHousekeeping = ${isHousekeeping.toString()};
 
   // Strip ANSI/control sequences; render is ALWAYS via textContent so log
   // bytes can never become markup (the viewer renders attacker-controlled
@@ -515,25 +567,29 @@ const viewerPage = (nonce: string): string => `<!doctype html>
     var el = document.getElementById("artifacts");
     if (!arts || !arts.length){ el.hidden = true; return; }
     el.hidden = false; el.textContent = "";
-    var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "artifacts:";
+    var lbl = document.createElement("span"); lbl.className = "lbl";
+    lbl.textContent = "artifacts (" + arts.length + ")";
     el.appendChild(lbl);
+    var list = document.createElement("div"); list.className = "arts-list";
     arts.forEach(function(a){
-      var chip = document.createElement("span");
-      chip.className = "art" + (activeArt === a.name ? " active" : "");
+      var row = document.createElement("div");
+      row.className = "art" + (activeArt === a.name ? " active" : "");
       var name = document.createElement("button");
       name.type = "button"; name.className = "art-name"; name.textContent = a.name;
+      name.title = a.name;
       name.addEventListener("click", function(){ openArtifact(a); });
-      chip.appendChild(name);
+      row.appendChild(name);
       if (a.size != null){
         var sz = document.createElement("span"); sz.className = "art-sz"; sz.textContent = fmtBytes(a.size);
-        chip.appendChild(sz);
+        row.appendChild(sz);
       }
       var raw = document.createElement("a"); raw.className = "art-raw";
       raw.href = a.url; raw.target = "_blank"; raw.rel = "noreferrer";
       raw.title = "open raw in new tab"; raw.textContent = "↗";
-      chip.appendChild(raw);
-      el.appendChild(chip);
+      row.appendChild(raw);
+      list.appendChild(row);
     });
+    el.appendChild(list);
   }
   function artNotice(body, a, msg){
     var box = document.createElement("div"); box.className = "empty";
@@ -633,15 +689,17 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   function renderInto(rec, ndjson){
     var logEl = document.createElement("div"); logEl.className = "log";
     var lines = [];
+    var outputs = [];       // stdout/stderr only — fed to the housekeeping classifier
+    var command = "";       // the meta line's command, drives the section title
     var rows = ndjson.split("\\n");
     var num = 0;
     for (var i=0;i<rows.length;i++){
       var raw = rows[i].trim(); if (!raw) continue;
       var parsed; try { parsed = JSON.parse(raw); } catch(e){ parsed = { stream:"stdout", line: rows[i] }; }
       var text, err=false;
-      if (parsed.stream==="meta") text = "$ " + clean(parsed.command);
-      else if (parsed.stream==="stderr"){ text = clean(parsed.line); err=true; }
-      else if (parsed.stream==="stdout") text = clean(parsed.line);
+      if (parsed.stream==="meta"){ command = clean(parsed.command); text = "$ " + command; }
+      else if (parsed.stream==="stderr"){ text = clean(parsed.line); err=true; outputs.push(text); }
+      else if (parsed.stream==="stdout"){ text = clean(parsed.line); outputs.push(text); }
       else continue;
       num++;
       var ln = document.createElement("div"); ln.className = "ln" + (err?" err":"");
@@ -656,21 +714,30 @@ const viewerPage = (nonce: string): string => `<!doctype html>
       rec.body.appendChild(e);
     } else rec.body.appendChild(logEl);
     rec.lines = lines;
+    // Promote the command to the section title; classify as housekeeping so the
+    // probe/setup noise collapses by default. Signal sections open automatically.
+    if (command){ rec.cmdEl.textContent = "$ " + command; rec.cmdEl.title = "$ " + command; }
+    rec.housekeeping = isHousekeeping(command, outputs);
+    rec.section.classList.toggle("housekeeping", rec.housekeeping);
+    rec.section.open = !rec.housekeeping;
   }
-  function ensureSection(l, openLast){
+  function ensureSection(l){
     var rec = files[l.file];
     if (rec) return rec;
     var det = document.createElement("details");
     det.id = l.file;
-    if (openLast) det.open = true;
     var sum = document.createElement("summary");
+    // Title is the COMMAND once the log is fetched; until then fall back to the
+    // filename. The filename is demoted to a muted suffix (still the deep-link
+    // anchor via det.id) since it carries no signal on its own.
     var cmd = document.createElement("span"); cmd.className="cmd"; cmd.textContent = l.file;
     var sz = document.createElement("span"); sz.className="sz"; sz.textContent = (l.size/1024).toFixed(1)+" KB";
-    sum.appendChild(cmd); sum.appendChild(sz);
+    var fn = document.createElement("span"); fn.className="fn"; fn.textContent = l.file;
+    sum.appendChild(cmd); sum.appendChild(sz); sum.appendChild(fn);
     var body = document.createElement("div");
     det.appendChild(sum); det.appendChild(body);
     sectionsEl.appendChild(det);
-    rec = files[l.file] = { section: det, body: body, lines: [], finalized: false };
+    rec = files[l.file] = { section: det, body: body, cmdEl: cmd, lines: [], finalized: false, housekeeping: false };
     return rec;
   }
   function fetchLog(file, rec){
@@ -687,15 +754,23 @@ const viewerPage = (nonce: string): string => `<!doctype html>
     var empty = sectionsEl.querySelector(".empty");
     if (empty) empty.remove();
     var jobs = [];
-    logs.forEach(function(l, idx){
-      var rec = ensureSection(l, idx === logs.length-1);
+    logs.forEach(function(l){
+      var rec = ensureSection(l);
       // Re-fetch only files not yet finalized (the last/growing one while live).
       if (!rec.finalized){
         if (terminal) rec.finalized = true;
         jobs.push(fetchLog(l.file, rec));
       }
     });
-    return Promise.all(jobs);
+    return Promise.all(jobs).then(updateHousekeepingLabel);
+  }
+  // Reflect how many sections are collapsed as housekeeping, so the toggle reads
+  // as a deliberate filter ("housekeeping (62)") rather than a mystery checkbox.
+  function updateHousekeepingLabel(){
+    var n = 0;
+    for (var f in files){ if (files[f].housekeeping) n++; }
+    var lbl = document.getElementById("hkLabel");
+    lbl.textContent = n ? "housekeeping (" + n + ")" : "housekeeping";
   }
   function tick(){
     fetch(API + qs).then(function(r){
@@ -723,9 +798,19 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   }
   document.getElementById("filter").addEventListener("input", applyFilter);
   document.getElementById("stderrOnly").addEventListener("change", applyFilter);
+  var hkToggle = document.getElementById("showHousekeeping");
+  hkToggle.addEventListener("change", function(){
+    document.body.classList.toggle("show-housekeeping", hkToggle.checked);
+  });
   // Validate the deep-link fragment before any DOM lookup uses it.
   if (location.hash && !/^#exec(-[A-Za-z0-9_]+)?\\.ndjson$/.test(location.hash)){
     location.hash = "";
+  }
+  // A deep link may point at a section that classified as housekeeping (hidden
+  // by default) — reveal the housekeeping group so the anchor isn't a dead jump.
+  if (location.hash){
+    hkToggle.checked = true;
+    document.body.classList.add("show-housekeeping");
   }
   tick();
 })();
