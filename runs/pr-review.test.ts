@@ -306,6 +306,96 @@ describe("pr-review", () => {
   );
 
   it.effect(
+    "compact style + pr-review.compact-max → lists exactly N inline, rest overflow",
+    () => {
+      // Six distinct findings; cap the compact list at 2 → 2 rows + "…and 4 more".
+      const mkFinding = (i: number) => ({
+        path: `src/f${i}.ts`,
+        startLine: i,
+        endLine: i + 1,
+        level: "warning" as const,
+        title: `Issue ${i}`,
+        message: `problem ${i}`,
+      });
+      const reportSixFindings = {
+        toolCalls: [
+          {
+            name: "report",
+            arguments: { findings: [1, 2, 3, 4, 5, 6].map(mkFinding) },
+          },
+        ],
+        text: "",
+      } as const;
+
+      const { layer, handles } = makeCFRuntimeTest({
+        config: {
+          ...backendConfig,
+          "pr-review.style": "compact",
+          "pr-review.compact-max": "2",
+        },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/src/f1.ts b/src/f1.ts\n+++ b/src/f1.ts\n+x\n" },
+        modelGateway: { responses: Array(4).fill(reportSixFindings) },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        // Exactly the first 2 findings render inline; #3 does not.
+        expect(body).toContain("src/f1.ts:1-2");
+        expect(body).toContain("src/f2.ts:2-3");
+        expect(body).not.toContain("src/f3.ts");
+        // Overflow line reflects the configured cap (6 − 2 = 4 more).
+        expect(body).toContain("_…and 4 more (see check annotations)._");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "compact style + non-numeric pr-review.compact-max → falls back to default 7",
+    () => {
+      const mkFinding = (i: number) => ({
+        path: `src/g${i}.ts`,
+        startLine: i,
+        endLine: i + 1,
+        level: "warning" as const,
+        title: `Issue ${i}`,
+        message: `problem ${i}`,
+      });
+      // Eight findings, garbage cap → default 7 inline, 1 overflow.
+      const reportEight = {
+        toolCalls: [
+          {
+            name: "report",
+            arguments: { findings: [1, 2, 3, 4, 5, 6, 7, 8].map(mkFinding) },
+          },
+        ],
+        text: "",
+      } as const;
+
+      const { layer, handles } = makeCFRuntimeTest({
+        config: {
+          ...backendConfig,
+          "pr-review.style": "compact",
+          "pr-review.compact-max": "not-a-number",
+        },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: "diff --git a/src/g1.ts b/src/g1.ts\n+++ b/src/g1.ts\n+x\n" },
+        modelGateway: { responses: Array(4).fill(reportEight) },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+        const body = handles.github.pullReviewCalls[0]!.body;
+        // Default cap of 7 → the 8th finding overflows.
+        expect(body).toContain("src/g7.ts:7-8");
+        expect(body).not.toContain("src/g8.ts");
+        expect(body).toContain("_…and 1 more (see check annotations)._");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
     "unknown style value → falls back to default (forward-compat)",
     () => {
       const { layer, handles } = makeCFRuntimeTest({
