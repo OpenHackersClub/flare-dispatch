@@ -379,14 +379,18 @@ const viewerPage = (nonce: string): string => `<!doctype html>
   .summary details{border:none}
   .summary summary{position:static;background:none;padding:0;top:auto;color:var(--muted);font-size:12px;cursor:pointer}
   .summary pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;background:var(--paper-soft);border:1px solid var(--hairline);border-radius:6px;padding:8px;max-height:240px;overflow:auto;font-size:12px}
-  .arts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--hairline)}
-  .arts .lbl{color:var(--muted);font-size:12px}
-  .art{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:2px 6px 2px 9px;font-size:12px}
+  /* Artifacts are a scrollable rows list (one file per row), not a wrapping
+     chip strip — a run can produce many files and the row layout keeps name,
+     size, and the raw link aligned in columns. */
+  .arts{display:block;padding:8px 16px;border-bottom:1px solid var(--hairline)}
+  .arts .lbl{color:var(--muted);font-size:12px;display:block;margin-bottom:6px}
+  .arts-list{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow:auto}
+  .art{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--hairline-strong);border-radius:6px;padding:4px 8px 4px 10px;font-size:12px}
   .art.active{border-color:var(--accent);background:var(--accent-soft)}
-  .art-name{background:none;border:none;color:var(--accent);font-family:inherit;font-size:12px;cursor:pointer;padding:0}
+  .art-name{background:none;border:none;color:var(--accent);font-family:inherit;font-size:12px;cursor:pointer;padding:0;flex:1 1 auto;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .art-name:hover{text-decoration:underline}
-  .art-sz{color:var(--muted);font-size:11px}
-  .art-raw{color:var(--muted);text-decoration:none;font-size:12px;line-height:1;padding:0 3px;border-radius:4px}
+  .art-sz{color:var(--muted);font-size:11px;flex:none;font-variant-numeric:tabular-nums}
+  .art-raw{color:var(--muted);text-decoration:none;font-size:12px;line-height:1;padding:0 3px;border-radius:4px;flex:none}
   .art-raw:hover{color:var(--accent)}
   /* GitHub-style inline file viewer for a clicked artifact. */
   .artview{border-bottom:1px solid var(--hairline);background:var(--paper-soft)}
@@ -563,25 +567,29 @@ const viewerPage = (nonce: string): string => `<!doctype html>
     var el = document.getElementById("artifacts");
     if (!arts || !arts.length){ el.hidden = true; return; }
     el.hidden = false; el.textContent = "";
-    var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "artifacts:";
+    var lbl = document.createElement("span"); lbl.className = "lbl";
+    lbl.textContent = "artifacts (" + arts.length + ")";
     el.appendChild(lbl);
+    var list = document.createElement("div"); list.className = "arts-list";
     arts.forEach(function(a){
-      var chip = document.createElement("span");
-      chip.className = "art" + (activeArt === a.name ? " active" : "");
+      var row = document.createElement("div");
+      row.className = "art" + (activeArt === a.name ? " active" : "");
       var name = document.createElement("button");
       name.type = "button"; name.className = "art-name"; name.textContent = a.name;
+      name.title = a.name;
       name.addEventListener("click", function(){ openArtifact(a); });
-      chip.appendChild(name);
+      row.appendChild(name);
       if (a.size != null){
         var sz = document.createElement("span"); sz.className = "art-sz"; sz.textContent = fmtBytes(a.size);
-        chip.appendChild(sz);
+        row.appendChild(sz);
       }
       var raw = document.createElement("a"); raw.className = "art-raw";
       raw.href = a.url; raw.target = "_blank"; raw.rel = "noreferrer";
       raw.title = "open raw in new tab"; raw.textContent = "↗";
-      chip.appendChild(raw);
-      el.appendChild(chip);
+      row.appendChild(raw);
+      list.appendChild(row);
     });
+    el.appendChild(list);
   }
   function artNotice(body, a, msg){
     var box = document.createElement("div"); box.className = "empty";

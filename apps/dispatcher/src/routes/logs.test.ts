@@ -300,6 +300,10 @@ describe("GET /logs/:execution (viewer)", () => {
     expect(html).toContain("openArtifact");
     expect(html).toContain('id="artview"');
     expect(html).toContain("art-raw");
+    // Artifacts render as a scrollable rows list (one file per row), not a
+    // wrapping chip strip.
+    expect(html).toContain("arts-list");
+    expect(html).toContain("overflow:auto");
     // Sections are titled by the command (not the meaningless exec-N.ndjson),
     // and internal probe/setup noise collapses behind a housekeeping toggle.
     expect(html).toContain('id="showHousekeeping"');
