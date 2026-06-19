@@ -360,7 +360,13 @@ export const productDemo = defineRun({
       // bounded reads → explicit step `timeoutSec`) so its worst case stays
       // under control; an unclamped operator value would silently push the
       // play step past its budget arithmetic.
-      const perStorySec = Math.min(input.maxDurationSecPerStory ?? 180, 300);
+      // Ceiling raised 300 → 720s: with the per-story action budget at 80 (see
+      // demo-agent MAX_ACTIONS_DEFAULT), a rich chapter spending ~4s/action can
+      // run ~320s, so a 300s clamp would make TIME the new ceiling and re-fail
+      // the heaviest chapters. 720s leaves headroom; the step arithmetic below
+      // (killAfterSec / pollBudgetSec / timeoutSec) all derive from this, so it
+      // stays internally consistent.
+      const perStorySec = Math.min(input.maxDurationSecPerStory ?? 240, 720);
 
       // -1. Resolve the effective story list BEFORE any browser/sandbox work,
       //     so a misconfigured payload dies cheaply (no CDP session leaked, no

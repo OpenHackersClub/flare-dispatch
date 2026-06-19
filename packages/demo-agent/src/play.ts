@@ -65,7 +65,14 @@ export type PlayDeps = {
   readonly now?: () => number;
 };
 
-const MAX_ACTIONS_DEFAULT = 40;
+// Per-story action budget. Rich product-demo chapters (open a game, fill the
+// creative form, generate, navigate to the library, verify the critic grid,
+// switch aspect tabs, screenshot) legitimately need 40-60 model actions; at 40
+// the heaviest chapters intermittently ran out mid-journey ("did not signal
+// done after 40 actions") even though they finished well inside the time
+// budget. 80 gives ~2x headroom over a chapter's observed action count.
+// Callers can still override via `input.maxActions`.
+const MAX_ACTIONS_DEFAULT = 80;
 const FINAL_KEY_SCREENSHOT_FALLBACK = "final.png";
 
 /**
