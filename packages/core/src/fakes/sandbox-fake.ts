@@ -8,7 +8,12 @@
 // Spec: specs/pm/plan.md § 3 (fakes/), specs/03-dsl.md § sandbox.
 
 import { Effect, Layer } from "effect";
-import { ExecFailed, ExecTimeout, ReadFileFailed } from "../errors";
+import {
+  ContainerLaunchFailed,
+  ExecFailed,
+  ExecTimeout,
+  ReadFileFailed,
+} from "../errors";
 import {
   type Container,
   type DetachedHandle,
@@ -72,6 +77,14 @@ export const makeSandboxFake = (
   program: CannedProgram = {},
   /** path→content map answering `readFile`; an unseeded path fails. */
   files: Record<string, string> = {},
+  /**
+   * Transient `runDetached` launch failures, keyed by command-substring →
+   * number of leading attempts to reject with `ContainerLaunchFailed` before
+   * the launch succeeds. Models the CF Sandbox flaking a `startProcess` call
+   * (the box is alive, the launch itself failed) so a run's launch-retry can be
+   * exercised. Each matched key is counted down independently across calls.
+   */
+  launchFailures: Record<string, number> = {},
 ): { layer: Layer.Layer<Sandbox>; state: SandboxFakeState } => {
   const state: SandboxFakeState = {
     acquired: [],
@@ -82,6 +95,10 @@ export const makeSandboxFake = (
   };
   let containerSeq = 0;
   const detachedCommands = new Map<string, string>();
+  // Mutable per-key countdown of remaining transient launch failures.
+  const remainingLaunchFailures = new Map<string, number>(
+    Object.entries(launchFailures),
+  );
 
   const resolve = (command: string): CannedExec | undefined => {
     const key = Object.keys(program).find((k) => command.includes(k));
@@ -138,18 +155,37 @@ export const makeSandboxFake = (
     },
 
     runDetached: (opts: ExecOpts) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         const command = normalizeCommand(opts.command);
+        // A transient launch failure rejects WITHOUT recording the exec or
+        // minting a handle — the process never started, exactly as a real
+        // `ContainerLaunchFailed` leaves no detached process behind. The
+        // caller's retry then re-invokes `runDetached`, counting this key down.
+        const failKey = Object.keys(launchFailures).find((k) =>
+          command.includes(k),
+        );
+        if (failKey !== undefined) {
+          const remaining = remainingLaunchFailures.get(failKey) ?? 0;
+          if (remaining > 0) {
+            remainingLaunchFailures.set(failKey, remaining - 1);
+            return Effect.fail(
+              new ContainerLaunchFailed({
+                image: "",
+                cause: `fake transient launch failure (${remaining} left)`,
+              }),
+            );
+          }
+        }
         state.execs.push({ command, cwd: opts.cwd, env: opts.env });
         containerSeq += 1;
         const id = `fake-detached-${containerSeq}`;
         // Remember the command behind this handle so `waitForExit` can resolve
         // the same canned program entry `exec` would.
         detachedCommands.set(id, command);
-        return {
+        return Effect.succeed({
           id,
           container: { id: `fake-container-${containerSeq}` },
-        } satisfies DetachedHandle;
+        } satisfies DetachedHandle);
       }),
 
     // Resolve the canned program for the detached command (the same entry

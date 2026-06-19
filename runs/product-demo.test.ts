@@ -286,3 +286,58 @@ describe("product-demo self-heal auto-dispatch (gated)", () => {
     }).pipe(Effect.provide(layer));
   });
 });
+
+describe("product-demo launch-retry resilience", () => {
+  const secrets = {
+    "product-demo.secret/CF_AI_GATEWAY_ID": "gw",
+    "product-demo.secret/CLOUDFLARE_ACCOUNT_ID": "acct",
+    "product-demo.secret/CLOUDFLARE_API_TOKEN": "tok",
+    "product-demo.model.play": "claude-opus-4-7",
+  };
+  // A play that returns a PASSED verdict — the chapter would clearly pass if its
+  // detached launch ever got to run.
+  const passProgram = {
+    ".done": { exitCode: 0, stdout: "DONE:0" },
+    "play-0.out": {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        status: "passed",
+        durationMs: 1,
+        chapterStartMs: 0,
+        chapterEndMs: 1,
+        narrative: "completed the journey",
+        keyScreenshotPath: "",
+      }),
+    },
+  };
+
+  // `it.live` (real clock) because the launch-retry's exponential backoff sleeps
+  // — a TestClock would freeze those `Effect.sleep`s. Two flaked launches add
+  // ~3s of real backoff, which is acceptable for one regression test.
+  it.live(
+    "retries a transient ContainerLaunchFailed launch so the chapter still passes",
+    () => {
+      const { layer } = makeCFRuntimeTest({
+        config: secrets,
+        sandboxProgram: passProgram,
+        // The `play-0` detached launch is rejected with ContainerLaunchFailed
+        // twice before it sticks. Pre-fix (`play` step `retries: 0`, no launch
+        // retry) the first flake propagated out of `runAgent`, recorded the
+        // chapter as an exit -3 "infra" failure → 0/1 passed → the run failed
+        // the honest check. With the launch-retry the third attempt succeeds.
+        sandboxLaunchFailures: { "play-0": 2 },
+      });
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(
+          productDemo.run({
+            ...baseInput,
+            stories: [{ name: "checkout", prose: "Buy an item." }],
+          } as Parameters<typeof productDemo.run>[0]),
+        );
+        // 1/1 chapters passed ⇒ the run completes (does not fail the honest
+        // check). Without the retry this Exit would be a failure.
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+});

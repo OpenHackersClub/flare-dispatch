@@ -215,6 +215,12 @@ export type CFRuntimeTestOptions = {
   readonly sandboxProgram?: Parameters<typeof makeSandboxFake>[0];
   /** path→content map answering `sandbox.readFile`; an unseeded path fails. */
   readonly sandboxFiles?: Parameters<typeof makeSandboxFake>[1];
+  /**
+   * Transient `runDetached` launch failures — command-substring → number of
+   * leading launches to reject with `ContainerLaunchFailed` before succeeding.
+   * Drives a run's launch-retry path (e.g. product-demo's `runAgent`).
+   */
+  readonly sandboxLaunchFailures?: Parameters<typeof makeSandboxFake>[2];
   /** Browser fake options — e.g. the canned CDP `wsEndpoint`. */
   readonly browser?: Parameters<typeof makeBrowserFake>[0];
   /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
@@ -251,7 +257,11 @@ export type CFRuntimeTestOptions = {
 export const makeCFRuntimeTest = (
   opts: CFRuntimeTestOptions = {},
 ): { layer: Layer.Layer<RunContext>; handles: CFRuntimeTestHandles } => {
-  const sandbox = makeSandboxFake(opts.sandboxProgram, opts.sandboxFiles);
+  const sandbox = makeSandboxFake(
+    opts.sandboxProgram,
+    opts.sandboxFiles,
+    opts.sandboxLaunchFailures,
+  );
   const browser = makeBrowserFake(opts.browser);
   const artifact = makeArtifactFake();
   const io = makeIOFake(opts.io);
