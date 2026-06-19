@@ -33,6 +33,7 @@
 //   CONFIG_KV  pr-review.bedrock.region  AWS region (default us-east-1)
 //   CONFIG_KV  pr-review.bedrock.roleArn IAM role to AssumeRoleWithWebIdentity into — trust policy MUST pin `sub: pr-review:*`
 //   CONFIG_KV  pr-review.style           "default" (verbose verdict-table) | "compact" (LGTM-header + 3-col emoji table)
+//   CONFIG_KV  pr-review.compact-max     how many findings the `compact` layout lists inline before "…and N more" (positive int, clamp 1..100, default 7; no-op for `default`)
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
@@ -396,6 +397,15 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
       yield* step("resolve-style", () => config.get("pr-review.style")),
     );
 
+    // 5b-ii. How many findings the `compact` layout lists inline before the
+    //        "…and N more" overflow line. Operator-tunable so the leaderboard
+    //        layout can show more (or fewer) without a code change; clamps to a
+    //        sane range, defaults to 7. No-op for the `default` layout, which
+    //        uses its own MAX_RENDERED_FINDINGS.
+    const compactMax = parseCompactMax(
+      yield* step("resolve-compact-max", () => config.get("pr-review.compact-max")),
+    );
+
     // 5c. When the resolved backend is `bedrock`, mint short-lived AWS creds via
     //     OIDC federation — the modelGateway Bedrock route SigV4-signs each call
     //     with these. The role's trust policy SHOULD pin `sub: pr-review:*` so
@@ -467,7 +477,7 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
     yield* step("post-comment", () =>
       postComment(
         input,
-        renderReviewComment(input, output, domainCounts, style, viewerUrl),
+        renderReviewComment(input, output, domainCounts, style, viewerUrl, compactMax),
       ).pipe(
         Effect.catchAll((e) =>
           io.log("warn", `pr-review: posting PR comment failed — ${describeError(e)}`),
@@ -720,10 +730,30 @@ const DEFAULT_STYLE: Style = "default";
 const parseStyle = (raw: string | undefined): Style =>
   STYLES.includes(raw as Style) ? (raw as Style) : DEFAULT_STYLE;
 
-/** How many findings the `compact` style lists (mirrors typical "leaderboard"
- *  PR-review bots — 7 most-critical first). The full set is still emitted as
- *  check-run annotations regardless of style. */
-const COMPACT_MAX_LISTED = 7;
+/** Default for how many findings the `compact` style lists (most-critical
+ *  first) when `pr-review.compact-max` is unset. The full set is still emitted
+ *  as check-run annotations regardless of style; this only bounds how many
+ *  appear inline in the PR comment before the "…and N more" overflow line.
+ *  Mirrors typical "leaderboard" PR-review bots (7 most-critical first). */
+const COMPACT_MAX_LISTED_DEFAULT = 7;
+
+/** Upper clamp on the operator-configured compact cap — a comment listing
+ *  hundreds of findings inline would blow past sensible PR-comment length and
+ *  GitHub's body limit; the overflow → check-run annotations is the relief
+ *  valve. 100 is well above any real review. */
+const COMPACT_MAX_LISTED_CLAMP = 100;
+
+/** Parse the `pr-review.compact-max` config (how many findings the `compact`
+ *  layout lists inline). Accepts a positive integer string; clamps to
+ *  1..{@link COMPACT_MAX_LISTED_CLAMP}; falls back to
+ *  {@link COMPACT_MAX_LISTED_DEFAULT} for unset / non-numeric / ≤0 values, so a
+ *  typo never silently drops the comment to zero rows. */
+const parseCompactMax = (raw: string | undefined): number => {
+  if (raw === undefined) return COMPACT_MAX_LISTED_DEFAULT;
+  const n = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(n) || n <= 0) return COMPACT_MAX_LISTED_DEFAULT;
+  return Math.min(n, COMPACT_MAX_LISTED_CLAMP);
+};
 
 /** Render the consolidated review as a markdown PR comment. `style` picks the
  *  layout: `default` is the verbose verdict-table for power users; `compact` is
@@ -734,9 +764,10 @@ const renderReviewComment = (
   domainCounts: ReadonlyArray<DomainCount>,
   style: Style = DEFAULT_STYLE,
   viewerUrl?: string,
+  compactMax: number = COMPACT_MAX_LISTED_DEFAULT,
 ): string =>
   Match.value(style).pipe(
-    Match.when("compact", () => renderCompact(input, output, viewerUrl)),
+    Match.when("compact", () => renderCompact(input, output, viewerUrl, compactMax)),
     Match.when("default", () =>
       renderDefault(input, output, domainCounts, viewerUrl),
     ),
@@ -820,6 +851,7 @@ const renderCompact = (
   input: Pick<RunInput, "repo" | "sha">,
   output: Schema.Schema.Type<typeof ReviewOutput>,
   viewerUrl?: string,
+  compactMax: number = COMPACT_MAX_LISTED_DEFAULT,
 ): string => {
   const verdictHeader = Match.value(output.verdict).pipe(
     Match.when("approve", () => "## ✅ LGTM"),
@@ -847,7 +879,7 @@ const renderCompact = (
       Match.exhaustive,
     );
 
-  const rendered = output.findings.slice(0, COMPACT_MAX_LISTED);
+  const rendered = output.findings.slice(0, compactMax);
   const overflow = output.findings.length - rendered.length;
 
   return [
