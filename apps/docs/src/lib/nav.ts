@@ -21,6 +21,12 @@ export const nav: NavSection[] = [
     title: "Overview",
     items: [
       {
+        slug: "00-getting-started",
+        label: "Getting Started",
+        blurb:
+          "Deploy the Dispatcher, install the GitHub App, and wire the GHA Action — under an hour. Includes an agent setup prompt.",
+      },
+      {
         slug: "prd",
         label: "Product Requirements",
         blurb: "Problem, who needs this, value proposition, non-goals, roadmap.",

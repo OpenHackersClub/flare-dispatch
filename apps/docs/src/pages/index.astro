@@ -26,7 +26,8 @@ const value = [
 ];
 
 // §05 / Platform — shipped capabilities that sit underneath the runs (every
-// claim here is live at HEAD; the GitHub App webhook is shipped but opt-in).
+// claim here is live at HEAD; the GitHub App webhook, observability-signal
+// ingestion, and email notify are shipped but opt-in / off by default).
 const capabilities = [
   {
     id: "05.01 / Agentic review",
@@ -41,12 +42,12 @@ const capabilities = [
   {
     id: "05.03 / Model routing",
     title: "Provider-agnostic model gateway",
-    body: "Route model calls to Workers AI, Anthropic, reasonix, or Amazon Bedrock — Bedrock via OIDC → STS → SigV4, no long-lived keys in Worker Secrets. Swap the backend from KV config with no redeploy.",
+    body: "Route model calls to Workers AI, Anthropic, reasonix, or Amazon Bedrock — Bedrock through the AI Gateway forwarder with an OIDC → STS → SigV4 trust path, no long-lived AWS keys in Worker Secrets. Swap the backend from KV config with no redeploy.",
   },
   {
     id: "05.04 / Admission control",
     title: "Bursts queue, they don't fail red",
-    body: "A global FIFO admission queue caps in-flight runs at the container-pool size; work beyond capacity queues and drains in order instead of erroring. Per-container leases serialize runs that share a sandbox image.",
+    body: "A global FIFO admission queue caps in-flight runs at the container-pool size; work beyond capacity queues and drains in order instead of erroring. Per-container leases serialize runs that normalize to the same sandbox container id (ContainerBusy after ~10 min).",
   },
   {
     id: "05.05 / Session replay",
@@ -57,6 +58,16 @@ const capabilities = [
     id: "05.06 / Three trigger modes",
     title: "Action, Schedule, or Webhook",
     body: "Fire a run from a GitHub Actions step, a Cloudflare Cron Trigger, or the GitHub App webhook (opt-in) — one Dispatcher, every result posted back as a GitHub Check Run.",
+  },
+  {
+    id: "05.07 / Observability signals",
+    title: "Bring your own APM, vendor-blind",
+    body: "ci-triage-pr stays vendor-blind — it never queries your APM. Instead, a tiny consumer-side adapter (Datadog, SigNoz, HyperDX, or your own) prints the normalized signals/v1 shape next to your own credentials and feeds it into the run's signals input. The narrow-waist contract means any vendor is supported on day one without the Dispatcher ever holding an observability key.",
+  },
+  {
+    id: "05.08 / Email notify",
+    title: "Results land in the inbox, not just the PR",
+    body: "A run can email a completion summary over Cloudflare Email Routing — a stakeholder-facing product-demo with the rrweb replay one click away, or a run-authored failure summary. Opt-in and default-secure: a logged no-op until the send_email binding is configured, with an optional EMAIL_ALLOWED_RECIPIENTS allowlist on top of Cloudflare's verified-destination-address constraint.",
   },
 ];
 
@@ -369,12 +380,12 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
     <div class="container">
       <div class="tenets__header">
         <span class="section-marker">§06 / Dogfood</span>
-        <h2>Both runs, dogfooded on this repo.</h2>
+        <h2>Dogfooded on this repo.</h2>
         <p class="showcase__lede">
           FlareDispatch reviews its own pull requests and records its own
           walkthroughs. Each artifact below is the real output of a run on
-          <a href={site.repo}>OpenHackersClub/flare-dispatch</a> — the same
-          pr-review and product-demo recipes shown above, fired on this codebase.
+          <a href={site.repo}>OpenHackersClub/flare-dispatch</a> — two of the
+          recipes shown above, fired on this codebase.
         </p>
       </div>
       <div class="showcase__grid">
