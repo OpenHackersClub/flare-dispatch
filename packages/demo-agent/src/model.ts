@@ -36,6 +36,7 @@ import {
   Match,
   Option,
   Redacted,
+  Schedule,
   Schema,
   Stream,
 } from "effect";
@@ -723,6 +724,22 @@ export const makeLanguageModelLayer = (
               onTimeout: () =>
                 new Error("chat/completions request timed out after 120s"),
             }),
+            // Retry TRANSIENT gateway failures before they bubble up as a model
+            // error — the play loop fails the whole chapter on a single model
+            // error (see play.ts), so an unretried 429 sinks a chapter. The
+            // Cloudflare AI Gateway returns HTTP 429 "Type 2b rate limited.
+            // Please try again" under burst load (a rich chapter fires many
+            // model calls), and 5xx / request timeouts are likewise transient.
+            // Jittered exponential backoff also de-bursts the call stream, which
+            // reduces further rate-limiting. Real 4xx (bad request) is NOT
+            // retryable and fails fast.
+            Effect.retry(
+              Schedule.exponential("2 seconds").pipe(
+                Schedule.jittered,
+                Schedule.intersect(Schedule.recurs(4)),
+                Schedule.whileInput((e: unknown) => isRetryableGatewayError(e)),
+              ),
+            ),
             Effect.mapError(
               (cause) =>
                 new AiError.UnknownError({
@@ -1000,4 +1017,20 @@ const classifyModelError = (e: unknown): ModelCallFailed["reason"] => {
   if (message.includes("bad") || message.includes("invalid") || message.includes("decode"))
     return "bad-response";
   return "unknown";
+};
+
+/**
+ * Whether a `generateText` failure is a TRANSIENT gateway condition worth
+ * retrying: HTTP 429 rate-limit (the Cloudflare AI Gateway's "Type 2b rate
+ * limited. Please try again"), a 5xx, or a request timeout. Real client errors
+ * (other 4xx, decode failures) are NOT retried — retrying them just wastes the
+ * per-story budget. Drives the generateText retry schedule. */
+export const isRetryableGatewayError = (e: unknown): boolean => {
+  const message = e instanceof Error ? e.message : String(e);
+  return (
+    /(^|[^0-9])429([^0-9]|$)/.test(message) ||
+    /rate.?limit/i.test(message) ||
+    /HTTP 5\d\d/.test(message) ||
+    /timed out|timeout/i.test(message)
+  );
 };
