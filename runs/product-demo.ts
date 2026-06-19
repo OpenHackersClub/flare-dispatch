@@ -37,7 +37,7 @@
 // DSL: uses `browser.newCDPSession`, `sandbox.exec`, `artifact.upload`,
 //      `config.get`, and `io.priorExecution` — specs/03-dsl.md § Capabilities.
 
-import { Cause, Effect, Schema, Option } from "effect";
+import { Cause, Effect, Schedule, Schema, Option } from "effect";
 import {
   defineRun,
   step,
@@ -47,6 +47,7 @@ import {
   config,
   github,
   io,
+  ContainerLaunchFailed,
   ExecFailed,
   ExecTimeout,
   AcceptanceFailed,
@@ -576,6 +577,28 @@ export const productDemo = defineRun({
                     command: `${tag}: runDetached hung`,
                   }),
               }),
+              // The CF Sandbox intermittently rejects a detached process launch
+              // with a transient `ContainerLaunchFailed` — the box is alive
+              // (every story shares the one acquired container), `startProcess`
+              // itself flaked. Un-retried, a single flaked launch propagates out
+              // of `runAgent`, fails the `play-${i}` / `record-start-${i}` step
+              // (both `retries: 0`), and the outer `catchAll` records the chapter
+              // as an exit -3 "infra" failure. That is the dominant reason
+              // product-demo chapters fail nondeterministically run-to-run (a
+              // different subset every run). Retry the launch up to 3× with
+              // exponential backoff; `outPath`/`errPath`/`sentinelPath` are
+              // tag-scoped, so a re-launch starts from a clean slate. Only the
+              // launch is retried — once the agent is running, the bounded
+              // sentinel poll owns the outcome.
+              Effect.retry(
+                Schedule.exponential("1 second").pipe(
+                  Schedule.intersect(Schedule.recurs(3)),
+                  Schedule.whileInput(
+                    (e: ContainerLaunchFailed | ExecTimeout) =>
+                      e._tag === "ContainerLaunchFailed",
+                  ),
+                ),
+              ),
             );
           const exitCode = yield* pollSentinel({
             container,
