@@ -29,6 +29,9 @@ importers:
       '@cloudflare/sandbox':
         specifier: 0.10.1
         version: 0.10.1
+      '@effect/platform':
+        specifier: ^0.96.1
+        version: 0.96.1(effect@3.21.2)
       '@flare-dispatch/core':
         specifier: workspace:*
         version: link:../../packages/core

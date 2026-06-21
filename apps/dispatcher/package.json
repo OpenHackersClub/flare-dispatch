@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cloudflare/sandbox": "0.10.1",
+    "@effect/platform": "^0.96.1",
     "@flare-dispatch/core": "workspace:*",
     "@flare-dispatch/runs": "workspace:*",
     "@flare-dispatch/runtime-cf": "workspace:*",

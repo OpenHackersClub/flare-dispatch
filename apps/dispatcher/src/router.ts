@@ -1,47 +1,24 @@
-// FlareDispatch Dispatcher — the request router.
+// FlareDispatch Dispatcher — the request router seam.
 //
-// A thin method+path matcher over the three PR5 route modules:
+// The route table itself is an `@effect/platform` `HttpRouter` (http-app.ts):
+// typed path params, the Cloudflare Access gate + capability links as Layers,
+// and the `GET /` dashboard. This module keeps the stable `handleRequest`
+// entry point (`index.ts`'s `fetch` and the whole test suite drive it) and
+// owns the ONE escape hatch the typed router can't model: the
+// `GET /v1/browser/cdp` WebSocket `101` upgrade, whose `webSocket` an
+// `HttpServerResponse` can't round-trip. It is dispatched before the router,
+// the same way `index.ts` handles the `@cloudflare/sandbox` preview proxy.
 //
-//   GET  /health                          → routes/health.ts
-//   POST /v1/dispatch/:run                 → routes/dispatch.ts
-//   GET  /v1/artifacts/:execution/:name    → routes/artifacts.ts
-//   GET  /v1/github/install/new            → routes/github.ts
-//   GET  /v1/github/installed              → routes/github.ts
-//
-// Everything route-specific (HMAC verify, Schema validation, R2 streaming)
-// lives in the route module; this file only matches and delegates. Anything
-// unmatched 404s; a wrong method on a known path 405s.
-//
-// This module deliberately imports NOTHING from the Cloudflare runtime
-// (`cloudflare:workers`, `@cloudflare/sandbox`) — only the route handlers and
-// the typed `Env`. That keeps it (and the routes) testable under plain Node +
-// Vitest 2: `index.ts` owns the runtime-coupled binding-class re-exports.
+// This module imports NOTHING from the Cloudflare runtime
+// (`cloudflare:workers` / `@cloudflare/sandbox`) — only the route handlers and
+// the typed `Env` — so it (and the routes) stay testable under plain Node +
+// Vitest 2. `index.ts` owns the runtime-coupled binding-class re-exports.
 //
 // Spec: specs/pm/plan.md § PR5, specs/05-byoc.md § GitHub App setup.
 
 import type { Env } from "./env";
-import { handleAdminEvent } from "./routes/admin-events";
-import { handleArtifact } from "./routes/artifacts";
-import { handleAgentInference } from "./routes/agent-inference";
-import { gateViewerAccess } from "./access-auth";
+import { handleViaApp } from "./http-app";
 import { handleBrowserCdp } from "./routes/browser-cdp";
-import { handleReplay } from "./routes/replay";
-import { handleDispatch } from "./routes/dispatch";
-import {
-  handleExecutionDetail,
-  handleExecutionsList,
-} from "./routes/executions";
-import { handleHealth } from "./routes/health";
-import { handleInstallNew, handleInstalled } from "./routes/github";
-import {
-  handleLogFile,
-  handleLogsAggregate,
-  handleLogViewer,
-} from "./routes/logs";
-import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
-import { handleProductDemo } from "./routes/product-demos";
-import { handleGithubWebhook } from "./routes/webhook";
-import { handleSignalsWebhook } from "./routes/signals-webhook";
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {
@@ -49,185 +26,18 @@ const json = (body: unknown, status: number): Response =>
     headers: { "content-type": "application/json" },
   });
 
-/**
- * Is this path a human-facing VIEWER surface that must sit behind Cloudflare
- * Access? Covers the HTML viewers (`/logs`, `/demos`, `/replay`) and the
- * executions read API they (and check-run links) drive (`/v1/executions/...`,
- * which serves the COMPLETE raw logs of a run).
- *
- * NOT here, deliberately:
- *   * `/v1/artifacts/...` — an operator-CURATED, ULID-addressed open surface
- *     (only what a run `artifact.upload`s). Its bytes are embedded as media in
- *     GitHub check-run summaries (fetched server-side by GitHub's image proxy,
- *     which carries no Access identity) and in the `/demos` viewer's `<img>`
- *     gallery — gating it would break both. The viewer PAGE that frames them is
- *     gated; the promoted media stay openly addressable, as today.
- *   * machine surfaces — dispatch, webhooks, agent inference, browser-cdp, the
- *     OIDC well-knowns, `/health`, the install flow — authenticate by their own
- *     mechanism (HMAC / webhook secret / capability token / public-by-design)
- *     and cannot do interactive SSO.
- *
- * See `access-auth.ts`.
- */
-const isViewerSurface = (segments: readonly string[]): boolean => {
-  const [a, b] = segments;
-  if (segments.length === 2 && (a === "logs" || a === "demos" || a === "replay")) {
-    return true;
-  }
-  return a === "v1" && b === "executions";
-};
-
 /** Route an inbound request to its handler. */
 export const handleRequest = async (
   request: Request,
   env: Env,
 ): Promise<Response> => {
   const url = new URL(request.url);
-  // Split into non-empty segments: "/v1/dispatch/x" → ["v1","dispatch","x"].
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
 
-  // Cloudflare Access gate — FIRST factor on every viewer surface, ahead of any
-  // capability-token check in the handler. Default-secure: enforced unless the
-  // deploy explicitly opts out via VIEWER_ACCESS_MODE=token-only (access-auth.ts).
-  if (isViewerSurface(segments)) {
-    const denied = await gateViewerAccess(env, request);
-    if (denied !== null) return denied;
-  }
-
-  // GET /health
-  if (segments.length === 1 && segments[0] === "health") {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleHealth();
-  }
-
-  // GET /replay/:sessionId — self-hosted rrweb replay player for a Browser Run
-  // Session Recording (what `product-demo.docsBase` points at on this Worker).
-  if (segments.length === 2 && segments[0] === "replay") {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleReplay(env, decodeURIComponent(segments[1]!));
-  }
-
-  // GET /demos/:execution — the token-gated product-demo viewer: hero rrweb
-  // replay over a per-chapter GIF gallery (same `?t=` capability token as the
-  // log viewer). Reads the execution's persisted `summary_json`.
-  if (segments.length === 2 && segments[0] === "demos") {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleProductDemo(env, decodeURIComponent(segments[1]!), url);
-  }
-
-  // GET /logs/:execution — the self-contained HTML log viewer (capability
-  // token in `?t=`). The readable replacement for the truncated, JSON-escaped
-  // blob the Cloudflare Workflows instance explorer shows.
-  if (segments.length === 2 && segments[0] === "logs") {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleLogViewer(env, decodeURIComponent(segments[1]!), url);
-  }
-
-  // OIDC issuer endpoints — public, unauthenticated (IdPs fetch them).
-  // GET /.well-known/openid-configuration
-  if (
-    segments.length === 2 &&
-    segments[0] === ".well-known" &&
-    segments[1] === "openid-configuration"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleOidcDiscovery(env);
-  }
-  // GET /.well-known/jwks.json
-  if (
-    segments.length === 2 &&
-    segments[0] === ".well-known" &&
-    segments[1] === "jwks.json"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleOidcJwks(env);
-  }
-
-  // POST /v1/dispatch/:run
-  if (
-    segments.length === 3 &&
-    segments[0] === "v1" &&
-    segments[1] === "dispatch"
-  ) {
-    if (request.method !== "POST") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleDispatch(request, env, decodeURIComponent(segments[2]!));
-  }
-
-  // POST /v1/webhooks/github
-  if (
-    segments.length === 3 &&
-    segments[0] === "v1" &&
-    segments[1] === "webhooks" &&
-    segments[2] === "github"
-  ) {
-    if (request.method !== "POST") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleGithubWebhook(request, env);
-  }
-
-  // POST /v1/webhooks/signals/:source — push-path observability-alert ingress.
-  // ANY vendor that can POST a JSON alert webhook triggers a `ci-triage-pr`
-  // dispatch carrying the alert as one signals/v1 signal (mapping is CONFIG_KV).
-  if (
-    segments.length === 4 &&
-    segments[0] === "v1" &&
-    segments[1] === "webhooks" &&
-    segments[2] === "signals"
-  ) {
-    if (request.method !== "POST") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleSignalsWebhook(request, env, decodeURIComponent(segments[3]!));
-  }
-
-  // POST /v1/agent/:execution/inference — self-heal model-proxy. An in-sandbox
-  // agent reaches a model via the Worker (no key in container); per-execution
-  // capability token + AgentBudget DO. specs/08-self-healing.md § 6.3.
-  if (
-    segments.length === 4 &&
-    segments[0] === "v1" &&
-    segments[1] === "agent" &&
-    segments[3] === "inference"
-  ) {
-    const requestId = request.headers.get("cf-ray") ?? "no-ray";
-    return handleAgentInference(
-      request,
-      env,
-      decodeURIComponent(segments[2]!),
-      requestId,
-    );
-  }
-
-  // POST /v1/admin/events/:wf_id — signal a Workflow paused on step.waitForEvent.
-  if (
-    segments.length === 4 &&
-    segments[0] === "v1" &&
-    segments[1] === "admin" &&
-    segments[2] === "events"
-  ) {
-    if (request.method !== "POST") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleAdminEvent(request, env, decodeURIComponent(segments[3]!));
-  }
-
-  // GET /v1/browser/cdp — WebSocket upgrade, bridges connectOverCDP → the
-  // CF Browser Rendering binding. Used by the `cdp-acceptance` run.
+  // Escape hatch: GET /v1/browser/cdp is a WebSocket upgrade — it returns a
+  // `101` Response carrying a live `webSocket`, which the HttpServerResponse
+  // model can't round-trip. Dispatch it here, before the typed router, exactly
+  // as index.ts dispatches the sandbox preview proxy before this function.
   if (
     segments.length === 3 &&
     segments[0] === "v1" &&
@@ -241,95 +51,5 @@ export const handleRequest = async (
     return handleBrowserCdp(request, env, requestId);
   }
 
-  // GET /v1/executions — ADMIN_TOKEN-gated listing of executions.
-  if (
-    segments.length === 2 &&
-    segments[0] === "v1" &&
-    segments[1] === "executions"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleExecutionsList(request, env, url);
-  }
-
-  // GET /v1/executions/:id[...]  — per-execution detail + logs (token-gated).
-  if (
-    segments.length >= 3 &&
-    segments[0] === "v1" &&
-    segments[1] === "executions"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    const executionId = decodeURIComponent(segments[2]!);
-    // GET /v1/executions/:id
-    if (segments.length === 3) {
-      return handleExecutionDetail(env, executionId, url);
-    }
-    // GET /v1/executions/:id/logs — aggregated text roll-up.
-    if (segments.length === 4 && segments[3] === "logs") {
-      return handleLogsAggregate(env, executionId, url);
-    }
-    // GET /v1/executions/:id/logs/:file — one exec log (ndjson | ?format=text).
-    if (segments.length === 5 && segments[3] === "logs") {
-      return handleLogFile(env, executionId, decodeURIComponent(segments[4]!), url);
-    }
-    return json({ error: "not_found" }, 404);
-  }
-
-  // GET /v1/artifacts/:execution/:name[/...path]
-  // Bare name = the artifact object (tarball/log download). A nested path
-  // serves one file out of the bundle's upload-time browse expansion; a
-  // trailing slash after the name is the browse entrypoint (index.html or a
-  // generated listing) — see routes/artifacts.ts.
-  if (
-    segments.length >= 4 &&
-    segments[0] === "v1" &&
-    segments[1] === "artifacts"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    const subPath = segments
-      .slice(4)
-      .map((s) => decodeURIComponent(s))
-      .join("/");
-    return handleArtifact(
-      env,
-      decodeURIComponent(segments[2]!),
-      decodeURIComponent(segments[3]!),
-      subPath,
-      url.pathname.endsWith("/"),
-    );
-  }
-
-  // GET /v1/github/install/new — render the manifest-form page.
-  if (
-    segments.length === 4 &&
-    segments[0] === "v1" &&
-    segments[1] === "github" &&
-    segments[2] === "install" &&
-    segments[3] === "new"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleInstallNew(request);
-  }
-
-  // GET /v1/github/installed — the manifest-conversion callback.
-  if (
-    segments.length === 3 &&
-    segments[0] === "v1" &&
-    segments[1] === "github" &&
-    segments[2] === "installed"
-  ) {
-    if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, 405);
-    }
-    return handleInstalled(request);
-  }
-
-  return json({ error: "not_found" }, 404);
+  return handleViaApp(request, env);
 };
