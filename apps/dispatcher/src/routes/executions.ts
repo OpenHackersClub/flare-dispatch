@@ -18,20 +18,11 @@
 // The R2 `list({prefix:"logs/<id>/"})` is the source of truth for which exec
 // logs exist (the unused `steps.log_uri` column stays reserved) — review M1.
 
-import type { Env } from "../env";
-import {
-  getExecution,
-  getSteps,
-  listExecutions,
-  type ExecutionRow,
-  type StepRow,
-} from "../executions-read";
+import { Effect, Option } from "effect";
+
+import type { ExecutionRow, StepRow } from "../executions-read";
 import { gateLogAccess } from "../log-auth";
-import {
-  buildLogsUrl,
-  resolveLogLinkSecret,
-  signLogToken,
-} from "../log-token";
+import { CurrentEnv, ExecutionsRead, LogToken } from "../ports";
 import { workflowDashboardUrl } from "../dashboard-url";
 
 const json = (body: unknown, status: number): Response =>
@@ -88,147 +79,160 @@ const stepView = (row: StepRow) => ({
  * `GET /v1/executions` — ADMIN_TOKEN-gated listing. Query params: `run`,
  * `repo`, `status`, `limit` (≤200), `before` (ms-epoch keyset cursor).
  */
-export const handleExecutionsList = async (
+export const handleExecutionsList = (
   request: Request,
-  env: Env,
   url: URL,
-): Promise<Response> => {
-  if (env.ADMIN_TOKEN === undefined) {
-    return json(
-      {
-        error: "admin_not_configured",
-        message: "ADMIN_TOKEN is unset; the executions listing is off",
-      },
-      503,
-    );
-  }
-  const auth = request.headers.get("Authorization") ?? "";
-  if (!safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`)) {
-    return json(
-      { error: "unauthorized", message: "Authorization bearer missing or invalid" },
-      401,
-    );
-  }
-
-  const q = url.searchParams;
-  const rawLimit = Number.parseInt(q.get("limit") ?? "", 10);
-  const limit = Number.isFinite(rawLimit)
-    ? Math.min(Math.max(rawLimit, 1), MAX_LIMIT)
-    : DEFAULT_LIMIT;
-  const rawBefore = Number.parseInt(q.get("before") ?? "", 10);
-  const filters = {
-    ...(q.get("run") !== null ? { run: q.get("run")! } : {}),
-    ...(q.get("repo") !== null ? { repo: q.get("repo")! } : {}),
-    ...(q.get("status") !== null ? { status: q.get("status")! } : {}),
-    ...(Number.isFinite(rawBefore) ? { before: rawBefore } : {}),
-    limit,
-  };
-
-  const rows = await listExecutions(env.RUNS_METADATA, filters);
-  const secret = resolveLogLinkSecret(env);
-  const origin = env.PUBLIC_ORIGIN ?? url.origin;
-
-  const executions = await Promise.all(
-    rows.map(async (row) => {
-      const dashboardUrl = workflowDashboardUrl(
-        env.CLOUDFLARE_ACCOUNT_ID,
-        row.id,
+): Effect.Effect<Response, never, CurrentEnv | ExecutionsRead | LogToken> =>
+  Effect.gen(function* () {
+    const env = yield* CurrentEnv;
+    if (env.ADMIN_TOKEN === undefined) {
+      return json(
+        {
+          error: "admin_not_configured",
+          message: "ADMIN_TOKEN is unset; the executions listing is off",
+        },
+        503,
       );
-      const logsUrl =
-        secret !== undefined
-          ? buildLogsUrl(origin, row.id, await signLogToken(secret, row.id))
-          : undefined;
-      return executionView(row, {
-        ...(logsUrl !== undefined ? { logsUrl } : {}),
-        ...(dashboardUrl !== undefined ? { dashboardUrl } : {}),
-      });
-    }),
-  );
+    }
+    const auth = request.headers.get("Authorization") ?? "";
+    if (!safeEqual(auth, `Bearer ${env.ADMIN_TOKEN}`)) {
+      return json(
+        { error: "unauthorized", message: "Authorization bearer missing or invalid" },
+        401,
+      );
+    }
 
-  // Keyset cursor for the next page: the oldest `started_at` returned.
-  const last = rows[rows.length - 1];
-  const nextBefore =
-    rows.length === limit && last?.started_at != null ? last.started_at : null;
+    const q = url.searchParams;
+    const rawLimit = Number.parseInt(q.get("limit") ?? "", 10);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(Math.max(rawLimit, 1), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+    const rawBefore = Number.parseInt(q.get("before") ?? "", 10);
+    const filters = {
+      ...(q.get("run") !== null ? { run: q.get("run")! } : {}),
+      ...(q.get("repo") !== null ? { repo: q.get("repo")! } : {}),
+      ...(q.get("status") !== null ? { status: q.get("status")! } : {}),
+      ...(Number.isFinite(rawBefore) ? { before: rawBefore } : {}),
+      limit,
+    };
 
-  return json({ executions, nextBefore }, 200);
-};
+    const reads = yield* ExecutionsRead;
+    const logTokens = yield* LogToken;
+    const rows = yield* reads.list(filters);
+    const origin = env.PUBLIC_ORIGIN ?? url.origin;
+
+    const executions = yield* Effect.forEach(rows, (row) =>
+      Effect.gen(function* () {
+        const dashboardUrl = workflowDashboardUrl(env.CLOUDFLARE_ACCOUNT_ID, row.id);
+        const logsUrl = Option.getOrUndefined(
+          yield* logTokens.logsUrl(origin, row.id),
+        );
+        return executionView(row, {
+          ...(logsUrl !== undefined ? { logsUrl } : {}),
+          ...(dashboardUrl !== undefined ? { dashboardUrl } : {}),
+        });
+      }),
+    );
+
+    // Keyset cursor for the next page: the oldest `started_at` returned.
+    const last = rows[rows.length - 1];
+    const nextBefore =
+      rows.length === limit && last?.started_at != null ? last.started_at : null;
+
+    return json({ executions, nextBefore }, 200);
+  });
 
 /**
  * `GET /v1/executions/:id` — capability-token-gated detail. Returns the
  * execution (no `input_json`), its steps, its R2 log files, and its artifacts.
  */
-export const handleExecutionDetail = async (
-  env: Env,
+export const handleExecutionDetail = (
   executionId: string,
   url: URL,
-): Promise<Response> => {
-  const denied = await gateLogAccess(env, executionId, url);
-  if (denied !== null) return denied;
-
-  const row = await getExecution(env.RUNS_METADATA, executionId);
-  if (row === null) {
-    return json(
-      { error: "execution_not_found", message: `no execution "${executionId}"` },
-      404,
+): Effect.Effect<Response, never, CurrentEnv | ExecutionsRead | LogToken> =>
+  Effect.gen(function* () {
+    const env = yield* CurrentEnv;
+    const denied = yield* Effect.promise(() =>
+      gateLogAccess(env, executionId, url),
     );
-  }
+    if (denied !== null) return denied;
 
-  const secret = resolveLogLinkSecret(env);
-  const origin = env.PUBLIC_ORIGIN ?? url.origin;
-  // Re-derive THIS execution's token to self-link the log files (the caller
-  // already proved possession of it via the gate).
-  const token =
-    secret !== undefined ? await signLogToken(secret, executionId) : "";
+    const reads = yield* ExecutionsRead;
+    const logTokens = yield* LogToken;
+    const rowOpt = yield* reads.get(executionId);
+    if (Option.isNone(rowOpt)) {
+      return json(
+        { error: "execution_not_found", message: `no execution "${executionId}"` },
+        404,
+      );
+    }
+    const row = rowOpt.value;
 
-  const [steps, logList, artifactList] = await Promise.all([
-    getSteps(env.RUNS_METADATA, executionId),
-    env.RUNS_STORAGE.list({ prefix: `logs/${executionId}/`, limit: 1000 }),
-    env.RUNS_STORAGE.list({ prefix: `artifacts/${executionId}/`, limit: 1000 }),
-  ]);
+    const origin = env.PUBLIC_ORIGIN ?? url.origin;
+    // Re-derive THIS execution's token to self-link the log files (the caller
+    // already proved possession of it via the gate).
+    const token = Option.getOrElse(
+      yield* logTokens.token(executionId),
+      () => "",
+    );
 
-  const logs = logList.objects.map((o) => {
-    const file = o.key.slice(`logs/${executionId}/`.length);
-    return {
-      file,
-      size: o.size,
-      url: `/v1/executions/${encodeURIComponent(
-        executionId,
-      )}/logs/${encodeURIComponent(file)}?t=${token}`,
-    };
+    const [steps, logList, artifactList] = yield* Effect.all([
+      reads.steps(executionId),
+      Effect.promise(() =>
+        env.RUNS_STORAGE.list({ prefix: `logs/${executionId}/`, limit: 1000 }),
+      ),
+      Effect.promise(() =>
+        env.RUNS_STORAGE.list({
+          prefix: `artifacts/${executionId}/`,
+          limit: 1000,
+        }),
+      ),
+    ]);
+
+    const logs = logList.objects.map((o) => {
+      const file = o.key.slice(`logs/${executionId}/`.length);
+      return {
+        file,
+        size: o.size,
+        url: `/v1/executions/${encodeURIComponent(
+          executionId,
+        )}/logs/${encodeURIComponent(file)}?t=${token}`,
+      };
+    });
+
+    // Top-level artifact objects only (skip the upload-time browse expansion
+    // keys nested under `<name>/…`).
+    const artifactPrefix = `artifacts/${executionId}/`;
+    const artifacts = artifactList.objects
+      .map((o) => ({ name: o.key.slice(artifactPrefix.length), size: o.size }))
+      .filter((a) => a.name.length > 0 && !a.name.includes("/"))
+      .map((a) => ({
+        name: a.name,
+        size: a.size,
+        url: `/v1/artifacts/${encodeURIComponent(executionId)}/${encodeURIComponent(a.name)}`,
+      }));
+
+    const dashboardUrl = workflowDashboardUrl(env.CLOUDFLARE_ACCOUNT_ID, row.id);
+    const logsUrl = Option.getOrUndefined(
+      yield* logTokens.logsUrl(origin, row.id),
+    );
+
+    return json(
+      {
+        execution: executionView(row, {
+          ...(logsUrl !== undefined ? { logsUrl } : {}),
+          ...(dashboardUrl !== undefined ? { dashboardUrl } : {}),
+        }),
+        ...(row.summary_json !== null
+          ? { summary: safeParse(row.summary_json) }
+          : {}),
+        steps: steps.map(stepView),
+        logs,
+        artifacts,
+      },
+      200,
+    );
   });
-
-  // Top-level artifact objects only (skip the upload-time browse expansion
-  // keys nested under `<name>/…`).
-  const artifactPrefix = `artifacts/${executionId}/`;
-  const artifacts = artifactList.objects
-    .map((o) => ({ name: o.key.slice(artifactPrefix.length), size: o.size }))
-    .filter((a) => a.name.length > 0 && !a.name.includes("/"))
-    .map((a) => ({
-      name: a.name,
-      size: a.size,
-      url: `/v1/artifacts/${encodeURIComponent(executionId)}/${encodeURIComponent(a.name)}`,
-    }));
-
-  const dashboardUrl = workflowDashboardUrl(env.CLOUDFLARE_ACCOUNT_ID, row.id);
-  const logsUrl =
-    secret !== undefined ? buildLogsUrl(origin, row.id, token) : undefined;
-
-  return json(
-    {
-      execution: executionView(row, {
-        ...(logsUrl !== undefined ? { logsUrl } : {}),
-        ...(dashboardUrl !== undefined ? { dashboardUrl } : {}),
-      }),
-      ...(row.summary_json !== null
-        ? { summary: safeParse(row.summary_json) }
-        : {}),
-      steps: steps.map(stepView),
-      logs,
-      artifacts,
-    },
-    200,
-  );
-};
 
 /** Parse stored JSON, falling back to the raw string if it is not valid JSON. */
 const safeParse = (s: string): unknown => {

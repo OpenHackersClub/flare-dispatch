@@ -1,0 +1,163 @@
+// Tests for the `GET /` dashboard — the pure renderer plus an end-to-end pass
+// through `handleRequest` over the in-memory D1/R2/Workflow fakes.
+
+import { describe, expect, it } from "vitest";
+
+import { renderDashboard, type DashboardRow } from "./dashboard";
+import { handleRequest } from "./router";
+import {
+  makeFakeD1,
+  makeFakeEnv,
+  makeFakeR2,
+  makeFakeWorkflow,
+} from "./test-helpers";
+
+const baseRow = (over: Partial<DashboardRow>): DashboardRow => ({
+  id: "offload-test:owner_repo:abc123",
+  run: "offload-test",
+  repo: "owner/repo",
+  ref: "refs/heads/main",
+  sha: "abc123def456",
+  status: "success",
+  startedAt: 1000,
+  completedAt: 2000,
+  logsUrl: null,
+  demosUrl: null,
+  ...over,
+});
+
+describe("renderDashboard", () => {
+  const data = (rows: readonly DashboardRow[]) => ({
+    origin: "https://flare-dispatch-app.openhackers.club",
+    rows,
+    nowMs: 60_000,
+    repoSlug: "OpenHackersClub/flare-dispatch",
+  });
+
+  it("renders an empty state when there are no executions", () => {
+    const html = renderDashboard(data([]));
+    expect(html).toContain("No executions yet");
+    expect(html).not.toContain("<tbody>");
+  });
+
+  it("renders a row with its run, repo, short sha, and status badge", () => {
+    const html = renderDashboard(data([baseRow({ status: "failure" })]));
+    expect(html).toContain("offload-test");
+    expect(html).toContain("owner/repo");
+    expect(html).toContain("abc123d"); // 7-char short sha
+    expect(html).toContain('class="badge fail"');
+  });
+
+  it("links Logs / Demo only when their tokened URLs are present", () => {
+    const html = renderDashboard(
+      data([
+        baseRow({
+          run: "product-demo",
+          logsUrl: "https://x/logs/a?t=tok",
+          demosUrl: "https://x/demos/a?t=tok",
+        }),
+      ]),
+    );
+    expect(html).toContain('href="https://x/logs/a?t=tok"');
+    expect(html).toContain('href="https://x/demos/a?t=tok"');
+  });
+
+  it("escapes HTML in execution fields", () => {
+    const html = renderDashboard(data([baseRow({ repo: "<script>" })]));
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("emits canonical + OG metadata pointing at the origin root", () => {
+    const html = renderDashboard(data([]));
+    expect(html).toContain(
+      '<link rel="canonical" href="https://flare-dispatch-app.openhackers.club/" />',
+    );
+    expect(html).toContain('property="og:title"');
+  });
+});
+
+describe("GET / — dashboard route", () => {
+  const fixture = (executions: Record<string, unknown>[]) => {
+    const metadata = makeFakeD1({ executions });
+    const env = makeFakeEnv({
+      hmacSecret: "dashboard-test-secret",
+      workflow: makeFakeWorkflow(),
+      storage: makeFakeR2(),
+      metadata,
+      publicOrigin: "https://flare-dispatch-app.openhackers.club",
+    });
+    return { env };
+  };
+
+  const execRow = (over: Record<string, unknown>) => ({
+    id: "offload-test:owner_repo:abc1234",
+    run: "offload-test",
+    repo: "owner/repo",
+    ref: "refs/heads/main",
+    sha: "abc1234def567",
+    status: "success",
+    started_at: 1000,
+    completed_at: 2000,
+    parent_execution_id: null,
+    input_json: "{}",
+    summary_json: null,
+    check_run_id: null,
+    ...over,
+  });
+
+  it("returns 200 text/html listing executions with tokened log links", async () => {
+    const { env } = fixture([
+      execRow({ id: "a:b:c", run: "offload-test", status: "success" }),
+    ]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("offload-test");
+    expect(body).toContain("/logs/a%3Ab%3Ac?t=");
+  });
+
+  it("links the product-demo viewer for product-demo runs", async () => {
+    const { env } = fixture([
+      execRow({ id: "demo1", run: "product-demo", status: "success" }),
+    ]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/"),
+      env,
+    );
+    const body = await res.text();
+    expect(body).toContain("/demos/demo1?t=");
+  });
+
+  it("405s a non-GET method", async () => {
+    const { env } = fixture([]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("403s when Cloudflare Access is required but no identity is present", async () => {
+    const metadata = makeFakeD1({ executions: [] });
+    const env = makeFakeEnv({
+      hmacSecret: "s",
+      workflow: makeFakeWorkflow(),
+      storage: makeFakeR2(),
+      metadata,
+      viewerAccessMode: "required",
+    });
+    // ACCESS_AUD / ACCESS_TEAM_DOMAIN unset under "required" → 503, default-deny.
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/"),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+});
