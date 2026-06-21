@@ -119,6 +119,12 @@ export const ExecutionsReadLive = Layer.effect(
 const trimOrigin = (origin: string): string => origin.replace(/\/$/, "");
 
 export interface LogTokenService {
+  /**
+   * The bare per-execution capability token, or `None` when no key material is
+   * configured. For building tokened API URLs by hand (e.g. the per-log-file
+   * links in the executions detail response).
+   */
+  readonly token: (executionId: string) => Effect.Effect<Option.Option<string>>;
   /** Tokened `/logs/:id?t=…` URL, or `None` when no key material is configured. */
   readonly logsUrl: (
     origin: string,
@@ -152,6 +158,12 @@ export const LogTokenLive = Layer.effect(
             Effect.map((token) => Option.some(build(token))),
           );
     return LogToken.of({
+      token: (executionId) =>
+        secret === undefined
+          ? Effect.succeed(Option.none())
+          : Effect.promise(() => signLogToken(secret, executionId)).pipe(
+              Effect.map(Option.some),
+            ),
       logsUrl: (origin, executionId) =>
         sign(origin, executionId, (token) =>
           buildLogsUrl(origin, executionId, token),

@@ -165,6 +165,40 @@ const route = (
 const decode = (params: Params, key: string): string =>
   decodeURIComponent(params[key] ?? "");
 
+/**
+ * A GET viewer route whose handler is itself an Effect over the ports (the
+ * executions/logs read routes). Gates first, then runs the handler within the
+ * router's Layer context, streaming its `Response` back. A thrown error (an
+ * Effect defect from a rejected dependency) is recorded in the `DefectSink` so
+ * `handleViaApp` rethrows it — same propagation as `runLegacy`.
+ */
+const routeEffect = (
+  make: (args: {
+    readonly request: Request;
+    readonly url: URL;
+    readonly params: Params;
+  }) => Effect.Effect<Response, never, CurrentEnv | ExecutionsRead | LogToken>,
+) =>
+  Effect.gen(function* () {
+    const request = yield* currentRequest;
+    const denied = yield* accessGate(request);
+    if (Option.isSome(denied)) return fromWebResponse(denied.value);
+    if (request.method !== "GET") return methodNotAllowed;
+    const params = yield* HttpRouter.params;
+    const url = new URL(request.url);
+    return yield* make({ request, url, params }).pipe(
+      Effect.map(fromWebResponse),
+      Effect.catchAllDefect((defect) =>
+        DefectSink.pipe(
+          Effect.flatMap((sink) => {
+            sink.record(defect);
+            return Effect.succeed(jsonResponse({ error: "internal_error" }, 500));
+          }),
+        ),
+      ),
+    );
+  });
+
 // ---------------------------------------------------------------------------
 // Bespoke routes
 // ---------------------------------------------------------------------------
@@ -321,34 +355,21 @@ const router = baseRouter.pipe(
   ),
   HttpRouter.all(
     "/v1/executions",
-    route("GET", ({ request, env, url }) => handleExecutionsList(request, env, url), {
-      viewer: true,
-    }),
+    routeEffect(({ request, url }) => handleExecutionsList(request, url)),
   ),
   HttpRouter.all(
     "/v1/executions/:id/logs/:file",
-    route(
-      "GET",
-      ({ env, params, url }) =>
-        handleLogFile(env, decode(params, "id"), decode(params, "file"), url),
-      { viewer: true },
+    routeEffect(({ params, url }) =>
+      handleLogFile(decode(params, "id"), decode(params, "file"), url),
     ),
   ),
   HttpRouter.all(
     "/v1/executions/:id/logs",
-    route(
-      "GET",
-      ({ env, params, url }) => handleLogsAggregate(env, decode(params, "id"), url),
-      { viewer: true },
-    ),
+    routeEffect(({ params, url }) => handleLogsAggregate(decode(params, "id"), url)),
   ),
   HttpRouter.all(
     "/v1/executions/:id",
-    route(
-      "GET",
-      ({ env, params, url }) => handleExecutionDetail(env, decode(params, "id"), url),
-      { viewer: true },
-    ),
+    routeEffect(({ params, url }) => handleExecutionDetail(decode(params, "id"), url)),
   ),
   HttpRouter.all("/v1/artifacts/:execution/:name", artifactsRoute),
   HttpRouter.all("/v1/artifacts/:execution/:name/*", artifactsRoute),

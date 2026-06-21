@@ -13,9 +13,12 @@
 // and it renders attacker-controlled log bytes safely (textContent only, ANSI
 // control sequences stripped, strict CSP — review M5).
 
+import { Effect, Option } from "effect";
+
 import type { Env } from "../env";
-import { getExecution, isTerminal } from "../executions-read";
+import { isTerminal } from "../executions-read";
 import { gateLogAccess } from "../log-auth";
+import { CurrentEnv, ExecutionsRead } from "../ports";
 import { logKey, streamObject } from "../r2-object";
 
 const json = (body: unknown, status: number): Response =>
@@ -150,32 +153,125 @@ export const makeNdjsonTextTransform = (): TransformStream<
 // GET /v1/executions/:id/logs/:file
 // ---------------------------------------------------------------------------
 
-export const handleLogFile = async (
-  env: Env,
+export const handleLogFile = (
   executionId: string,
   file: string,
   url: URL,
-): Promise<Response> => {
-  const denied = await gateLogAccess(env, executionId, url);
-  if (denied !== null) return denied;
-
-  if (!LOG_FILE_RE.test(file)) {
-    return json(
-      { error: "invalid_log_file", message: `not a log file name: "${file}"` },
-      400,
+): Effect.Effect<Response, never, CurrentEnv | ExecutionsRead> =>
+  Effect.gen(function* () {
+    const env = yield* CurrentEnv;
+    const denied = yield* Effect.promise(() =>
+      gateLogAccess(env, executionId, url),
     );
-  }
+    if (denied !== null) return denied;
 
-  const row = await getExecution(env.RUNS_METADATA, executionId);
-  const cacheControl = cacheFor(isTerminal(row?.status));
-  const format = url.searchParams.get("format") ?? "ndjson";
-
-  if (format === "text") {
-    const object = await env.RUNS_STORAGE.get(logKey(executionId, file));
-    if (object === null) {
-      return json({ error: "log_not_found", message: file }, 404);
+    if (!LOG_FILE_RE.test(file)) {
+      return json(
+        { error: "invalid_log_file", message: `not a log file name: "${file}"` },
+        400,
+      );
     }
-    const body = object.body.pipeThrough(makeNdjsonTextTransform());
+
+    const reads = yield* ExecutionsRead;
+    const rowOpt = yield* reads.get(executionId);
+    const status = Option.match(rowOpt, {
+      onNone: () => undefined,
+      onSome: (row) => row.status,
+    });
+    const cacheControl = cacheFor(isTerminal(status));
+    const format = url.searchParams.get("format") ?? "ndjson";
+
+    if (format === "text") {
+      const object = yield* Effect.promise(() =>
+        env.RUNS_STORAGE.get(logKey(executionId, file)),
+      );
+      if (object === null) {
+        return json({ error: "log_not_found", message: file }, 404);
+      }
+      const body = object.body.pipeThrough(makeNdjsonTextTransform());
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": cacheControl,
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+
+    const res = yield* Effect.promise(() =>
+      streamObject(env.RUNS_STORAGE, logKey(executionId, file), {
+        contentType: "application/x-ndjson",
+        cacheControl,
+        nosniff: true,
+      }),
+    );
+    return res ?? json({ error: "log_not_found", message: file }, 404);
+  });
+
+// ---------------------------------------------------------------------------
+// GET /v1/executions/:id/logs  — aggregated plain-text roll-up
+// ---------------------------------------------------------------------------
+
+export const handleLogsAggregate = (
+  executionId: string,
+  url: URL,
+): Effect.Effect<Response, never, CurrentEnv | ExecutionsRead> =>
+  Effect.gen(function* () {
+    const env = yield* CurrentEnv;
+    const denied = yield* Effect.promise(() =>
+      gateLogAccess(env, executionId, url),
+    );
+    if (denied !== null) return denied;
+
+    const listed = yield* Effect.promise(() =>
+      env.RUNS_STORAGE.list({
+        prefix: `logs/${executionId}/`,
+        limit: 1000,
+      }),
+    );
+    const files = listed.objects
+      .map((o) => o.key.slice(`logs/${executionId}/`.length))
+      .filter((f) => LOG_FILE_RE.test(f))
+      .sort(compareLogFiles);
+
+    if (files.length === 0) {
+      return json(
+        { error: "no_logs", message: `no logs for execution "${executionId}"` },
+        404,
+      );
+    }
+
+    const reads = yield* ExecutionsRead;
+    const rowOpt = yield* reads.get(executionId);
+    const status = Option.match(rowOpt, {
+      onNone: () => undefined,
+      onSome: (row) => row.status,
+    });
+    const cacheControl = cacheFor(isTerminal(status));
+    const encoder = new TextEncoder();
+
+    // Stream each file sequentially through the text transform, with a separator
+    // header per file. Never buffers a whole log in memory.
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const file of files) {
+          controller.enqueue(encoder.encode(`\n===== ${file} =====\n`));
+          const object = await env.RUNS_STORAGE.get(logKey(executionId, file));
+          if (object === null) continue;
+          const reader = object.body
+            .pipeThrough(makeNdjsonTextTransform())
+            .getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        }
+        controller.close();
+      },
+    });
+
     return new Response(body, {
       status: 200,
       headers: {
@@ -184,78 +280,7 @@ export const handleLogFile = async (
         "x-content-type-options": "nosniff",
       },
     });
-  }
-
-  const res = await streamObject(env.RUNS_STORAGE, logKey(executionId, file), {
-    contentType: "application/x-ndjson",
-    cacheControl,
-    nosniff: true,
   });
-  return res ?? json({ error: "log_not_found", message: file }, 404);
-};
-
-// ---------------------------------------------------------------------------
-// GET /v1/executions/:id/logs  — aggregated plain-text roll-up
-// ---------------------------------------------------------------------------
-
-export const handleLogsAggregate = async (
-  env: Env,
-  executionId: string,
-  url: URL,
-): Promise<Response> => {
-  const denied = await gateLogAccess(env, executionId, url);
-  if (denied !== null) return denied;
-
-  const listed = await env.RUNS_STORAGE.list({
-    prefix: `logs/${executionId}/`,
-    limit: 1000,
-  });
-  const files = listed.objects
-    .map((o) => o.key.slice(`logs/${executionId}/`.length))
-    .filter((f) => LOG_FILE_RE.test(f))
-    .sort(compareLogFiles);
-
-  if (files.length === 0) {
-    return json(
-      { error: "no_logs", message: `no logs for execution "${executionId}"` },
-      404,
-    );
-  }
-
-  const row = await getExecution(env.RUNS_METADATA, executionId);
-  const cacheControl = cacheFor(isTerminal(row?.status));
-  const encoder = new TextEncoder();
-
-  // Stream each file sequentially through the text transform, with a separator
-  // header per file. Never buffers a whole log in memory.
-  const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      for (const file of files) {
-        controller.enqueue(encoder.encode(`\n===== ${file} =====\n`));
-        const object = await env.RUNS_STORAGE.get(logKey(executionId, file));
-        if (object === null) continue;
-        const reader = object.body
-          .pipeThrough(makeNdjsonTextTransform())
-          .getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          controller.enqueue(value);
-        }
-      }
-      controller.close();
-    },
-  });
-
-  return new Response(body, {
-    status: 200,
-    headers: {
-      "content-type": "text/plain; charset=utf-8",
-      "cache-control": cacheControl,
-      "x-content-type-options": "nosniff",
-    },
-  });
-};
 
 /** Order exec logs `exec.ndjson` < `exec-2.ndjson` < `exec-10.ndjson` < … */
 const compareLogFiles = (a: string, b: string): number => {
