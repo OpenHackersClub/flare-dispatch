@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accessIssuer,
+  accessLoginUrl,
   clearAccessCertsCache,
   gateViewerAccess,
   resolveViewerAccessMode,
@@ -74,6 +75,19 @@ describe("accessIssuer", () => {
   });
   it("accepts a full URL and strips any trailing path/slash", () => {
     expect(accessIssuer("https://team.cloudflareaccess.com/")).toBe(ISSUER);
+  });
+});
+
+describe("accessLoginUrl", () => {
+  it("builds the team login URL with kid + the request path as redirect_url", () => {
+    const url = accessLoginUrl(
+      "team.cloudflareaccess.com",
+      AUD,
+      new Request("https://flare-dispatch.example/?from=check"),
+    );
+    expect(url).toBe(
+      `${ISSUER}/cdn-cgi/access/login/flare-dispatch.example?kid=${AUD}&redirect_url=%2F%3Ffrom%3Dcheck`,
+    );
   });
 });
 
@@ -185,6 +199,32 @@ describe("gateViewerAccess", () => {
     const denied = await gateViewerAccess(configured(), req());
     expect(denied?.status).toBe(403);
     expect(await denied!.json()).toMatchObject({ error: "access_denied" });
+  });
+
+  it("required + configured, no JWT, browser navigation → 302 to Access login", async () => {
+    stubCerts([publicJwk]);
+    const denied = await gateViewerAccess(
+      configured(),
+      new Request("https://flare-dispatch.example/", {
+        headers: { "Sec-Fetch-Mode": "navigate" },
+      }),
+    );
+    expect(denied?.status).toBe(302);
+    const loc = denied!.headers.get("location")!;
+    expect(loc).toContain(`${ISSUER}/cdn-cgi/access/login/flare-dispatch.example`);
+    expect(loc).toContain(`kid=${AUD}`);
+    expect(loc).toContain("redirect_url=%2F");
+  });
+
+  it("required + configured, no JWT, text/html Accept → 302 to Access login", async () => {
+    stubCerts([publicJwk]);
+    const denied = await gateViewerAccess(
+      configured(),
+      new Request("https://flare-dispatch.example/", {
+        headers: { Accept: "text/html,application/xhtml+xml" },
+      }),
+    );
+    expect(denied?.status).toBe(302);
   });
 
   it("required + valid JWT in the assertion header → proceeds", async () => {

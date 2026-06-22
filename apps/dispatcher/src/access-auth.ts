@@ -23,6 +23,14 @@
 // domain) is refused. Access enforcement at the CF edge keeps unauthenticated
 // users off the Worker entirely; this Worker-side verify is defence-in-depth.
 //
+// One viewer surface is NOT edge-gated: the dashboard `/`. The Access app is
+// path-scoped to `/logs`, `/demos`, `/replay`, `/v1/executions` — a bare `/`
+// destination would prefix-match every machine path (`/v1/dispatch`,
+// `/v1/webhooks`, `/v1/artifacts`, …) and break CI/webhooks/check-run media.
+// So `/` reaches the Worker un-gated. A *browser* navigation arriving there
+// with no Access identity is 302'd into the SSO login (back to `/` after auth);
+// only programmatic callers see the 403 JSON. See `isBrowserNavigation`.
+//
 // --- Default to secure -------------------------------------------------------
 //
 // Enforcement is ON BY DEFAULT. With `VIEWER_ACCESS_MODE` unset (or "required"):
@@ -243,6 +251,42 @@ const fetchAccessCerts = async (
   }
 };
 
+/**
+ * A top-level browser navigation (vs. an API/programmatic fetch). The Access
+ * app fronts `/logs`, `/demos`, `/replay`, `/v1/executions` at the edge and
+ * 302s those to SSO before the Worker sees them — but the dashboard `/` is NOT
+ * an Access destination (a bare `/` would prefix-match every machine path —
+ * `/v1/dispatch`, `/v1/webhooks`, `/v1/artifacts`, … — and break CI), so `/`
+ * reaches the Worker un-gated. For a browser landing there with no Access
+ * identity we send it INTO the Access login flow ourselves (302), rather than
+ * the 403 JSON an API caller gets. After SSO the host-scoped `CF_Authorization`
+ * cookie carries the JWT back, and the next `/` request verifies and renders.
+ */
+const isBrowserNavigation = (request: Request): boolean => {
+  if (request.headers.get("Sec-Fetch-Mode") === "navigate") return true;
+  return (request.headers.get("Accept") ?? "").includes("text/html");
+};
+
+/**
+ * The Access login URL for this team + application, returning the browser to
+ * `request`'s own path after SSO. Shape mirrors the 302 Access itself issues
+ * for a gated destination: `<issuer>/cdn-cgi/access/login/<app-host>?kid=<aud>&
+ * redirect_url=<path>` (the optional signed `meta` hint Access adds is not
+ * required — the flow works without it).
+ */
+export const accessLoginUrl = (
+  teamDomain: string,
+  aud: string,
+  request: Request,
+): string => {
+  const reqUrl = new URL(request.url);
+  const params = new URLSearchParams({
+    kid: aud,
+    redirect_url: `${reqUrl.pathname}${reqUrl.search}`,
+  });
+  return `${accessIssuer(teamDomain)}/cdn-cgi/access/login/${reqUrl.host}?${params.toString()}`;
+};
+
 /** Pull the Access JWT from the header, falling back to the cookie. */
 const readAccessJwt = (request: Request): string | null => {
   const header = request.headers.get(ACCESS_JWT_HEADER);
@@ -297,6 +341,13 @@ export const gateViewerAccess = async (
 
   const jwt = readAccessJwt(request);
   if (jwt === null) {
+    // A browser landing on an un-gated viewer surface (the dashboard `/`) with
+    // no Access identity: bounce it into the SSO login instead of stranding it
+    // on a 403 JSON. API/programmatic callers still get the machine-readable
+    // 403 (they can't complete an interactive login anyway).
+    if (isBrowserNavigation(request)) {
+      return Response.redirect(accessLoginUrl(teamDomain, aud, request), 302);
+    }
     return json(
       {
         error: "access_denied",
