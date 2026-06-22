@@ -96,6 +96,17 @@ const isObjectArray = (v: unknown): v is Record<string, unknown>[] =>
 /** Cap on rendered array items — this is an email, not a data export. */
 const MAX_ARRAY_ITEMS = 20;
 
+/**
+ * Output keys suppressed from the rendered email — raw-data escape hatches, not
+ * stakeholder-facing links. `replayJsonUri` is the signed R2 URL to the raw
+ * rrweb event JSON (product-demo): a power-user self-host hatch. The human-facing
+ * `replayUri` (the player page) and the watch-the-demo CTA already carry a
+ * reviewer to the watchable replay, so surfacing the raw JSON as a "Replay Json"
+ * row only clutters the inbox with a link nobody clicks. Applied at both the
+ * top-level output table and per-item (`stories`) blocks, in HTML and text.
+ */
+const SKIP_OUTPUT_KEYS = new Set<string>(["replayJsonUri"]);
+
 /** Render a single output value to an HTML cell. */
 const valueCellHtml = (value: unknown): string => {
   if (isHttpUrl(value)) {
@@ -117,7 +128,7 @@ const objectArrayHtml = (items: readonly Record<string, unknown>[]): string =>
     .map((item) => {
       const title = typeof item["name"] === "string" ? item["name"] : "";
       const rows = Object.entries(item)
-        .filter(([k, v]) => k !== "name" && v !== "")
+        .filter(([k, v]) => k !== "name" && v !== "" && !SKIP_OUTPUT_KEYS.has(k))
         .map(
           ([k, v]) =>
             `<tr><td style="padding:2px 10px 2px 0;color:#57606a;vertical-align:top;">${esc(humanizeKey(k))}</td><td style="padding:2px 0;">${valueCellHtml(v)}</td></tr>`,
@@ -136,9 +147,9 @@ const outputRows = (output: unknown): readonly [string, unknown][] => {
   if (output === null || typeof output !== "object" || Array.isArray(output)) {
     return [];
   }
-  return Object.entries(output as Record<string, unknown>).map(
-    ([k, v]) => [humanizeKey(k), v] as const,
-  );
+  return Object.entries(output as Record<string, unknown>)
+    .filter(([k]) => !SKIP_OUTPUT_KEYS.has(k))
+    .map(([k, v]) => [humanizeKey(k), v] as const);
 };
 
 const statusBadge = (status: NotifyStatus): { label: string; color: string } =>
@@ -276,7 +287,7 @@ ${detailsHtml}
           const title = typeof item["name"] === "string" ? item["name"] : "-";
           textLines.push(`    ${title}`);
           for (const [k, v] of Object.entries(item)) {
-            if (k === "name" || v === "") continue;
+            if (k === "name" || v === "" || SKIP_OUTPUT_KEYS.has(k)) continue;
             textLines.push(
               `      ${humanizeKey(k)}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}`,
             );

@@ -87,6 +87,30 @@ describe("renderResultEmail", () => {
     expect(text).not.toContain("Replay Json:");
   });
 
+  it("suppresses the raw replay-JSON escape hatch from a top-level output", () => {
+    const { html, text } = renderResultEmail({
+      ...base,
+      run: "product-demo",
+      status: "success",
+      output: {
+        replayUri: "https://dispatcher.example/replay/run-level",
+        // Non-empty raw-rrweb-JSON hatch — must NOT surface as a "Replay Json" row.
+        replayJsonUri: "https://r2.example/x/replay.json?sig=abc",
+        summaryMd: "all good",
+      },
+    });
+
+    // The human-facing player link still renders…
+    expect(html).toContain(
+      '<a href="https://dispatcher.example/replay/run-level">',
+    );
+    // …but the raw-JSON hatch is gone from both the label and the URL.
+    expect(html).not.toContain("Replay Json");
+    expect(html).not.toContain("replay.json");
+    expect(text).not.toContain("Replay Json:");
+    expect(text).not.toContain("replay.json");
+  });
+
   it("leads the subject with the story tally even on a clean all-pass run", () => {
     const { subject } = renderResultEmail({
       ...base,
