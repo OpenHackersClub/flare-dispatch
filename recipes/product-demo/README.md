@@ -2,11 +2,7 @@
 
 Hand a list of user stories in prose and a deployed URL; get back one continuous rrweb-based replay with chapter markers per story, a key screenshot per story, and a holistic markdown summary. When the dispatch carries the PR number (the Action-mode default), every completed demo also posts a PR comment with the summary and an **animated GIF of the walkthrough embedded inline** — the reviewer sees the demo in the review thread without leaving GitHub.
 
-> **The log viewer this repo's own dogfood drives.** [`.github/workflows/product-demo-logviewer.yml`](../../.github/workflows/product-demo-logviewer.yml) points `product-demo` at FlareDispatch's per-execution log viewer and walks it through five stories — the D1 step **flame chart**, the **run-summary** verdict, and the full untruncated **R2 logs** with line filter + stderr-only:
-
-![Log viewer walkthrough](assets/log-viewer-walkthrough.gif)
-
-<sub>Captured by driving the shipped viewer ([`apps/dispatcher/src/routes/logs.ts`](../../apps/dispatcher/src/routes/logs.ts)) against a representative `product-demo` execution.</sub>
+> ▶ **[Watch the log-viewer walkthrough GIF](assets/log-viewer-walkthrough.gif)** — [`.github/workflows/product-demo-logviewer.yml`](../../.github/workflows/product-demo-logviewer.yml) points `product-demo` at FlareDispatch's per-execution log viewer and walks it through five stories: the D1 step **flame chart**, the **run-summary** verdict, and the full untruncated **R2 logs** with line filter + stderr-only. Captured by driving the shipped viewer ([`apps/dispatcher/src/routes/logs.ts`](../../apps/dispatcher/src/routes/logs.ts)) against a representative `product-demo` execution.
 
 ## Files
 
