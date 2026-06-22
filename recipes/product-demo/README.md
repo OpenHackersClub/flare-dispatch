@@ -2,6 +2,8 @@
 
 Hand a list of user stories in prose and a deployed URL; get back one continuous rrweb-based replay with chapter markers per story, a key screenshot per story, and a holistic markdown summary. When the dispatch carries the PR number (the Action-mode default), every completed demo also posts a PR comment with the summary and an **animated GIF of the walkthrough embedded inline** — the reviewer sees the demo in the review thread without leaving GitHub.
 
+> ▶ **[Watch the log-viewer walkthrough GIF](assets/log-viewer-walkthrough.gif)** — [`.github/workflows/product-demo-logviewer.yml`](../../.github/workflows/product-demo-logviewer.yml) points `product-demo` at FlareDispatch's per-execution log viewer and walks it through five stories: the D1 step **flame chart**, the **run-summary** verdict, and the full untruncated **R2 logs** with line filter + stderr-only. Captured by driving the shipped viewer ([`apps/dispatcher/src/routes/logs.ts`](../../apps/dispatcher/src/routes/logs.ts)) against a representative `product-demo` execution.
+
 ## Files
 
 - [`product-demo.run.ts`](product-demo.run.ts) — the typed Run: attach CDP (with `?recording=true`) → record start (set viewport, capture sessionId) → for each story drive the agent → record stop (close session, pull rrweb events from Browser Run's REST API, upload JSON to R2) → write the holistic summary. The canonical, registered copy lives at [`runs/product-demo.ts`](../../runs/product-demo.ts) (this file is the teaching illustration the doc site renders).
@@ -119,8 +121,16 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 
    ```sh
    # Worker Secrets — read by the live `browser` Layer for the CDP attach.
-   wrangler secret put BROWSER_CDP_CONNECT_URL    # wss://api.cloudflare.com/.../connect?recording=true
-   wrangler secret put BROWSER_CDP_API_TOKEN      # Cloudflare API token, Browser Rendering edit
+   # CONNECT_URL is the dispatcher's OWN binding-mediated CDP proxy
+   # (`GET /v1/browser/cdp`), NOT an external Cloudflare connect URL: CF Browser
+   # Rendering only exposes CDP to a Worker holding the `BROWSER` binding, so the
+   # container dials the dispatcher, which re-dials Browser Rendering over the
+   # binding (the binding IS the auth). The old external `…/connect` URL hung.
+   wrangler secret put BROWSER_CDP_CONNECT_URL    # wss://<your-dispatcher-host>/v1/browser/cdp
+   # API_TOKEN is a shared bearer secret the container presents to that proxy
+   # route (constant-time compared Worker-side) — any high-entropy string; it is
+   # NOT the Cloudflare API token (the `BROWSER` binding authenticates CF-side).
+   wrangler secret put BROWSER_CDP_API_TOKEN      # any high-entropy shared secret
 
    # CONFIG_KV transport secrets — read by `loadSecrets`, passed as env to every demo-agent exec.
    # The model endpoint is DERIVED from CLOUDFLARE_ACCOUNT_ID + CF_AI_GATEWAY_ID
