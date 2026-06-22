@@ -119,8 +119,16 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 
    ```sh
    # Worker Secrets — read by the live `browser` Layer for the CDP attach.
-   wrangler secret put BROWSER_CDP_CONNECT_URL    # wss://api.cloudflare.com/.../connect?recording=true
-   wrangler secret put BROWSER_CDP_API_TOKEN      # Cloudflare API token, Browser Rendering edit
+   # CONNECT_URL is the dispatcher's OWN binding-mediated CDP proxy
+   # (`GET /v1/browser/cdp`), NOT an external Cloudflare connect URL: CF Browser
+   # Rendering only exposes CDP to a Worker holding the `BROWSER` binding, so the
+   # container dials the dispatcher, which re-dials Browser Rendering over the
+   # binding (the binding IS the auth). The old external `…/connect` URL hung.
+   wrangler secret put BROWSER_CDP_CONNECT_URL    # wss://<your-dispatcher-host>/v1/browser/cdp
+   # API_TOKEN is a shared bearer secret the container presents to that proxy
+   # route (constant-time compared Worker-side) — any high-entropy string; it is
+   # NOT the Cloudflare API token (the `BROWSER` binding authenticates CF-side).
+   wrangler secret put BROWSER_CDP_API_TOKEN      # any high-entropy shared secret
 
    # CONFIG_KV transport secrets — read by `loadSecrets`, passed as env to every demo-agent exec.
    # The model endpoint is DERIVED from CLOUDFLARE_ACCOUNT_ID + CF_AI_GATEWAY_ID
