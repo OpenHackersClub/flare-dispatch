@@ -722,7 +722,11 @@ const viewerPage = (nonce: string): string => `<!doctype html>
       var raw = rows[i].trim(); if (!raw) continue;
       var parsed; try { parsed = JSON.parse(raw); } catch(e){ parsed = { stream:"stdout", line: rows[i] }; }
       var text, err=false;
-      if (parsed.stream==="meta"){ command = clean(parsed.command); text = "$ " + command; }
+      // The meta line's command becomes the SECTION TITLE (set below) — don't
+      // ALSO render it as the first body line, which duplicated "$ <command>"
+      // (once as the title, once as line 1). writeLog emits exactly one meta
+      // per file, so the body is purely the command's stdout/stderr output.
+      if (parsed.stream==="meta"){ command = clean(parsed.command); continue; }
       else if (parsed.stream==="stderr"){ text = clean(parsed.line); err=true; outputs.push(text); }
       else if (parsed.stream==="stdout"){ text = clean(parsed.line); outputs.push(text); }
       else continue;
