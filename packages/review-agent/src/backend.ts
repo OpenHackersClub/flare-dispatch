@@ -122,6 +122,13 @@ export type BackendKeyDescriptor = {
    */
   readonly defaultMaxDiffChars: number;
   /**
+   * CONFIG_KV key carrying an operator override for the diff cap (a positive
+   * integer char count). Lets a big-context Workers AI model (e.g. GLM / Kimi,
+   * 128k–256k tokens) carry far more diff than the conservative catalog default
+   * without a redeploy. Unset/blank/non-numeric → `defaultMaxDiffChars`.
+   */
+  readonly maxDiffCharsKey: string;
+  /**
    * `bedrock` backend only — CONFIG_KV key carrying the AWS region the run
    * exchanges OIDC for STS in (and signs InvokeModel against). Other backends
    * leave this undefined.
@@ -172,12 +179,14 @@ export const namespacedKeys = (
   opencode: {
     modelKey: `${namespace}.opencode.model`,
     modeKey: `${namespace}.opencode.mode`,
+    maxDiffCharsKey: `${namespace}.opencode.maxDiffChars`,
     defaultMode: "tools",
     defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
   },
   reasonix: {
     modelKey: `${namespace}.reasonix.model`,
     modeKey: `${namespace}.reasonix.mode`,
+    maxDiffCharsKey: `${namespace}.reasonix.maxDiffChars`,
     // DeepSeek-class reasoning models don't honour tool-calls — default them
     // to json mode (validated against the live Workers AI binding).
     defaultMode: "json",
@@ -186,6 +195,7 @@ export const namespacedKeys = (
   anthropic: {
     modelKey: `${namespace}.anthropic.model`,
     modeKey: `${namespace}.anthropic.mode`,
+    maxDiffCharsKey: `${namespace}.anthropic.maxDiffChars`,
     // Claude honours forced tool use (`tool_choice: any`) reliably; tool
     // arguments come back as a parsed object the engine already tolerates.
     defaultMode: "tools",
@@ -194,6 +204,7 @@ export const namespacedKeys = (
   bedrock: {
     modelKey: `${namespace}.bedrock.model`,
     modeKey: `${namespace}.bedrock.mode`,
+    maxDiffCharsKey: `${namespace}.bedrock.maxDiffChars`,
     // The shared `invokeBedrockViaAiGateway` helper concatenates the response's
     // text content blocks but does NOT surface tool-use blocks — Bedrock route
     // is text-only V0. Force `json` so the engine doesn't send a `report` tool
@@ -276,6 +287,26 @@ export const parseMode = (
 ): ReviewMode =>
   REVIEW_MODES.includes(raw as ReviewMode) ? (raw as ReviewMode) : fallback;
 
+/** Lower bound for a diff-cap override — below this a review sees nothing useful. */
+const MIN_MAX_DIFF_CHARS = 1_000;
+/** Upper bound — guards a fat-fingered value from overflowing any model's context. */
+const MAX_MAX_DIFF_CHARS = 1_000_000;
+
+/**
+ * Narrow a CONFIG_KV diff-cap override to a positive integer char count, or
+ * `fallback` when unset/blank/non-numeric/non-positive. Clamped to
+ * [{@link MIN_MAX_DIFF_CHARS}, {@link MAX_MAX_DIFF_CHARS}].
+ */
+export const parseMaxDiffChars = (
+  raw: string | undefined,
+  fallback: number,
+): number => {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return fallback;
+  return Math.min(Math.max(n, MIN_MAX_DIFF_CHARS), MAX_MAX_DIFF_CHARS);
+};
+
 /**
  * Resolve the active backend's profile from operator config. `getConfig` is the
  * `config.get`-shaped accessor — `(key) => Effect<string | undefined, never, R>`
@@ -302,6 +333,10 @@ export const resolveBackend = <R>(
     }
 
     const mode = parseMode(yield* getConfig(keys.modeKey), keys.defaultMode);
+    const maxDiffChars = parseMaxDiffChars(
+      yield* getConfig(keys.maxDiffCharsKey),
+      keys.defaultMaxDiffChars,
+    );
 
     if (backend === "bedrock") {
       // The bedrock backend needs the AWS role to assume + region to sign in.
@@ -332,13 +367,13 @@ export const resolveBackend = <R>(
         backend,
         model,
         mode,
-        maxDiffChars: keys.defaultMaxDiffChars,
+        maxDiffChars,
         region,
         roleArn,
       };
     }
 
-    return { backend, model, mode, maxDiffChars: keys.defaultMaxDiffChars };
+    return { backend, model, mode, maxDiffChars };
   });
 
 /** Map a `Match`-classified provider error to a `ModelCallFailed.reason`. */
