@@ -189,6 +189,9 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
                 >
                   <span class="recipe-compare__subtab-lang">{file.lang}</span>
                   {file.name}
+                  {recipe.mode !== "Action" && file.name === "ci.yml" && (
+                    <span class="recipe-compare__subtab-opt">optional</span>
+                  )}
                 </button>
               ))}
             </div>

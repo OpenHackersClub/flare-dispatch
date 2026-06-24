@@ -1586,6 +1586,16 @@ pre code {
   font-size: 0.85em;
   opacity: 0.7;
 }
+.snippets__subtab-opt,
+.recipe-compare__subtab-opt {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.72em;
+  padding: 0.05rem 0.36rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+}
 .snippets__panel pre {
   margin: 0;
   border: 0;

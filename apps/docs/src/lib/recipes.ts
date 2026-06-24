@@ -61,7 +61,7 @@ export const recipes: Recipe[] = [
     useCase: "Configurable single- or multi-agent code review on every PR — plus a nightly sweep",
     mode: "Webhook",
     blurb:
-      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR (`pr-review.agents=multi`), findings deduplicated into one consolidated review; or one generalist reviewer (`agents=single`) for a leaner pass. Backend is selectable from CONFIG_KV without redeploy (Workers AI, Anthropic-via-AI-Gateway BYOK, or Bedrock via the OIDC→STS→SigV4 BYOC trust path), and a dispatch can override the model/region/role per call for model bake-offs. Fires on every push (Webhook mode) for zero GHA minutes; an optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
+      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR (`pr-review.agents=multi`), findings deduplicated into one consolidated review; or one generalist reviewer (`agents=single`) for a leaner pass. Backend is selectable from CONFIG_KV without redeploy (Workers AI, Anthropic-via-AI-Gateway BYOK, or Bedrock via the OIDC→STS→SigV4 BYOC trust path), and a dispatch can override the model/region/role per call for model bake-offs. The GitHub App webhook fires it directly on every push — no `.github/workflows/` file and zero GHA minutes; the `ci.yml` shown is the optional Action-mode alternative, not a requirement. An optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
     files: [
       { name: "pr-review.run.ts", lang: "ts" },
       { name: "pr-review-sweep.run.ts", lang: "ts" },

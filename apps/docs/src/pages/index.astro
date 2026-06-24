@@ -32,42 +32,42 @@ const capabilities = [
   {
     id: "05.01 / Agentic review",
     title: "Review runs that read the whole diff",
-    body: "The pr-review run reviews every diff in-Worker — configurable single- or multi-agent — and posts a scannable verdict: a summary table, per-finding headings, and GitHub blob links. Re-reviews are authoritative and auto-resolve findings you've fixed.",
+    body: "pr-review reads every diff in-Worker — single- or multi-agent — and posts one verdict with a summary table, per-finding headings, and blob links. Re-reviews auto-resolve what you've fixed.",
   },
   {
     id: "05.02 / Writeback",
     title: "Propose the fix back as a PR",
-    body: "A run can return a changed-files manifest from its credential-free container; the Dispatcher validates it and opens a pull request via the Git Data API. Best-effort — a writeback failure annotates the green check, it never flips the run red.",
+    body: "A run returns a changed-files manifest from its credential-free container; the Dispatcher validates it and opens a PR. Best-effort — a failure annotates the green check, never flips it red.",
   },
   {
     id: "05.03 / Model routing",
     title: "Provider-agnostic model gateway",
-    body: "Route model calls to Workers AI, Anthropic, reasonix, or Amazon Bedrock — Bedrock through the AI Gateway forwarder with an OIDC → STS → SigV4 trust path, no long-lived AWS keys in Worker Secrets. Swap the backend from KV config with no redeploy.",
+    body: "Route model calls to Workers AI, Anthropic, reasonix, or Bedrock — Bedrock via OIDC → STS → SigV4, no long-lived AWS keys. Swap the backend from KV config, no redeploy.",
   },
   {
     id: "05.04 / Admission control",
     title: "Bursts queue, they don't fail red",
-    body: "A global FIFO admission queue caps in-flight runs at the container-pool size; work beyond capacity queues and drains in order instead of erroring. Per-container leases serialize runs that normalize to the same sandbox container id (ContainerBusy after ~10 min).",
+    body: "A global FIFO queue caps in-flight runs at the pool size — work beyond capacity drains in order instead of erroring. Per-container leases serialize same-container runs.",
   },
   {
     id: "05.05 / Session replay",
     title: "Scrub the walkthrough inline",
-    body: "product-demo drives a deployed app over CDP with native session recording; reviewers replay the run in a self-hosted rrweb player, linked straight from the check summary and the result email.",
+    body: "product-demo drives a deployed app over CDP with native session recording; reviewers replay it in an rrweb player, linked from the check summary and the result email.",
   },
   {
     id: "05.06 / Pure webhook mode",
     title: "Run with zero GitHub Actions",
-    body: "Install the GitHub App, set one secret, and the App's webhook deliveries become the trigger — runs fire on every PR with no .github/workflows file, no GitHub Actions minutes, and no shared HMAC secret to rotate. Onboarding another repo is just installing the App. Action mode (a GHA step) and Schedule mode (a Cron Trigger) hit the same Dispatcher when you want them; every result posts back as a GitHub Check Run.",
+    body: "Install the App, set one secret, and its webhook deliveries fire runs on every PR — no .github/workflows file, no GHA minutes, no HMAC to rotate. Onboarding a repo is just installing the App.",
   },
   {
     id: "05.07 / Observability signals",
     title: "Bring your own APM, vendor-blind",
-    body: "ci-triage-pr stays vendor-blind — it never queries your APM. Instead, a tiny consumer-side adapter (Datadog, SigNoz, HyperDX, or your own) prints the normalized signals/v1 shape next to your own credentials and feeds it into the run's signals input. The narrow-waist contract means any vendor is supported on day one without the Dispatcher ever holding an observability key.",
+    body: "ci-triage-pr never queries your APM. A tiny consumer-side adapter (Datadog, SigNoz, HyperDX, or your own) prints the normalized signals/v1 shape — any vendor works on day one, no observability key in the Dispatcher.",
   },
   {
     id: "05.08 / Email notify",
     title: "Results land in the inbox, not just the PR",
-    body: "A run can email a completion summary over Cloudflare Email Routing — a stakeholder-facing product-demo with the rrweb replay one click away, or a run-authored failure summary. Opt-in and default-secure: a logged no-op until the send_email binding is configured, with an optional EMAIL_ALLOWED_RECIPIENTS allowlist on top of Cloudflare's verified-destination-address constraint.",
+    body: "A run can email a completion summary over Cloudflare Email Routing, rrweb replay one click away. Opt-in and default-secure: a no-op until send_email is configured, with an optional recipient allowlist.",
   },
 ];
 
@@ -322,7 +322,7 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
             hidden={i !== 0}
           >
             <div class="snippets__blurb">
-              <span>{r.useCase}. <em>Recommended: {r.mode} mode.</em></span>
+              <span>{r.useCase}. <em>Recommended: {r.mode} mode{r.mode !== "Action" ? " — no ci.yml needed" : ""}.</em></span>
               <a href={`/recipes/${r.slug}`}>Full recipe →</a>
             </div>
             <div class="snippets__subtabs" role="tablist" aria-label={`${r.label} source files`}>
@@ -339,6 +339,9 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
                 >
                   <span class="snippets__subtab-lang">{s.file.lang}</span>
                   {s.file.name}
+                  {r.mode !== "Action" && s.file.name === "ci.yml" && (
+                    <span class="snippets__subtab-opt">optional</span>
+                  )}
                 </button>
               ))}
             </div>
