@@ -13,6 +13,7 @@ import {
   namespacedKey,
   namespacedKeys,
   parseBackend,
+  parseMaxDiffChars,
   parseMode,
   promptKey,
   resolveBackend,
@@ -47,6 +48,24 @@ describe("parseMode", () => {
   });
 });
 
+describe("parseMaxDiffChars", () => {
+  it("parses a positive integer override", () => {
+    expect(parseMaxDiffChars("100000", 60_000)).toBe(100_000);
+  });
+  it("falls back on unset / blank / non-numeric / non-positive", () => {
+    expect(parseMaxDiffChars(undefined, 60_000)).toBe(60_000);
+    expect(parseMaxDiffChars("  ", 60_000)).toBe(60_000);
+    expect(parseMaxDiffChars("100k", 60_000)).toBe(60_000);
+    expect(parseMaxDiffChars("1.5", 60_000)).toBe(60_000);
+    expect(parseMaxDiffChars("0", 60_000)).toBe(60_000);
+    expect(parseMaxDiffChars("-5", 60_000)).toBe(60_000);
+  });
+  it("clamps to [1_000, 1_000_000]", () => {
+    expect(parseMaxDiffChars("500", 60_000)).toBe(1_000);
+    expect(parseMaxDiffChars("9999999", 60_000)).toBe(1_000_000);
+  });
+});
+
 describe("resolveBackend", () => {
   it("resolves the default backend (opencode) from config — no API key", async () => {
     const store = {
@@ -60,6 +79,15 @@ describe("resolveBackend", () => {
     expect(resolved.mode).toBe("tools");
     // Catalog models get a catalog-context-sized diff cap.
     expect(resolved.maxDiffChars).toBe(60_000);
+  });
+
+  it("honours a CONFIG_KV maxDiffChars override (big-context catalog model)", async () => {
+    const store = {
+      [BACKEND_KEYS.opencode.modelKey]: "@cf/zai-org/glm-5.2",
+      [BACKEND_KEYS.opencode.maxDiffCharsKey]: "100000",
+    };
+    const resolved = await Effect.runPromise(resolveBackend(getter(store)));
+    expect(resolved.maxDiffChars).toBe(100_000);
   });
 
   it("resolves the reasonix backend", async () => {
