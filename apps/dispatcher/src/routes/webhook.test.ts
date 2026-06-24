@@ -274,7 +274,6 @@ describe("POST /v1/webhooks/github — run cooldown", () => {
     };
     expect(body1.dispatched.map((d) => d.run)).toContain("pr-review");
     const firstId = body1.dispatched.find((d) => d.run === "pr-review")!.executionId;
-    const createsAfterFirst = workflow.calls.length;
 
     // A new push (different sha, different delivery) on the SAME PR, inside
     // the 30-min window: pr-review must be skipped, not re-dispatched.
@@ -303,7 +302,14 @@ describe("POST /v1/webhooks/github — run cooldown", () => {
       reason: "cooldown",
     });
     expect(body2.skipped![0]!.retryAfterSec).toBeGreaterThan(0);
-    expect(workflow.calls).toHaveLength(createsAfterFirst);
+    // pr-review was created exactly once — the second delivery was cooled down.
+    // (offload-test also fires on pull_request and has no cooldown, so it is not
+    // part of this count.)
+    expect(
+      workflow.calls.filter(
+        (c) => (c.params as { run: string }).run === "pr-review",
+      ),
+    ).toHaveLength(1);
   });
 
   it("a different PR is unaffected by another PR's window", async () => {
@@ -329,7 +335,15 @@ describe("POST /v1/webhooks/github — run cooldown", () => {
       skipped?: unknown[];
     };
     expect(body.dispatched.map((d) => d.run)).toContain("pr-review");
+    // offload-test co-fires on every pull_request (the zero-GHA test path).
+    expect(body.dispatched.map((d) => d.run)).toContain("offload-test");
     expect(body.skipped).toBeUndefined();
-    expect(workflow.calls).toHaveLength(2);
+    // Both PRs dispatch pr-review (no cross-PR cooldown); count it specifically
+    // since offload-test co-fires on each.
+    expect(
+      workflow.calls.filter(
+        (c) => (c.params as { run: string }).run === "pr-review",
+      ),
+    ).toHaveLength(2);
   });
 });

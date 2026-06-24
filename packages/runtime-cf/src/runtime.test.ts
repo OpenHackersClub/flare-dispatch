@@ -124,6 +124,7 @@ const INPUT = {
   command: "pnpm test",
   secrets: [] as readonly string[],
   install: false,
+  failOnNonZeroExit: false,
 };
 
 /**

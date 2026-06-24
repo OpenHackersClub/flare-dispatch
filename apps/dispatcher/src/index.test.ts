@@ -188,10 +188,12 @@ describe("POST /v1/dispatch/:run — HMAC", () => {
 describe("POST /v1/dispatch/:run — validation", () => {
   it("valid HMAC + body failing the run inputs Schema → 400 with the error inlined", async () => {
     const { env, workflow } = fixture();
-    // `command` is required by offload-test inputs; omit it.
+    // `repo` is required by offload-test inputs; omit it. (`command` is now
+    // optional — webhook mode resolves it from CONFIG_KV — so it is no longer
+    // the field that fails validation.)
     const badBody = {
       ...validBody,
-      inputs: { repo: "owner/test-repo", sha: "abc123" },
+      inputs: { sha: "abc123", command: "pnpm test" },
     };
     const bodyText = JSON.stringify(badBody);
     const req = await dispatchRequest("offload-test", bodyText);
@@ -200,7 +202,7 @@ describe("POST /v1/dispatch/:run — validation", () => {
     const payload = (await res.json()) as { error: string; detail: string };
     expect(payload.error).toBe("invalid_inputs");
     // The Schema parse error is inlined and mentions the missing field.
-    expect(payload.detail).toContain("command");
+    expect(payload.detail).toContain("repo");
     expect(workflow.calls).toHaveLength(0);
   });
 
