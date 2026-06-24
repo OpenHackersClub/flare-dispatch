@@ -72,9 +72,15 @@ curl -fsS https://flare-dispatch-v0.<account>.workers.dev/health
 
 Install the `FlareDispatch` GitHub App on the repos you want to use it with (manifest in [`infra/github-app-manifest.json`](infra/github-app-manifest.json)). Full walkthrough: [`specs/05-byoc.md`](specs/05-byoc.md).
 
-### 2. Wire the GHA Action into a repo
+### 2. Pure webhook mode — zero GitHub Actions (recommended)
 
-Set on the repo (or org):
+The leanest path runs **without any GitHub Actions**: the App's webhook deliveries are the trigger. You already set `GITHUB_WEBHOOK_SECRET` in step 1, so there is nothing more to wire — **no `.github/workflows/` file, no GitHub Actions minutes, no `FLAREDISPATCH_HMAC` to rotate.** Onboarding another repo is just *install the App on it*.
+
+The shipped `pr-review` run declares a `pull_request` trigger, so it reviews every PR on the installed repos out of the box. Require the `flare-dispatch/<run>` check-run in branch protection (there is no GHA job to require). Authoring your own `triggers` block: [`specs/04-gha-integration.md` § Webhook mode](specs/04-gha-integration.md#webhook-mode).
+
+### 3. (Optional) Trigger from a GitHub Actions step instead
+
+Use Action mode when a run must interleave with other GHA jobs or use GHA's native `paths:` / `branches:` filters. Set on the repo (or org):
 
 - **Variable** `FLAREDISPATCH_ENDPOINT` — the deployed Dispatcher URL.
 - **Secret** `FLAREDISPATCH_HMAC` — the same value as the Worker's `HMAC_SECRET`.
