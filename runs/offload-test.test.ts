@@ -41,6 +41,7 @@ const baseInput = {
   command: "pnpm test",
   secrets: [] as readonly string[],
   install: false,
+  failOnNonZeroExit: false,
 } as const;
 
 describe("offload-test", () => {
@@ -239,6 +240,211 @@ describe("offload-test", () => {
 
         // Fail-fast: the command never ran.
         expect(handles.sandbox.execs).toHaveLength(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  // --- Pure webhook mode (specs/04-gha-integration.md § Pure webhook mode) ----
+
+  // A minimal `pull_request` webhook payload — the standard fields the trigger
+  // reads (`repository.full_name`, `pull_request.head.sha`, draft/user gates).
+  const prPayload = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    action: "synchronize",
+    repository: { full_name: "owner/name" },
+    pull_request: {
+      draft: false,
+      head: { sha: "abcdef0123456789cafe" },
+      user: { login: "alice" },
+    },
+    ...overrides,
+  });
+
+  it("webhook trigger — maps the pull_request payload to inputs", () => {
+    const trigger = offloadTest.triggers?.[0];
+    expect(trigger?.event).toBe("pull_request");
+    expect(trigger?.actions).toContain("synchronize");
+
+    const ctx = { payload: prPayload() };
+    // command omitted (resolved from CONFIG_KV in the body); fail-on-nonzero
+    // forced on so a red suite turns the check red; install/secrets restate the
+    // decoded-shape defaults the trigger return must carry.
+    expect(trigger?.inputs(ctx)).toEqual({
+      repo: "owner/name",
+      sha: "abcdef0123456789cafe",
+      failOnNonZeroExit: true,
+      install: false,
+      secrets: [],
+    });
+    // instanceId mirrors Action mode's `{run}:{repo_}:{sha12}`.
+    expect(trigger?.idempotencyKey(ctx)).toBe(
+      "offload-test:owner_name:abcdef012345",
+    );
+  });
+
+  it("webhook trigger — gate skips drafts and dependabot, admits real PRs", () => {
+    const gate = offloadTest.triggers?.[0]?.gate;
+    expect(gate?.({ payload: prPayload() })).toBe(true);
+    expect(
+      gate?.({
+        payload: prPayload({
+          pull_request: {
+            draft: true,
+            head: { sha: "abcdef0123456789cafe" },
+            user: { login: "alice" },
+          },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      gate?.({
+        payload: prPayload({
+          pull_request: {
+            draft: false,
+            head: { sha: "abcdef0123456789cafe" },
+            user: { login: "dependabot[bot]" },
+          },
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  it.effect(
+    "command resolution — a dispatch without `command` resolves it from CONFIG_KV (per-repo wins over the default)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "cargo test --workspace": { exitCode: 0 } },
+        config: {
+          // Per-repo key wins over the dispatcher-wide default.
+          "offload-test.command:owner/name": "cargo test --workspace",
+          "offload-test.command": "pnpm test",
+        },
+      });
+      // No `command` — webhook-shaped input.
+      const input = {
+        repo: "owner/name",
+        sha: "abc123",
+        secrets: [] as readonly string[],
+        install: false,
+        failOnNonZeroExit: false,
+      };
+
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(input);
+        expect(result.exitCode).toBe(0);
+
+        // The resolve-command step precedes the usual three.
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "resolve-command",
+          "checkout",
+          "exec",
+          "upload-log",
+        ]);
+        expect(handles.sandbox.execs.map((e) => e.command)).toContain(
+          "cargo test --workspace",
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "command resolution — falls back to the dispatcher-wide `offload-test.command` when no per-repo key is set",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0 } },
+        config: { "offload-test.command": "pnpm test" },
+      });
+      const input = {
+        repo: "owner/name",
+        sha: "abc123",
+        secrets: [] as readonly string[],
+        install: false,
+        failOnNonZeroExit: false,
+      };
+
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(input);
+        expect(result.exitCode).toBe(0);
+        expect(handles.sandbox.execs.map((e) => e.command)).toContain(
+          "pnpm test",
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "command resolution — no `command` and no CONFIG_KV fails fast with StepFailed before checkout",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 0 } },
+        // no `config` seed — neither command key resolves.
+      });
+      const input = {
+        repo: "owner/name",
+        sha: "abc123",
+        secrets: [] as readonly string[],
+        install: false,
+        failOnNonZeroExit: false,
+      };
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(offloadTest.run(input));
+        expect(Exit.isFailure(exit)).toBe(true);
+        const tag = Exit.isFailure(exit)
+          ? Option.match(Cause.failureOption(exit.cause), {
+              onSome: (f) => (f as { _tag?: string })._tag,
+              onNone: () => undefined,
+            })
+          : undefined;
+        expect(tag).toBe("StepFailed");
+        // Fail-fast: never cloned, never exec'd.
+        expect(handles.sandbox.clones).toHaveLength(0);
+        expect(handles.sandbox.execs).toHaveLength(0);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "failOnNonZeroExit — a non-zero exit fails the run with AcceptanceFailed (red check), carrying the exit code",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 2, stderr: "2 failing" } },
+      });
+      const input = { ...baseInput, failOnNonZeroExit: true };
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(offloadTest.run(input));
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit)
+          ? Option.getOrUndefined(Cause.failureOption(exit.cause))
+          : undefined;
+        expect((failure as { _tag?: string })?._tag).toBe("AcceptanceFailed");
+        expect((failure as { exitCode?: number })?.exitCode).toBe(2);
+
+        // The suite still ran end-to-end — the failure is the verdict, not a
+        // skipped step. checkout → exec → upload-log all recorded.
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "exec",
+          "upload-log",
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "failOnNonZeroExit defaults off — Action-mode red path stays a successful Effect surfacing exitCode",
+    () => {
+      const { layer } = makeCFRuntimeTest({
+        sandboxProgram: { "pnpm test": { exitCode: 1 } },
+      });
+      // baseInput carries no `failOnNonZeroExit` — the default-off path.
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(offloadTest.run(baseInput));
+        expect(Exit.isSuccess(exit)).toBe(true);
+        if (Exit.isSuccess(exit)) expect(exit.value.exitCode).toBe(1);
       }).pipe(Effect.provide(layer));
     },
   );

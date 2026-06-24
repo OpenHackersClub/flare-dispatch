@@ -145,7 +145,16 @@ This is the recommended onboarding path for most teams. The ROI is concrete:
 | Shared secrets to rotate | `FLAREDISPATCH_HMAC` + the App webhook secret | **the App webhook secret only** |
 | Who has to merge a change | a repo committer (the workflow file) | **an org/repo admin, once (the App install)** |
 
-For an org with many repos, this is the difference between "PR a workflow file into every repo and keep them in sync" and "install one App." The shipped agentic reviewer [`pr-review`](02-runs.md) already declares a `pull_request` trigger, so the moment `GITHUB_WEBHOOK_SECRET` is set it reviews every PR on every installed repo with no per-repo wiring.
+For an org with many repos, this is the difference between "PR a workflow file into every repo and keep them in sync" and "install one App." Two shipped runs declare a `pull_request` trigger, so the moment `GITHUB_WEBHOOK_SECRET` is set they fire on every PR of every installed repo with no per-repo wiring:
+
+- [`pr-review`](02-runs.md) — the agentic reviewer, annotating the diff.
+- [`offload-test`](02-runs.md) — the **test runner**. It posts a green/red `flare-dispatch/offload-test` check that branch protection requires *instead of a GHA test job*. Its `pull_request` trigger omits the command (a webhook trigger can't read config) and sets `failOnNonZeroExit: true` so a failing suite turns the check red; the run body resolves the command from CONFIG_KV — `offload-test.command:<owner/repo>` (per-repo), falling back to the dispatcher-wide `offload-test.command`. Set it once per repo:
+
+  ```sh
+  wrangler kv key put --binding=CONFIG_KV "offload-test.command:owner/repo" "cargo test --workspace"
+  ```
+
+  This is what makes a repo's **tests** run with zero GitHub Actions — not just its code review.
 
 **Enabling it** is one secret and a redeploy:
 
