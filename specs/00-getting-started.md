@@ -5,11 +5,16 @@ description: Deploy the FlareDispatch Dispatcher into your own Cloudflare accoun
 
 # Getting Started
 
-FlareDispatch offloads the expensive half of GitHub Actions onto a Cloudflare stack **you own** — Workflows orchestrate, Containers execute, Browser Rendering drives e2e, R2 holds cache and artifacts. You `wrangler deploy` one Worker (the **Dispatcher**) into your own Cloudflare account, install your **own** GitHub App, and point a GHA step at it. No multi-tenant SaaS; trust ends at your CF account.
+FlareDispatch offloads the expensive half of GitHub Actions onto a Cloudflare stack **you own** — Workflows orchestrate, Containers execute, Browser Rendering drives e2e, R2 holds cache and artifacts. You `wrangler deploy` one Worker (the **Dispatcher**) into your own Cloudflare account, install your **own** GitHub App, and then either let runs fire straight from the App (**pure webhook mode**) or point a GHA step at it (**Action mode**). No multi-tenant SaaS; trust ends at your CF account.
 
 This page is the fast path. The depth references are [BYOC Deployment](/docs/05-byoc) (every binding, secret, and the full App flow), [GHA Integration](/docs/04-gha-integration) (the three trigger modes), and the [README Quickstart](https://github.com/OpenHackersClub/flare-dispatch#quickstart).
 
-> **What you end up with:** a GHA workflow calls the Action, which HMAC-signs a dispatch and POSTs your Dispatcher. The Dispatcher runs the job in a Container and reports the result back to the PR as a `flare-dispatch/<run>` **check-run**. The GHA step finishes in seconds — zero GitHub minutes are spent on the execution itself.
+> **Two ways a run can fire — pick either, or both:**
+>
+> - **Pure webhook mode — zero GitHub Actions.** Install the GitHub App, set one secret (`GITHUB_WEBHOOK_SECRET`), and runs fire themselves on every matching PR / push / deploy event. **No `.github/workflows/` file, no GitHub Actions minutes spent at all, no shared HMAC secret to rotate.** This is the fastest path to value and the one most teams want — onboarding a repo is just *install the App*.
+> - **Action mode — GitHub Actions–triggered.** A GHA workflow calls the Action, which HMAC-signs a dispatch and POSTs your Dispatcher. Use it when a run must interleave with other GHA jobs (lint → run → deploy) or use GHA's native `paths:` / `branches:` / `workflow_dispatch` filters. The GHA step finishes in seconds — zero GitHub minutes are spent on the *execution* itself (only the ~10 s dispatch step).
+>
+> Either way the Dispatcher runs the job in a Container and reports back to the PR as a `flare-dispatch/<run>` **check-run**. Stages 1–2 below (deploy + install the App) are shared; only stage 3 differs between the two paths.
 
 ## Prerequisites
 
@@ -55,11 +60,13 @@ Use the commands exactly as documented; do not invent bindings or secrets.
 
 The agent does the same steps as the [Manual setup](#manual-setup) below — read those if you want to know what it is doing, or if anything needs a human decision (which GitHub org owns the App, which repos to install on).
 
+> **For pure webhook mode (zero GitHub Actions),** replace step 5 with: *"Set the Worker secret `GITHUB_WEBHOOK_SECRET` (the App's webhook secret from the install Success page) and `wrangler deploy`. Do not add any `.github/workflows/` file — the App fires the Dispatcher directly."* The shipped `pr-review` run then reviews every PR on the installed repos with no further wiring.
+
 ---
 
 ## Manual setup
 
-Three stages: **deploy the Dispatcher → install the GitHub App → wire the Action**.
+Three stages: **deploy the Dispatcher → install the GitHub App → choose how runs fire** (pure webhook, or Action). The first two stages are identical for both paths.
 
 ### 1. Deploy the Dispatcher
 
@@ -117,9 +124,42 @@ The secrets:
 
 Full walkthrough, the manifest permissions, and the CSRF-state caveat are in [BYOC Deployment § GitHub App setup](/docs/05-byoc).
 
-### 3. Wire the GHA Action into a repo
+### 3. Choose how runs fire
 
-Set on the repo (org-level works too):
+Stages 1–2 leave you with a deployed Dispatcher and an installed App. Now pick the trigger path. **You can do just one, or both** — they share the same Dispatcher and the same check-run callback.
+
+---
+
+### 3a. Pure webhook mode — zero GitHub Actions (recommended)
+
+The leanest path: the App fires the Dispatcher directly on every matching GitHub event, so a repo onboards with **nothing in `.github/workflows/` and zero GitHub Actions minutes**. This is opt-in — you turn it on by provisioning the App webhook secret:
+
+```sh
+# The Success page from step 2 printed this value; or rotate it from the App settings page.
+wrangler secret put GITHUB_WEBHOOK_SECRET     # the App's webhook secret
+wrangler deploy
+```
+
+That's the entire wiring. Without this secret the webhook route `503`s and refuses unsigned bodies, so a run never fires on a push until you opt in here.
+
+What fires now: every **registered run that declares a `triggers` block** evaluates against each delivery and fires when its gate passes. The shipped agentic reviewer [`pr-review`](/docs/02-runs) subscribes to `pull_request` out of the box, so once the secret is set it reviews every PR on the installed repos — no per-repo configuration. To onboard another repo, you just **install the App on it**; there is no workflow file to copy. Authoring a `triggers` block for your own run is in [GHA Integration § Webhook mode](/docs/04-gha-integration#webhook-mode).
+
+Why teams pick this path:
+
+- **No GitHub Actions minutes at all** — not even the ~10 s dispatch step Action mode spends. The trigger is GitHub's own webhook delivery.
+- **No `.github/workflows/` to maintain** — nothing to copy across repos, nothing to keep in sync, nothing for a repo owner to merge.
+- **One less long-lived secret** — pure webhook mode never provisions or rotates `FLAREDISPATCH_HMAC`; the only inbound credential is the App's own webhook secret.
+- **Onboarding = install the App** — the single action that already grants check-run write also becomes the trigger.
+
+Then **require the `flare-dispatch/<run>` check-run in branch protection** (not a GHA job — there is none).
+
+Skip to [Verify](#verify). The CLI dispatch there exercises the Dispatcher end-to-end without needing a GHA workflow.
+
+---
+
+### 3b. Action mode — trigger from a GitHub Actions step
+
+Use this when a run must interleave with other GHA jobs, or you want GHA's native trigger filters. Set on the repo (org-level works too):
 
 - **Variable** `FLAREDISPATCH_ENDPOINT` — the deployed Dispatcher URL.
 - **Secret** `FLAREDISPATCH_HMAC` — the **same value** as the Worker's `HMAC_SECRET`.
@@ -151,7 +191,7 @@ Key Action inputs (full table in the [Action README](https://github.com/OpenHack
 | `mode` | no | `fire-and-forget` | **V0 supports `fire-and-forget` only**; `await` is Planned (V1) and fails the step today |
 | `installation-id` | no | `0` | App installation id; optional once the Dispatcher has seen the repo |
 
-> Other trigger modes need no `.github/workflows/` change at all: **Webhook mode** (the App fires the Dispatcher directly — opt-in, set `GITHUB_WEBHOOK_SECRET`) and **Schedule mode** (a Cloudflare Cron Trigger). See [GHA Integration](/docs/04-gha-integration).
+> Prefer to skip the workflow file entirely? Use [**pure webhook mode**](#3a-pure-webhook-mode--zero-github-actions-recommended) above — the App fires the Dispatcher directly. The third mode, **Schedule mode** (a Cloudflare Cron Trigger for wall-clock cadences like nightly sweeps), also needs no `.github/workflows/` change. See [GHA Integration](/docs/04-gha-integration).
 
 ---
 
@@ -184,10 +224,10 @@ The Dispatcher opens a check-run on the commit and reports `success` once `echo 
 - [ ] Workers Paid plan active
 - [ ] `wrangler.jsonc` has the bucket / D1 / `CONFIG_KV` ids filled in by wrangler
 - [ ] D1 migrations applied
-- [ ] Worker secrets set (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`; `HMAC_SECRET` for the Action path)
+- [ ] Worker secrets set (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`; **`GITHUB_WEBHOOK_SECRET`** for pure webhook mode, or `HMAC_SECRET` for the Action path)
 - [ ] GitHub App created and installed on the target repos
 - [ ] `/health` returns ok with the 11-run list
-- [ ] One successful dispatch end-to-end (CLI or Action)
+- [ ] One successful trigger end-to-end — open a PR (pure webhook mode) or run a CLI/Action dispatch
 - [ ] Check-run appears on the PR, and is the **required** status check on the protected branch
 
 Next: browse the [Runs catalog](/docs/02-runs), the [recipes](/recipes), or harden the deploy via [Trust & Threat Model](/docs/07-trust-model).

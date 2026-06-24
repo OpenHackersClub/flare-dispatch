@@ -20,8 +20,8 @@ const value = [
   },
   {
     id: "03 / Fit",
-    title: "Drops into your setup",
-    body: "Keep GitHub Actions as your trigger and PR gate, or let runs fire autonomously from the GitHub App or a cron schedule. One wrangler deploy into the Cloudflare account you already pay for. Results land as a GitHub Check Run — no new dashboard, no runner fleet to operate.",
+    title: "Install the App — or keep Actions",
+    body: "Pure webhook mode is the leanest path: install the GitHub App and runs fire themselves on every PR — no .github/workflows file, zero GitHub Actions minutes, one secret to set. Or keep GitHub Actions as the trigger and PR gate when a run must interleave with other jobs. Either way it's one wrangler deploy into the Cloudflare account you already pay for, and results land as a GitHub Check Run — no new dashboard, no runner fleet.",
   },
 ];
 
@@ -55,9 +55,9 @@ const capabilities = [
     body: "product-demo drives a deployed app over CDP with native session recording; reviewers replay the run in a self-hosted rrweb player, linked straight from the check summary and the result email.",
   },
   {
-    id: "05.06 / Three trigger modes",
-    title: "Action, Schedule, or Webhook",
-    body: "Fire a run from a GitHub Actions step, a Cloudflare Cron Trigger, or the GitHub App webhook (opt-in) — one Dispatcher, every result posted back as a GitHub Check Run.",
+    id: "05.06 / Pure webhook mode",
+    title: "Run with zero GitHub Actions",
+    body: "Install the GitHub App, set one secret, and the App's webhook deliveries become the trigger — runs fire on every PR with no .github/workflows file, no GitHub Actions minutes, and no shared HMAC secret to rotate. Onboarding another repo is just installing the App. Action mode (a GHA step) and Schedule mode (a Cron Trigger) hit the same Dispatcher when you want them; every result posts back as a GitHub Check Run.",
   },
   {
     id: "05.07 / Observability signals",
@@ -140,8 +140,10 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
       <p class="hero__sub reveal" data-delay="3">
         FlareDispatch moves agentic code review, Playwright e2e, acceptance suites,
         sharded matrices, and security scans off GitHub Actions and onto Cloudflare —
-        billed per vCPU-second on your own account. Trigger a run from GitHub Actions,
-        the GitHub App, or a cron schedule; runs take the heavy compute.
+        billed per vCPU-second on your own account. Trigger from a GitHub Actions step
+        or a cron schedule — or skip Actions entirely: install the GitHub App and runs
+        fire themselves on every PR, with zero GitHub Actions minutes and no workflow
+        files to maintain.
       </p>
       <div class="hero__cta reveal" data-delay="4">
         <a class="btn" href="/docs/prd">Read the PRD</a>

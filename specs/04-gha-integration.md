@@ -131,6 +131,31 @@ Use **only** when a follow-up GHA step needs the result inline — e.g. a deploy
 
 The `FlareDispatch` GitHub App webhook fires the Dispatcher's `/v1/webhooks/github` directly. No GHA workflow file is involved.
 
+### Pure webhook mode — running with *zero* GitHub Actions
+
+Webhook mode is not just "a way to trigger a run" — it's a way to run **all** of FlareDispatch without GitHub Actions in the loop at all. Install the App, set `GITHUB_WEBHOOK_SECRET`, and the App's own webhook deliveries become the trigger. There is no `.github/workflows/` file, no Action step, and **not a single GitHub Actions minute is spent** — not even the ~10 s a fire-and-forget Action dispatch costs.
+
+This is the recommended onboarding path for most teams. The ROI is concrete:
+
+| | Action mode | **Pure webhook mode** |
+|---|---|---|
+| GHA minutes per trigger | ~10 s (the dispatch step) | **0** — GitHub's webhook delivery is the trigger |
+| Files added to each repo | a `.github/workflows/*.yml` step | **none** |
+| Onboard another repo | copy the workflow + set repo var/secret | **install the App** |
+| Shared secrets to rotate | `FLAREDISPATCH_HMAC` + the App webhook secret | **the App webhook secret only** |
+| Who has to merge a change | a repo committer (the workflow file) | **an org/repo admin, once (the App install)** |
+
+For an org with many repos, this is the difference between "PR a workflow file into every repo and keep them in sync" and "install one App." The shipped agentic reviewer [`pr-review`](02-runs.md) already declares a `pull_request` trigger, so the moment `GITHUB_WEBHOOK_SECRET` is set it reviews every PR on every installed repo with no per-repo wiring.
+
+**Enabling it** is one secret and a redeploy:
+
+```sh
+wrangler secret put GITHUB_WEBHOOK_SECRET   # the App's webhook secret (shown on the install Success page)
+wrangler deploy
+```
+
+Until that secret exists the route `503`s and refuses unsigned bodies — pure webhook mode is opt-in and fails closed, so a fresh deploy never fires on a push by accident. Branch protection then requires the `flare-dispatch/<run>` check-run; there is no GHA job to require. Full setup context: [Getting Started § 3a](00-getting-started.md#3a-pure-webhook-mode--zero-github-actions-recommended).
+
 ### When to use
 
 - The run should execute on **every** push without burning GHA minutes (PR review, smoke).
