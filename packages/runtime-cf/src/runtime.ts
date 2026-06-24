@@ -212,9 +212,12 @@ export type CFRuntimeLiveOptions = {
   readonly cloudflareAccountId?: string;
   /**
    * Optional `cf-aig-authorization` token (`AI_GATEWAY_AUTH_TOKEN` secret) —
-   * forwarded as a header on the `bedrock/*` route only when the operator's
-   * AI Gateway has [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/)
-   * turned on. Orthogonal to AWS SigV4.
+   * forwarded as a header on every gateway-bound route (`anthropic/*`,
+   * `deepseek/*`, `bedrock/*`) when the operator's AI Gateway has
+   * [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/)
+   * turned on. Orthogonal to AWS SigV4. The `@cf/*` Workers AI route uses the
+   * binding (no header seam), so an authenticated gateway must allow first-party
+   * Workers AI binding traffic.
    */
   readonly aiGatewayAuthToken?: string;
 };

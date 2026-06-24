@@ -264,6 +264,32 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
     );
     expect(exit._tag).toBe("Failure");
   });
+
+  it("forwards cf-aig-authorization when an auth token is set (authenticated gateway)", async () => {
+    const { ai, seen } = stubGatewayAi({ content: [{ type: "text", text: "ok" }] });
+    await Effect.runPromise(
+      modelGateway
+        .complete({ model: "anthropic/claude-sonnet-4-6", system: "s", user: "u" })
+        .pipe(
+          Effect.provide(makeModelGatewayLive(ai, "g", undefined, "tok_abc")),
+        ),
+    );
+    expect(
+      (seen.request?.headers as Record<string, string>)["cf-aig-authorization"],
+    ).toBe("Bearer tok_abc");
+  });
+
+  it("omits cf-aig-authorization when no auth token is configured", async () => {
+    const { ai, seen } = stubGatewayAi({ content: [{ type: "text", text: "ok" }] });
+    await run(ai, "g", {
+      model: "anthropic/claude-sonnet-4-6",
+      system: "s",
+      user: "u",
+    });
+    expect(
+      "cf-aig-authorization" in (seen.request?.headers as Record<string, string>),
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -371,6 +397,22 @@ describe("makeModelGatewayLive — deepseek universal route", () => {
         .pipe(Effect.provide(makeModelGatewayLive(ai, undefined))),
     );
     expect(exit._tag).toBe("Failure");
+  });
+
+  it("forwards cf-aig-authorization when an auth token is set (authenticated gateway)", async () => {
+    const { ai, seen } = stubGatewayAi({
+      choices: [{ message: { content: "ok" } }],
+    });
+    await Effect.runPromise(
+      modelGateway
+        .complete({ model: "deepseek/deepseek-reasoner", system: "s", user: "u" })
+        .pipe(
+          Effect.provide(makeModelGatewayLive(ai, "g", undefined, "tok_xyz")),
+        ),
+    );
+    expect(
+      (seen.request?.headers as Record<string, string>)["cf-aig-authorization"],
+    ).toBe("Bearer tok_xyz");
   });
 });
 

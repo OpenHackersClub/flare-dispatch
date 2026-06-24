@@ -150,6 +150,21 @@ export type AiBinding = {
   readonly gateway?: (gatewayId: string) => AiGatewayBinding;
 };
 
+/**
+ * The `cf-aig-authorization` header for an [Authenticated
+ * Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/),
+ * or `{}` when no token is configured. Spread into a universal-endpoint
+ * request's `headers` (the gateway forwards them verbatim) so the BYOK routes
+ * authenticate against a gateway with authentication turned on. An empty object
+ * keeps the unauthenticated-gateway path byte-identical.
+ */
+const aigAuthHeader = (
+  gatewayAuthToken: string | undefined,
+): Record<string, string> =>
+  gatewayAuthToken !== undefined
+    ? { "cf-aig-authorization": `Bearer ${gatewayAuthToken}` }
+    : {};
+
 /** Map a thrown binding error to a `ModelGatewayError.reason`. */
 const reasonFor = (
   message: string,
@@ -319,6 +334,7 @@ const completeWorkersAi = (
 const completeAnthropic = (
   ai: AiBinding,
   gatewayId: string | undefined,
+  gatewayAuthToken: string | undefined,
   req: ModelCompletionRequest,
 ): Effect.Effect<ModelCompletionResult, ModelGatewayError> =>
   Effect.gen(function* () {
@@ -355,6 +371,7 @@ const completeAnthropic = (
             // The gateway forwards headers verbatim — Anthropic rejects a
             // Messages call without its API version pin.
             "anthropic-version": ANTHROPIC_VERSION,
+            ...aigAuthHeader(gatewayAuthToken),
           },
           query: anthropicBody(req, model),
         }),
@@ -497,6 +514,7 @@ const fromOpenAiChat = (
 const completeDeepSeek = (
   ai: AiBinding,
   gatewayId: string | undefined,
+  gatewayAuthToken: string | undefined,
   req: ModelCompletionRequest,
 ): Effect.Effect<ModelCompletionResult, ModelGatewayError> =>
   Effect.gen(function* () {
@@ -528,7 +546,10 @@ const completeDeepSeek = (
         gateway.run({
           provider: "deepseek",
           endpoint: "chat/completions",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            ...aigAuthHeader(gatewayAuthToken),
+          },
           query: deepseekBody(req, model),
         }),
       catch: (cause) => {
@@ -714,8 +735,13 @@ const completeBedrock = (
  *                             Required for the `bedrock/*` route — it's the
  *                             first segment of the AI Gateway Bedrock URL.
  * @param gatewayAuthToken     optional `cf-aig-authorization` token for
- *                             Authenticated Gateway. Forwarded as a header on
- *                             the `bedrock/*` route only.
+ *                             Authenticated Gateway. Forwarded on every route
+ *                             that hits the gateway — `anthropic/*`,
+ *                             `deepseek/*`, and `bedrock/*`. The `@cf/*`
+ *                             Workers AI route goes through the binding (not the
+ *                             universal endpoint), which has no header seam, so
+ *                             an authenticated gateway must allow first-party
+ *                             Workers AI binding traffic.
  */
 export const makeModelGatewayLive = (
   ai: AiBinding,
@@ -728,9 +754,9 @@ export const makeModelGatewayLive = (
       req.model.startsWith(BEDROCK_PREFIX)
         ? completeBedrock(cloudflareAccountId, gatewayId, gatewayAuthToken, req)
         : req.model.startsWith(ANTHROPIC_PREFIX)
-          ? completeAnthropic(ai, gatewayId, req)
+          ? completeAnthropic(ai, gatewayId, gatewayAuthToken, req)
           : req.model.startsWith(DEEPSEEK_PREFIX)
-            ? completeDeepSeek(ai, gatewayId, req)
+            ? completeDeepSeek(ai, gatewayId, gatewayAuthToken, req)
             : completeWorkersAi(ai, gatewayId, req),
   };
 
