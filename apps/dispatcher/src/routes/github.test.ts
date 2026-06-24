@@ -22,7 +22,7 @@ import {
 } from "vitest";
 import { handleRequest } from "../router";
 import { makeFakeEnv, makeFakeR2, makeFakeWorkflow } from "../test-helpers";
-import { handleInstallNew, htmlEscape } from "./github";
+import { handleInstallLlms, handleInstallNew, htmlEscape } from "./github";
 
 const HMAC_SECRET = "github-route-tests-secret-please-rotate";
 
@@ -102,6 +102,9 @@ describe("GET /v1/github/install/new (owner chooser)", () => {
     expect(body).not.toContain("document.getElementById('manifest-form')");
     expect(body).not.toContain("github.com/settings/apps/new");
     expect(body).not.toContain("github.com/organizations/");
+    // The chooser surfaces the agent runbook so an operator can hand the
+    // install to an LLM agent.
+    expect(body).toContain('href="/v1/github/install/llms.txt"');
   });
 
   it("405s a non-GET method", async () => {
@@ -111,6 +114,55 @@ describe("GET /v1/github/install/new (owner chooser)", () => {
       env,
     );
     expect(res.status).toBe(405);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `GET /v1/github/install/llms.txt` (agent runbook)
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/github/install/llms.txt", () => {
+  const LLMS_URL = `${ORIGIN}/v1/github/install/llms.txt`;
+
+  it("serves a text/markdown runbook with the request origin substituted in", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(new Request(LLMS_URL), env);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "text/markdown; charset=utf-8",
+    );
+    const body = await res.text();
+    // Origin-aware commands point back at THIS Dispatcher.
+    expect(body).toContain(`${ORIGIN}/v1/github/install/new`);
+    expect(body).toContain(`${ORIGIN}/health`);
+    // The interactive-step caveat and the wrangler commands an agent runs.
+    expect(body).toContain("wrangler secret put GITHUB_APP_ID");
+    expect(body).toContain("wrangler secret put GITHUB_APP_PRIVATE_KEY");
+    expect(body).toContain("wrangler deploy");
+  });
+
+  it("405s a non-GET method", async () => {
+    const env = makeEnv();
+    const res = await handleRequest(
+      new Request(LLMS_URL, { method: "POST" }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("substitutes a localhost origin (wrangler dev)", () => {
+    const res = handleInstallLlms(
+      new Request("http://localhost:8787/v1/github/install/llms.txt"),
+    );
+    expect(res.headers.get("content-type")).toBe(
+      "text/markdown; charset=utf-8",
+    );
+    // Synchronous body read is fine — `handleInstallLlms` returns a Response
+    // built from a string, no streaming.
+    return res.text().then((body) => {
+      expect(body).toContain("http://localhost:8787/v1/github/install/new");
+    });
   });
 });
 

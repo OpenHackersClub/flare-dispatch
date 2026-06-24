@@ -152,6 +152,141 @@ const jsonError = (
     headers: { "content-type": "application/json" },
   });
 
+// ---------------------------------------------------------------------------
+// Brand shell — the "weaver" design system shared with the docs/landing site.
+// ---------------------------------------------------------------------------
+//
+// These install pages are served straight from the Worker as inline HTML —
+// there is no Astro build, no bundler, no shared component layer to import. To
+// keep the tech stack that simple while still matching the landing page's
+// look, we replicate a faithful *subset* of `apps/docs/src/styles/global.css`
+// here: the same tokens (warm paper / midnight terminal, single vermillion
+// accent), the same Fraunces display + General Sans body + Iosevka mono type
+// stack pulled from the same CDNs, and the same `.section-marker` / `.btn`
+// idioms. Light and dark are driven by `prefers-color-scheme` (no toggle) so
+// there's zero JS to ship for theming. If the design system on the docs site
+// evolves materially, mirror the token block below.
+
+/** Canonical docs/landing origin — the pages link back here for the full story. */
+const DOCS_ORIGIN = "https://flare-dispatch.openhackers.club";
+/** The public repo — `#quickstart` is the deploy-from-zero entry point. */
+const REPO_URL = "https://github.com/OpenHackersClub/flare-dispatch";
+
+/**
+ * The shared stylesheet. Inlined into every install page's `<head>`. A trimmed
+ * port of the docs design system — tokens + base type + the handful of
+ * components these pages actually use (`.container`, `.section-marker`,
+ * `.btn`, `.card`, `pre`, callouts).
+ */
+const BRAND_STYLE = `
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,200..900,0..100,0..1&display=swap");
+@import url("https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap");
+@font-face{font-family:"Iosevka Web";font-weight:400;font-style:normal;font-display:swap;src:url("https://cdn.jsdelivr.net/npm/@fontsource-variable/iosevka@5.1.0/files/iosevka-latin-wght-normal.woff2") format("woff2")}
+:root{
+  --paper:#f4f1ea;--paper-soft:#ebe6d8;--surface:#fdfbf5;--ink:#13131a;--ink-soft:#2b2c36;
+  --muted:#5c5c66;--muted-soft:#8a8a91;--hairline:#d8d2c5;--hairline-strong:#b4ad9d;
+  --accent:#ff3d00;--accent-soft:#ffe7df;--code-bg:#fdfbf5;--code-border:#e0dac9;
+  --font-display:"Fraunces","Times New Roman",serif;
+  --font-body:"General Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:"Iosevka Web","SF Mono",ui-monospace,monospace;
+  --radius:2px;color-scheme:light dark;
+}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#0a0a0f;--paper-soft:#11121a;--surface:#13141b;--ink:#eae7dd;--ink-soft:#b8b6ac;
+  --muted:#7a7d8c;--muted-soft:#51545f;--hairline:#23252e;--hairline-strong:#353846;
+  --accent:#ff7041;--accent-soft:#2b1810;--code-bg:#11121a;--code-border:#23252e;
+}}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--paper);color:var(--ink);font-family:var(--font-body);font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-feature-settings:"ss01","cv11"}
+body{margin:0;min-height:100vh;background:var(--paper);background-image:radial-gradient(rgba(0,0,0,0.012) 1px,transparent 1px),radial-gradient(rgba(0,0,0,0.008) 1px,transparent 1px);background-size:3px 3px,7px 7px;background-position:0 0,1px 1px}
+@media (prefers-color-scheme:dark){body{background-image:radial-gradient(rgba(255,255,255,0.015) 1px,transparent 1px),radial-gradient(rgba(255,255,255,0.008) 1px,transparent 1px)}}
+::selection{background:var(--accent);color:var(--paper)}
+h1,h2,h3{font-family:var(--font-display);font-weight:400;font-variation-settings:"opsz" 100,"SOFT" 50;letter-spacing:-0.015em;line-height:1.1;margin:0}
+h1{font-size:2.25rem;margin-bottom:.25rem}
+h2{font-size:1.6rem;margin:2.5rem 0 .75rem}
+h3{font-size:1.15rem;margin:0 0 .25rem}
+p{margin:0 0 1em}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+a:hover{border-bottom-color:var(--accent)}
+code{font-family:var(--font-mono);font-size:.875em}
+.container{max-width:46rem;margin:0 auto;padding:0 1.5rem}
+.masthead{border-bottom:1px solid var(--hairline);margin-bottom:2.5rem}
+.masthead__inner{max-width:46rem;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:baseline;gap:.7rem}
+.wordmark{font-family:var(--font-display);font-size:1.15rem;letter-spacing:-0.01em;color:var(--ink);border:none}
+.wordmark b{font-weight:600}
+.wordmark .spark{color:var(--accent)}
+.tagline{font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.section-marker{font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:inline-flex;align-items:center;gap:.6em;margin-bottom:.6rem}
+.section-marker::before{content:"";display:inline-block;width:1.1rem;height:1px;background:var(--hairline-strong)}
+.lede{font-size:1.0625rem;color:var(--ink-soft)}
+.btn{display:inline-flex;align-items:center;gap:.5rem;padding:.7rem 1.2rem;font-family:var(--font-mono);font-size:.8125rem;letter-spacing:.05em;border:1px solid var(--ink);background:var(--ink);color:var(--paper);border-radius:var(--radius);transition:all 160ms cubic-bezier(0.2,0.8,0.2,1)}
+.btn:hover{background:var(--accent);border-color:var(--accent);color:var(--paper);transform:translateY(-1px)}
+.btn--ghost{background:transparent;color:var(--ink);border-color:var(--hairline-strong)}
+.btn--ghost:hover{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.card{border:1px solid var(--hairline);border-radius:var(--radius);background:var(--surface);padding:1.25rem 1.4rem;margin:1.1rem 0}
+.card h2,.card h3{margin-top:0}
+.hint{color:var(--muted);font-size:.8125rem}
+label{display:block;margin-bottom:.4rem;font-size:.875rem}
+input[type=text]{font:inherit;font-size:.9375rem;padding:.5rem .65rem;min-width:16rem;background:var(--surface);color:var(--ink);border:1px solid var(--hairline-strong);border-radius:var(--radius)}
+input[type=text]:focus{outline:2px solid var(--accent);outline-offset:1px}
+pre{background:var(--code-bg);border:1px solid var(--code-border);border-radius:var(--radius);padding:.75rem 1rem;overflow-x:auto;font-family:var(--font-mono);font-size:.8125rem;line-height:1.5;white-space:pre-wrap;word-break:break-all;margin:.5rem 0}
+.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:.75rem 1rem;border-radius:0 var(--radius) var(--radius) 0;margin:1.5rem 0}
+.callout--warn{border-left-color:#d97706;background:color-mix(in srgb,#d97706 12%,var(--surface))}
+.callout--err{border-left-color:#dc2626;background:color-mix(in srgb,#dc2626 12%,var(--surface))}
+.cta{display:flex;flex-wrap:wrap;gap:.75rem;margin:1.5rem 0}
+.colophon{border-top:1px solid var(--hairline);margin-top:3.5rem;padding:1.75rem 0 3rem;font-family:var(--font-mono);font-size:.75rem;letter-spacing:.04em;color:var(--muted)}
+.colophon a{color:var(--muted)}
+.colophon a:hover{color:var(--accent)}
+.colophon nav{display:flex;flex-wrap:wrap;gap:1.1rem;margin-top:.4rem}
+`;
+
+/**
+ * Render a complete branded HTML document. `marker` is the mono `§` eyebrow,
+ * `heading` the `<h1>`, `bodyHtml` the already-escaped page content. Every
+ * page shares the masthead wordmark and the docs colophon so the install flow
+ * reads as one continuation of the landing site.
+ */
+const brandPage = (opts: {
+  title: string;
+  marker: string;
+  heading: string;
+  bodyHtml: string;
+  /** Extra markup injected at end of `<body>` (e.g. the auto-submit script). */
+  tail?: string;
+}): string => `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${opts.title}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex">
+  <style>${BRAND_STYLE}</style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead__inner">
+      <a class="wordmark" href="${DOCS_ORIGIN}">Flare<b>Dispatch</b><span class="spark">.</span></a>
+      <span class="tagline">GitHub App setup</span>
+    </div>
+  </header>
+  <main class="container">
+    <span class="section-marker">${opts.marker}</span>
+    <h1>${opts.heading}</h1>
+    ${opts.bodyHtml}
+  </main>
+  <footer class="colophon container">
+    BYOC · runs in your own Cloudflare account
+    <nav>
+      <a href="${DOCS_ORIGIN}/docs/prd">PRD</a>
+      <a href="${DOCS_ORIGIN}/docs/05-byoc">BYOC setup</a>
+      <a href="${DOCS_ORIGIN}/recipes">Recipes</a>
+      <a href="${REPO_URL}#quickstart">Quickstart</a>
+    </nav>
+  </footer>
+${opts.tail ?? ""}
+</body>
+</html>`;
+
 /**
  * GitHub login grammar: a leading alphanumeric followed by ≤38 alphanumerics
  * or single dashes. Real GitHub also forbids consecutive dashes and a trailing
@@ -187,46 +322,42 @@ const formActionForOwner = (owner: string, state: string): string => {
  * The org form uses a `pattern` attribute as a client-side hint; the
  * server-side validator in `handleInstallNew` is the real enforcement.
  */
-const renderOwnerChooser = (): string => `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>FlareDispatch — Choose App owner</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
-    button { font: inherit; padding: 0.5rem 1rem; cursor: pointer; }
-    input[type="text"] { font: inherit; padding: 0.4rem 0.6rem; min-width: 16rem; }
-    code { font-family: ui-monospace, Menlo, monospace; }
-    .option { border: 1px solid #d4d4d8; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
-    .option h2 { margin-top: 0; }
-    .hint { color: #555; font-size: 0.9rem; }
-    label { display: block; margin-bottom: 0.4rem; }
-  </style>
-</head>
-<body>
-  <h1>Create your FlareDispatch GitHub App</h1>
-  <p>FlareDispatch is BYOC — there is no shared App. This step creates an App in your GitHub account or org and hands the private key back to this Dispatcher (one-time, stored in your Worker Secrets).</p>
+const renderOwnerChooser = (): string =>
+  brandPage({
+    title: "FlareDispatch — Choose App owner",
+    marker: "§ GitHub App / 01 — owner",
+    heading: "Create your FlareDispatch GitHub App",
+    bodyHtml: `  <p class="lede">FlareDispatch is BYOC — there is no shared App. This step creates an App in your own GitHub account or org and hands the private key back to this Dispatcher (one-time, stored in your Worker Secrets).</p>
+
+  <div class="callout">
+    <strong>Installing with an AI agent?</strong> Point it at the machine-readable runbook —
+    <a href="/v1/github/install/llms.txt"><code>/v1/github/install/llms.txt</code></a> — it carries every command and the one browser step it must hand back to you.
+  </div>
+
+  <details class="card">
+    <summary><strong>Why create an App instead of just signing in with GitHub?</strong></summary>
+    <p class="hint">There is no shared FlareDispatch App to &ldquo;just install&rdquo; — a hosted operator holding everyone&#39;s key is exactly what BYOC avoids. OAuth (&ldquo;Sign in with GitHub&rdquo;) only proves <em>who you are</em>; it can&#39;t hand a backend the App ID + private key needed to mint installation tokens and post Check Runs as a bot. Those require a GitHub <em>App</em> that you own.</p>
+    <p class="hint">So this flow <em>creates</em> that App in your account using GitHub&#39;s App-manifest flow (no hand-filling the settings form), then you install it on your repos. Picking personal vs. org below <em>is</em> the &ldquo;select an account&rdquo; choice — it happens here at creation because App ownership (who can manage and rotate the key) is fixed when the App is made and can&#39;t be moved afterward.</p>
+  </details>
 
   <h2>Pick an owner</h2>
   <p class="hint">App ownership controls who can manage the App and rotate its key. Org-owned Apps survive a single admin leaving; personal-owned ones don&#39;t.</p>
 
-  <form class="option" method="get" action="/v1/github/install/new">
-    <h2>Personal account</h2>
+  <form class="card" method="get" action="/v1/github/install/new">
+    <h3>Personal account</h3>
     <p class="hint">Owned by whoever is signed in to GitHub when you continue. Fine for solo use; brittle for teams.</p>
     <input type="hidden" name="owner" value="">
-    <button type="submit">Continue as personal account</button>
+    <button class="btn btn--ghost" type="submit">Continue as personal account</button>
   </form>
 
-  <form class="option" method="get" action="/v1/github/install/new">
-    <h2>Organization</h2>
+  <form class="card" method="get" action="/v1/github/install/new">
+    <h3>Organization</h3>
     <p class="hint">Recommended for teams. You must have <em>Owner</em> role on the org. The App will be created under the org and all org admins can manage it afterward.</p>
     <label for="owner-input">Organization login (the <code>&lt;org&gt;</code> in <code>github.com/&lt;org&gt;</code>):</label>
     <input type="text" id="owner-input" name="owner" placeholder="acme-corp" pattern="[A-Za-z0-9][A-Za-z0-9-]{0,38}" maxlength="39" required>
-    <button type="submit" style="margin-left: 0.5rem">Continue as organization</button>
-  </form>
-</body>
-</html>`;
+    <p><button class="btn" type="submit">Continue as organization</button></p>
+  </form>`,
+  });
 
 /**
  * The manifest-form page. Auto-submits via JS on load; a `<noscript>` button
@@ -258,34 +389,23 @@ const renderInstallForm = (
     owner === ""
       ? "your personal account"
       : `<code>${htmlEscape(owner)}</code>`;
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>FlareDispatch — Create GitHub App</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
-    button { font: inherit; padding: 0.5rem 1rem; cursor: pointer; }
-    code { font-family: ui-monospace, Menlo, monospace; }
-  </style>
-</head>
-<body>
-  <h1>FlareDispatch — Create GitHub App</h1>
-  <p>Redirecting you to GitHub to create the FlareDispatch App, owned by ${ownerLabel}. If you aren&#39;t redirected automatically, click the button below.</p>
+  return brandPage({
+    title: "FlareDispatch — Create GitHub App",
+    marker: "§ GitHub App / 02 — redirect",
+    heading: "Handing off to GitHub…",
+    bodyHtml: `  <p class="lede">Redirecting you to GitHub to create the FlareDispatch App, owned by ${ownerLabel}. If you aren&#39;t redirected automatically, click the button below.</p>
   <form id="manifest-form" method="post" action="${actionUrl}">
     <input type="hidden" name="manifest" value="${safeManifest}">
     <input type="hidden" name="state" value="${safeState}">
     <noscript>
-      <p><button type="submit">Continue to GitHub</button></p>
+      <p><button class="btn" type="submit">Continue to GitHub</button></p>
     </noscript>
-  </form>
-  <script>
+  </form>`,
+    tail: `  <script>
     // Auto-submit so the page is effectively a redirect with a body.
     document.getElementById('manifest-form').submit();
-  </script>
-</body>
-</html>`;
+  </script>`,
+  });
 };
 
 /**
@@ -464,75 +584,48 @@ const renderSuccess = (app: ConversionResponse): string => {
   const clientSecret = htmlEscape(app.client_secret);
   const pem = htmlEscape(app.pem);
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>FlareDispatch — App created (${slug})</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-    h1 { margin-bottom: 0; }
-    .subtitle { color: #555; margin-top: 0.25rem; }
-    .warn { background: #fff4e5; border-left: 4px solid #d97706; padding: 0.75rem 1rem; margin: 1.5rem 0; }
-    pre { background: #f4f4f5; padding: 0.75rem 1rem; overflow-x: auto; font-family: ui-monospace, Menlo, monospace; font-size: 0.875rem; white-space: pre-wrap; word-break: break-all; }
-    code { font-family: ui-monospace, Menlo, monospace; }
-    .step { margin: 1.25rem 0; }
-    .step h3 { margin-bottom: 0.25rem; }
-    a.btn { display: inline-block; padding: 0.5rem 1rem; background: #2563eb; color: white; text-decoration: none; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  <h1>App created: ${name}</h1>
-  <p class="subtitle">owner: <code>${ownerLogin}</code> &middot; slug: <code>${slug}</code> &middot; id: <code>${id}</code> &middot; <a href="${htmlUrl}" rel="noreferrer noopener">view on GitHub</a></p>
+  return brandPage({
+    title: `FlareDispatch — App created (${slug})`,
+    marker: "§ GitHub App / 03 — credentials",
+    heading: `App created: ${name}`,
+    bodyHtml: `  <p class="hint">owner: <code>${ownerLogin}</code> &middot; slug: <code>${slug}</code> &middot; id: <code>${id}</code> &middot; <a href="${htmlUrl}" rel="noreferrer noopener">view on GitHub ↗</a></p>
 
-  <div class="warn">
+  <div class="callout callout--warn">
     <strong>These credentials are shown ONCE.</strong> Copy them into <code>wrangler secret put</code> NOW — they will not be displayed again. If you lose them, regenerate from the App&#39;s settings page.
   </div>
 
   <h2>1. Stash the credentials in Worker secrets</h2>
   <p>Run each of these from your <code>flare-dispatch</code> checkout, pasting the value when prompted:</p>
 
-  <div class="step">
-    <h3><code>GITHUB_APP_ID</code></h3>
-    <pre>wrangler secret put GITHUB_APP_ID
+  <h3><code>GITHUB_APP_ID</code></h3>
+  <pre>wrangler secret put GITHUB_APP_ID
 ${id}</pre>
-  </div>
 
-  <div class="step">
-    <h3><code>GITHUB_WEBHOOK_SECRET</code></h3>
-    <pre>wrangler secret put GITHUB_WEBHOOK_SECRET
+  <h3><code>GITHUB_WEBHOOK_SECRET</code></h3>
+  <pre>wrangler secret put GITHUB_WEBHOOK_SECRET
 ${webhookSecret}</pre>
-  </div>
 
-  <div class="step">
-    <h3><code>GITHUB_APP_CLIENT_ID</code></h3>
-    <pre>wrangler secret put GITHUB_APP_CLIENT_ID
+  <h3><code>GITHUB_APP_CLIENT_ID</code></h3>
+  <pre>wrangler secret put GITHUB_APP_CLIENT_ID
 ${clientId}</pre>
-  </div>
 
-  <div class="step">
-    <h3><code>GITHUB_APP_CLIENT_SECRET</code></h3>
-    <pre>wrangler secret put GITHUB_APP_CLIENT_SECRET
+  <h3><code>GITHUB_APP_CLIENT_SECRET</code></h3>
+  <pre>wrangler secret put GITHUB_APP_CLIENT_SECRET
 ${clientSecret}</pre>
-  </div>
 
-  <div class="step">
-    <h3><code>GITHUB_APP_PRIVATE_KEY</code></h3>
-    <p>This is a multi-line PEM. Paste the WHOLE block (including the BEGIN/END lines) into the <code>wrangler secret put</code> prompt, then press <kbd>Ctrl-D</kbd> on a blank line.</p>
-    <pre>wrangler secret put GITHUB_APP_PRIVATE_KEY</pre>
-    <p>PEM to paste:</p>
-    <pre>${pem}</pre>
-  </div>
+  <h3><code>GITHUB_APP_PRIVATE_KEY</code></h3>
+  <p>This is a multi-line PEM. Paste the WHOLE block (including the BEGIN/END lines) into the <code>wrangler secret put</code> prompt, then press <kbd>Ctrl-D</kbd> on a blank line.</p>
+  <pre>wrangler secret put GITHUB_APP_PRIVATE_KEY</pre>
+  <p>PEM to paste:</p>
+  <pre>${pem}</pre>
 
   <h2>2. Install the App on a repo or org</h2>
   <p>The install picker shows every account/org you can install the App on. Pick <code>${ownerLogin}</code> (or any other org you admin) and choose the repos.</p>
-  <p><a class="btn" href="${installUrl}" rel="noreferrer noopener">Install ${name}</a></p>
+  <p class="cta"><a class="btn" href="${installUrl}" rel="noreferrer noopener">Install ${name}</a></p>
 
   <h2>3. Verify</h2>
-  <p>After installing, dispatch a run from a workflow on the installed repo — the Dispatcher will create a check-run on the commit.</p>
-</body>
-</html>`;
+  <p>After installing, dispatch a run from a workflow on the installed repo — the Dispatcher will create a check-run on the commit. See the <a href="${DOCS_ORIGIN}/docs/05-byoc">BYOC setup spec</a> for the end-to-end walkthrough.</p>`,
+  });
 };
 
 /**
@@ -556,26 +649,15 @@ const renderError = (e: ConversionFailed): string => {
     Match.exhaustive,
   );
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>FlareDispatch — App creation failed</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
-    pre { background: #f4f4f5; padding: 0.75rem 1rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 0.875rem; }
-    .err { background: #fee2e2; border-left: 4px solid #dc2626; padding: 0.75rem 1rem; margin: 1.5rem 0; }
-  </style>
-</head>
-<body>
-  <h1>App creation failed</h1>
-  <div class="err">${htmlEscape(reasonText)}</div>
+  return brandPage({
+    title: "FlareDispatch — App creation failed",
+    marker: "§ GitHub App / error",
+    heading: "App creation failed",
+    bodyHtml: `  <div class="callout callout--err">${htmlEscape(reasonText)}</div>
   <p>GitHub response body (escaped):</p>
   <pre>${htmlEscape(e.body)}</pre>
-  <p>Restart the flow at <a href="/v1/github/install/new">/v1/github/install/new</a>.</p>
-</body>
-</html>`;
+  <p class="cta"><a class="btn" href="/v1/github/install/new">Restart the flow</a></p>`,
+  });
 };
 
 /**
@@ -616,3 +698,123 @@ export const handleInstalled = async (
     onRight: (app) => htmlResponse(renderSuccess(app)),
   });
 };
+
+// ---------------------------------------------------------------------------
+// `GET /v1/github/install/llms.txt` — agent-runnable install runbook
+// ---------------------------------------------------------------------------
+//
+// The HTML chooser is for a human in a browser. This route is the same flow
+// rewritten for an LLM agent (Claude Code, Cursor, …) the operator can hand
+// the install to: a flat Markdown runbook with literal shell commands, served
+// `text/markdown` so an agent can fetch-and-follow it directly.
+//
+// The GitHub App *manifest creation* leg is irreducibly interactive — it needs
+// a logged-in github.com session and a human click — so the runbook is honest
+// about that: it tells the agent to surface ONE browser URL to the operator,
+// wait for the credentials the success page prints, then drive everything
+// else (`wrangler secret put`, `wrangler deploy`, the verify step). The
+// commands are origin-aware: `{origin}` resolves to whichever Dispatcher
+// served this file, so the same artifact works on `*.workers.dev`, a custom
+// domain, and `wrangler dev`.
+
+/** A `text/markdown; charset=utf-8` response. */
+const markdownResponse = (body: string, status = 200): Response =>
+  new Response(body, {
+    status,
+    headers: { "content-type": "text/markdown; charset=utf-8" },
+  });
+
+/**
+ * Render the agent install runbook for a given Dispatcher origin. Pure string
+ * assembly — no escaping needed since `origin` is `new URL().origin` (already
+ * a well-formed origin, never attacker-controlled markup) and everything else
+ * is a static literal.
+ */
+const renderInstallLlms = (origin: string): string => `# Install FlareDispatch — agent runbook
+
+> You are an AI coding agent installing FlareDispatch's GitHub App for an
+> operator. FlareDispatch is BYOC: it runs entirely in the operator's own
+> Cloudflare account — there is no shared/hosted App, so you create one they
+> own. Follow these steps in order. One step needs a human; the rest are yours
+> to run.
+
+> Why create an App rather than OAuth sign-in + install? There is no shared App
+> to "just install". OAuth only proves who a user is; it can't hand this Worker
+> the App ID + private key it needs to mint installation tokens and post Check
+> Runs as a bot. So the flow CREATES a GitHub App the operator owns (via the
+> App-manifest flow), then installs it. The personal-vs-org choice is the
+> "select an account" step — it happens at creation because App ownership is
+> fixed when the App is made and can't be moved afterward.
+
+- Dispatcher origin: ${origin}
+- Full docs: ${DOCS_ORIGIN}
+- Source + quickstart: ${REPO_URL}#quickstart
+
+## Prerequisites (verify before starting)
+
+1. The operator has a local checkout of \`flare-dispatch\` and \`wrangler\` is
+   authenticated (\`wrangler whoami\` succeeds).
+2. The Dispatcher is already deployed and reachable at the origin above
+   (\`curl -fsS ${origin}/health\` returns 200). If not, deploy it first with
+   \`wrangler deploy\` from the checkout, then re-check.
+
+## Step 1 — Human creates the App (interactive, hand this off)
+
+The GitHub App manifest flow requires a logged-in github.com session and a
+click — you cannot complete it headlessly. Surface this URL to the operator
+and ask them to open it and finish the flow:
+
+    ${origin}/v1/github/install/new
+
+Tell them: pick personal vs. org owner, click through to GitHub, create the
+App. GitHub redirects back to a one-time "App created" page that prints five
+secret values. Ask them to paste that page's secret block back to you (or to
+run the \`wrangler secret put\` commands themselves if they prefer not to share
+credentials with an agent).
+
+## Step 2 — Store the five secrets (you run these)
+
+From the operator's \`flare-dispatch\` checkout, set each secret with the value
+from the success page:
+
+    wrangler secret put GITHUB_APP_ID
+    wrangler secret put GITHUB_WEBHOOK_SECRET
+    wrangler secret put GITHUB_APP_CLIENT_ID
+    wrangler secret put GITHUB_APP_CLIENT_SECRET
+    wrangler secret put GITHUB_APP_PRIVATE_KEY   # multi-line PEM, paste whole block
+
+\`GITHUB_APP_PRIVATE_KEY\` is a multi-line PEM — paste the entire block
+including the BEGIN/END lines. Never commit any of these values; they belong
+only in Worker Secrets.
+
+## Step 3 — Redeploy so the Worker picks up the secrets
+
+    wrangler deploy
+
+## Step 4 — Install the App on the repos
+
+The success page links to \`<app_html_url>/installations/new\`. Have the
+operator open it and select the repos/org to install on. (This is the operator's
+choice of scope — surface the link, don't guess.)
+
+## Step 5 — Verify
+
+Open a pull request (or dispatch a run) on an installed repo. Within a few
+seconds a FlareDispatch Check Run should appear on the commit. If it does, the
+install is complete. If not, see the BYOC setup spec:
+${DOCS_ORIGIN}/docs/05-byoc
+
+## Notes
+
+- Idempotent: re-running \`wrangler secret put\` overwrites; re-running
+  \`wrangler deploy\` is safe.
+- Pure-webhook mode means no \`.github/workflows\` file is required — installing
+  the App is the trigger. Details: ${DOCS_ORIGIN}/docs/05-byoc
+`;
+
+/**
+ * Handle `GET /v1/github/install/llms.txt`. Resolves the runbook against the
+ * inbound request's own origin so every command targets THIS Dispatcher.
+ */
+export const handleInstallLlms = (request: Request): Response =>
+  markdownResponse(renderInstallLlms(new URL(request.url).origin));

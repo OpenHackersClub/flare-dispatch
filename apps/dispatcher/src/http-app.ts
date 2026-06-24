@@ -43,7 +43,11 @@ import {
   handleExecutionsList,
 } from "./routes/executions";
 import { handleHealth } from "./routes/health";
-import { handleInstallNew, handleInstalled } from "./routes/github";
+import {
+  handleInstallLlms,
+  handleInstallNew,
+  handleInstalled,
+} from "./routes/github";
 import { handleLogFile, handleLogsAggregate, handleLogViewer } from "./routes/logs";
 import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
 import { handleProductDemo } from "./routes/product-demos";
@@ -376,6 +380,10 @@ const router = baseRouter.pipe(
   HttpRouter.all(
     "/v1/github/install/new",
     route("GET", ({ request }) => handleInstallNew(request)),
+  ),
+  HttpRouter.all(
+    "/v1/github/install/llms.txt",
+    route("GET", ({ request }) => handleInstallLlms(request)),
   ),
   HttpRouter.all(
     "/v1/github/installed",
