@@ -334,12 +334,6 @@ const renderOwnerChooser = (): string =>
     <a href="/v1/github/install/llms.txt"><code>/v1/github/install/llms.txt</code></a> — it carries every command and the one browser step it must hand back to you.
   </div>
 
-  <details class="card">
-    <summary><strong>Why create an App instead of just signing in with GitHub?</strong></summary>
-    <p class="hint">There is no shared FlareDispatch App to &ldquo;just install&rdquo; — a hosted operator holding everyone&#39;s key is exactly what BYOC avoids. OAuth (&ldquo;Sign in with GitHub&rdquo;) only proves <em>who you are</em>; it can&#39;t hand a backend the App ID + private key needed to mint installation tokens and post Check Runs as a bot. Those require a GitHub <em>App</em> that you own.</p>
-    <p class="hint">So this flow <em>creates</em> that App in your account using GitHub&#39;s App-manifest flow (no hand-filling the settings form), then you install it on your repos. Picking personal vs. org below <em>is</em> the &ldquo;select an account&rdquo; choice — it happens here at creation because App ownership (who can manage and rotate the key) is fixed when the App is made and can&#39;t be moved afterward.</p>
-  </details>
-
   <h2>Pick an owner</h2>
   <p class="hint">App ownership controls who can manage the App and rotate its key. Org-owned Apps survive a single admin leaving; personal-owned ones don&#39;t.</p>
 
