@@ -37,6 +37,26 @@ flowchart LR
   CRD --> CHK[check-run<br/>summary + inline annotations]
 ```
 
+## Resilience — a flaky reviewer never sinks the whole review
+
+The fan-out is the point of the multi-agent design, so a single domain reviewer's
+bad luck must not abort the rest:
+
+- **Per-domain fault isolation.** Each reviewer in the `review` step is run
+  independently; one whose model call fails — unparseable output, or a transient
+  capacity / rate-limit error under the concurrent fan-out — is dropped to zero
+  findings and flagged `⚠️` in the comment's engagement line. The review still
+  ships with every domain that succeeded. Only when **every** reviewer fails does
+  the run go red, re-raising the precise cause (so a systemic fault — misconfigured
+  backend, wrong model/mode, gateway down — is still named honestly, never masked
+  as an empty review).
+- **JSON repair retry.** A model asked for strict JSON sometimes answers in prose
+  or truncates inside a reasoning block, leaving no parseable JSON. Before that
+  reviewer counts as failed, the engine re-asks **once** with a blunt "JSON only"
+  correction — and floors the retry's token budget so the structured answer can
+  fit (the model no longer spends the budget on a `<think>` block). This composes
+  with the existing tools→json auto-fallback.
+
 ## Framework surface this recipe relies on
 
 The run is deliberately thin — it orchestrates, it does not contain model logic. Three pieces of the framework carry the weight:
