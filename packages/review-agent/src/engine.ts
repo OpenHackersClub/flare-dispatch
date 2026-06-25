@@ -41,7 +41,6 @@
 import {
   modelGateway,
   ModelGateway,
-  ModelGatewayError,
   type ModelTool,
   type ModelToolCall,
 } from "@flare-dispatch/core";

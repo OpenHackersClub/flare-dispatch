@@ -792,9 +792,9 @@ describe("reportFailure — workflow-command injection escape (security H2)", ()
     } finally {
       spy.mockRestore();
     }
-    return captured;
     // E parameter exists only to keep type-narrowing honest at call sites.
     void (undefined as unknown as E);
+    return captured;
   };
 
   it("percent-encodes a Dispatcher body containing newlines + workflow commands", async () => {

@@ -117,6 +117,7 @@ describe("GET /health", () => {
         "deploy-smoke",
         "matrix-fanout",
         "offload-test",
+        "oxlint",
         "playwright-demo",
         "playwright-e2e",
         "pr-review",

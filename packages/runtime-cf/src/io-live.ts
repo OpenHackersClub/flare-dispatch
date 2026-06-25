@@ -68,7 +68,7 @@ export const makeIOLive = (opts: IOLiveOptions = {}): Layer.Layer<IO> =>
 
     log: (level, msg, attrs) =>
       Effect.sync(() => {
-        const line = { level, msg, ...(attrs ?? {}) };
+        const line = { level, msg, ...attrs };
         // Workers logs are JSON-lines on stdout; `console` is the platform sink.
         if (level === "error") console.error(line);
         else if (level === "warn") console.warn(line);

@@ -73,7 +73,7 @@ export const makeOidcFake = (
             iat,
             exp,
             jti: `fake-jti-${state.signCalls.length}`,
-            ...(claims ?? {}),
+            ...claims,
           }),
         );
         return {

@@ -208,7 +208,7 @@ export const playwrightDemo = defineRun({
           sandbox.exec({
             cwd: dir,
             container,
-            env: { ...(input.env ?? {}), ...secretEnv },
+            env: { ...input.env, ...secretEnv },
             command: input.command,
             timeoutSec: execTimeoutSec,
           }),

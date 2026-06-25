@@ -160,7 +160,8 @@ export async function* iterateTarFiles(
         const bytes = body.subarray(0, size);
         pendingLongName =
           typeflag === 0x4c
-            ? decoder.decode(bytes).replace(/\0+$/, "")
+            ? // oxlint-disable-next-line no-control-regex -- tar header fields are NUL-padded; stripping the trailing NUL run is the intent
+              decoder.decode(bytes).replace(/\0+$/, "")
             : (paxPath(bytes) ?? pendingLongName);
         continue;
       }
