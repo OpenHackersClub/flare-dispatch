@@ -131,6 +131,48 @@ describe("pr-review", () => {
     },
   );
 
+  it.effect(
+    "oxc grounding — prepends oxlint findings to the reviewers' diff",
+    () => {
+      // The diff touches a lintable file, so the run scans it with oxlint. The
+      // sandbox fake doesn't execute the `> file` redirect, so OXLINT_FILE is
+      // seeded directly with a findings report — `oxlint-scan` reads it back
+      // and prepends a labelled grounding block to every reviewer's message.
+      const oxlintReport =
+        "src/x.ts:1:7: error eslint(no-unused-vars): 'foo' is declared but never used.";
+      const { layer, handles } = makeCFRuntimeTest({
+        config: backendConfig,
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: {
+          [DIFF_FILE]:
+            "diff --git a/src/x.ts b/src/x.ts\n+++ b/src/x.ts\n+const foo = 1;\n",
+          "/tmp/pr-review.oxlint.txt": oxlintReport,
+        },
+        modelGateway: { responses: Array(7).fill(emptyReport) },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+
+        // oxlint was invoked on the changed lintable file.
+        const oxlintExec = handles.sandbox.execs.find((e) =>
+          e.command.includes("oxlint"),
+        );
+        expect(oxlintExec).toBeDefined();
+        expect(oxlintExec?.command).toContain("src/x.ts");
+
+        // Its findings are grounded into every reviewer's user message, ahead
+        // of the diff itself (the diff still follows the block).
+        expect(handles.modelGateway.requests.length).toBeGreaterThan(0);
+        for (const req of handles.modelGateway.requests) {
+          expect(req.user).toContain("Static analysis — oxlint findings");
+          expect(req.user).toContain("no-unused-vars");
+          expect(req.user).toContain("+const foo = 1;");
+        }
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("a non-zero git diff exit FAILS the run (honest red check)", () => {
     const { layer, handles } = makeCFRuntimeTest({
       // Backend configured so the run reaches `prepare-diff` (resolve-backend

@@ -158,6 +158,69 @@ const viewerFooter = (viewerUrl: string | undefined): readonly string[] =>
  */
 const DIFF_FILE = "/tmp/pr-review.diff";
 
+// --- Oxc grounding -----------------------------------------------------------
+//
+// Before the model fans out, run oxlint (the Oxc Rust linter — Vite/VoidZero,
+// now inside Cloudflare) on the PR's changed files IN THE SAME container the
+// diff was produced in, and prepend its findings to the reviewable text. The
+// model then CONFIRMS / EXPANDS deterministic, pre-computed static-analysis
+// results (with exact `file:line` anchors) instead of re-deriving lint-level
+// issues from the diff alone — cheaper tokens, fewer hallucinated findings,
+// citable anchors.
+//
+// Best-effort by construction: oxlint runs via `npx` (no image change), and ANY
+// failure — no lintable files, fetch error, read error — degrades to an empty
+// block, so the review proceeds ungrounded and never goes red on this step.
+
+/** Where the oxlint run writes its findings inside the container. */
+const OXLINT_FILE = "/tmp/pr-review.oxlint.txt";
+/** oxlint version line fetched via `npx` — tracks the 1.x major. */
+const OXLINT_VERSION = "1";
+/** Cap the changed-file list passed to oxlint (bounds the command line). */
+const OXLINT_MAX_FILES = 60;
+/** Cap the grounding block prepended to the model context. */
+const OXLINT_MAX_CHARS = 8000;
+/** Extensions oxlint lints — the changed files worth scanning. */
+const LINTABLE_EXT = /\.(?:m?[jt]sx?|cjs)$/;
+
+/**
+ * Pull the changed (added/modified) file paths from a unified diff's
+ * `+++ b/<path>` headers, keep the oxlint-lintable ones, dedupe, and cap.
+ * `/dev/null` targets (deletions) are dropped.
+ */
+const changedLintableFiles = (diff: string): readonly string[] => {
+  const files = new Set<string>();
+  for (const line of diff.split("\n")) {
+    if (!line.startsWith("+++ ")) continue;
+    const target = line.slice(4).trim();
+    if (target === "/dev/null") continue;
+    const path = target.startsWith("b/") ? target.slice(2) : target;
+    if (LINTABLE_EXT.test(path)) files.add(path);
+  }
+  return [...files].slice(0, OXLINT_MAX_FILES);
+};
+
+/** Wrap raw oxlint output in a labelled, capped grounding block (or "" if empty). */
+const groundingBlock = (raw: string): string => {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return "";
+  const body =
+    trimmed.length > OXLINT_MAX_CHARS
+      ? `${trimmed.slice(0, OXLINT_MAX_CHARS)}\n…(truncated)`
+      : trimmed;
+  return [
+    "## Static analysis — oxlint findings on the changed files",
+    "",
+    "Deterministic, pre-computed by the Oxc linter. Treat as authoritative:",
+    "confirm/expand these, cite their `file:line` anchors, and do NOT re-derive",
+    "lint-level issues the linter already reports.",
+    "",
+    "```",
+    body,
+    "```",
+  ].join("\n");
+};
+
 export const prReview = defineRun({
   name: "pr-review",
   version: "3.1.0",
@@ -436,17 +499,43 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
           }
         : undefined;
 
+    // 5d. Oxc grounding — run oxlint on the PR's changed files in the checkout
+    //     container and prepend its findings to the reviewable text. Best-
+    //     effort: any failure (no lintable files, npx fetch, read) degrades to
+    //     the ungrounded diff via `catchAllCause`, so the review never goes red
+    //     on this step. `riskTier` above used the RAW diff (size heuristic), so
+    //     the grounding block doesn't perturb tier classification.
+    const oxlintBlock = yield* step("oxlint-scan", () =>
+      Effect.gen(function* () {
+        const files = changedLintableFiles(diff);
+        if (files.length === 0) return "";
+        // Non-zero exit (oxlint found issues) is a NORMAL ExecResult, not a
+        // failure; redirect both streams to a file read back in full (the
+        // 16KB stdout tail would truncate a busy lint report).
+        yield* sandbox.exec({
+          container,
+          cwd: repoDir,
+          command: `npx --yes oxlint@${OXLINT_VERSION} ${files.join(" ")} > ${OXLINT_FILE} 2>&1`,
+        });
+        const out = yield* sandbox.readFile({ container, path: OXLINT_FILE });
+        return groundingBlock(out);
+      }),
+    ).pipe(Effect.catchAllCause(() => Effect.succeed("")));
+    const groundedDiff =
+      oxlintBlock.length > 0 ? `${oxlintBlock}\n\n${diff}` : diff;
+
     // 6. Fan out one reviewer per domain, IN-WORKER, in parallel — only the
     //    agents this tier calls for. Each calls the model via the `modelGateway`
     //    capability (provided by the runtime, like `config`/`sandbox`); findings
-    //    are Schema-validated tool-call / json output.
+    //    are Schema-validated tool-call / json output. The reviewers see the
+    //    GROUNDED diff (oxlint findings prepended), not the raw diff.
     const fanned = yield* step("review", () =>
       Effect.forEach(
         plan.agents,
         (agent) =>
           reviewDomain({
             agent,
-            diff,
+            diff: groundedDiff,
             tier: plan.tier,
             model: resolved.model,
             backend: resolved.backend,
