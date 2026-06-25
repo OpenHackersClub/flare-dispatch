@@ -100,6 +100,13 @@ const STYLE = `
   .sha { color: #8a93a5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
   .when { color: #8a93a5; white-space: nowrap; }
   .links a { margin-right: .75rem; }
+  /* A clickable execution row deep-links to its log viewer. The run cell's link
+     carries a stretched ::after that turns the whole <tr> into the hit target,
+     while the explicit View links are lifted above it so they stay clickable. */
+  tr.rowlink { position: relative; cursor: pointer; }
+  .run a { color: inherit; font-weight: inherit; }
+  .run a::after { content: ""; position: absolute; inset: 0; }
+  .links a { position: relative; z-index: 1; }
   .badge {
     display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: 12px; font-weight: 600;
     border: 1px solid transparent;
@@ -123,9 +130,16 @@ const renderRow = (row: DashboardRow, nowMs: number): string => {
     links.push(`<a href="${esc(row.demosUrl)}">Demo</a>`);
   }
   const linkCell = links.length > 0 ? links.join("") : '<span class="when">—</span>';
-  return `<tr>
+  // The run name is the row's primary deep-link: clicking the execution opens
+  // its log viewer. When no log link exists (no secret configured) the row is
+  // plain text and not click-through.
+  const clickable = row.logsUrl !== null;
+  const runCell = clickable
+    ? `<a href="${esc(row.logsUrl as string)}" title="View logs">${esc(row.run)}</a>`
+    : esc(row.run);
+  return `<tr${clickable ? ' class="rowlink"' : ""}>
     <td><span class="badge ${badgeClass(row.status)}">${esc(row.status)}</span></td>
-    <td class="run">${esc(row.run)}</td>
+    <td class="run">${runCell}</td>
     <td><span class="repo">${esc(row.repo)}</span> <span class="sha">${esc(shortSha(row.sha))}</span></td>
     <td class="when">${esc(relativeTime(row.startedAt, nowMs))}</td>
     <td class="links">${linkCell}</td>

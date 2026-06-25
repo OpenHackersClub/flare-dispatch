@@ -62,6 +62,20 @@ describe("renderDashboard", () => {
     expect(html).toContain('href="https://x/demos/a?t=tok"');
   });
 
+  it("makes the run name a click-through to the log viewer when logs exist", () => {
+    const html = renderDashboard(
+      data([baseRow({ run: "offload-test", logsUrl: "https://x/logs/a?t=tok" })]),
+    );
+    expect(html).toContain('class="rowlink"');
+    expect(html).toContain('<a href="https://x/logs/a?t=tok" title="View logs">offload-test</a>');
+  });
+
+  it("keeps the run name as plain text when no log link is configured", () => {
+    const html = renderDashboard(data([baseRow({ run: "offload-test", logsUrl: null })]));
+    expect(html).not.toContain('class="rowlink"');
+    expect(html).toContain("offload-test");
+  });
+
   it("escapes HTML in execution fields", () => {
     const html = renderDashboard(data([baseRow({ repo: "<script>" })]));
     expect(html).not.toContain("<script>");
