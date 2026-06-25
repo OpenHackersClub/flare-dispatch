@@ -1,0 +1,220 @@
+/* Dark theme mirrored from the SSR dashboard (apps/dispatcher/src/dashboard.ts)
+   so the SPA and the zero-JS fallback look the same. */
+:root {
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  color: #e7e9ee;
+  background: #0d1017;
+}
+.page {
+  padding: 2rem 1.25rem;
+  max-width: 64rem;
+  margin-inline: auto;
+}
+a {
+  color: #6ea8fe;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+h1 {
+  font-size: 1.4rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+h1 a {
+  color: inherit;
+}
+h1 a:hover {
+  text-decoration: none;
+}
+.tagline {
+  color: #9aa3b2;
+  margin: 0 0 1.75rem;
+}
+h2 {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9aa3b2;
+  margin: 2rem 0 0.6rem;
+}
+.muted {
+  color: #9aa3b2;
+}
+
+/* Executions table */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th {
+  text-align: left;
+  font-weight: 600;
+  color: #9aa3b2;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid #232838;
+}
+td {
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid #171b27;
+  vertical-align: baseline;
+}
+tr:hover td {
+  background: #11151f;
+}
+.run {
+  font-weight: 600;
+}
+.repo {
+  color: #c4cad6;
+}
+.sha {
+  color: #8a93a5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+.when {
+  color: #8a93a5;
+  white-space: nowrap;
+}
+.links a {
+  margin-right: 0.75rem;
+}
+
+/* Clickable row → execution detail. The run cell's link carries a stretched
+   ::after that turns the whole <tr> into the hit target; the explicit View
+   links sit above it. */
+tr.rowlink {
+  position: relative;
+  cursor: pointer;
+}
+.run a {
+  color: inherit;
+  font-weight: inherit;
+}
+.run a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.links a {
+  position: relative;
+  z-index: 1;
+}
+
+/* Status badges */
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.badge.ok {
+  color: #7ee2a8;
+  background: #0f2a1c;
+  border-color: #1c5238;
+}
+.badge.fail {
+  color: #ff9a9a;
+  background: #2c1518;
+  border-color: #5a2730;
+}
+.badge.live {
+  color: #8fc2ff;
+  background: #102036;
+  border-color: #234a78;
+}
+.badge.muted {
+  color: #9aa3b2;
+  background: #1a1e29;
+  border-color: #2b313f;
+}
+.badge.pending {
+  color: #e4c779;
+  background: #2a2412;
+  border-color: #59491c;
+}
+
+.empty {
+  color: #9aa3b2;
+  padding: 1.5rem 0.5rem;
+  border: 1px dashed #2b313f;
+  border-radius: 0.5rem;
+  text-align: center;
+}
+
+/* Execution detail */
+.detail .crumb {
+  margin: 0 0 0.5rem;
+  font-size: 13px;
+}
+.detail h2 {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 1.25rem;
+  color: #e7e9ee;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+}
+dl.meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1.5rem;
+}
+dl.meta dt {
+  color: #9aa3b2;
+  font-size: 13px;
+}
+dl.meta dd {
+  margin: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.btn {
+  display: inline-block;
+  padding: 0.45rem 0.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid #234a78;
+  background: #102036;
+  color: #8fc2ff;
+  font-weight: 600;
+}
+.btn:hover {
+  text-decoration: none;
+  background: #14294a;
+}
+
+footer {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #171b27;
+  color: #8a93a5;
+  font-size: 13px;
+}
+footer a {
+  margin-right: 1rem;
+}

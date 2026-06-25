@@ -24,6 +24,7 @@ on:
       - main
     paths:
       - apps/dispatcher/**
+      - apps/dashboard/**
       - packages/core/**
       - packages/runtime-cf/**
       - runs/**
@@ -74,6 +75,13 @@ jobs:
       # deployed via workflow_dispatch from a non-CI state.
       - name: Typecheck dispatcher
         run: pnpm --filter @flare-dispatch/dispatcher typecheck
+
+      # Build the dashboard SPA to ./apps/dashboard/dist BEFORE `wrangler
+      # deploy` — that directory is the Workers Static Assets source
+      # (wrangler.jsonc → `assets.directory`); deploying without it would ship a
+      # Worker with no dashboard shell.
+      - name: Build dashboard SPA
+        run: pnpm --filter @flare-dispatch/dashboard build
 
       # D1 migrations BEFORE the Worker deploy: new code that expects a new
       # table/column must never reach production ahead of its schema. Wrangler
