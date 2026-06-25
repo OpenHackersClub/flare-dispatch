@@ -10,7 +10,8 @@ import { defineConfig } from "tsdown";
 // bedrock-sigv4) must be inlined — `deps.alwaysBundle` overrides tsdown's
 // library default of externalizing dependencies. The entry is a pure
 // side-effect CLI (no exports), so `treeshake: false` keeps its top-level run
-// from being dropped; the source carries its own `#!/usr/bin/env node`.
+// from being dropped; `src/bundle-entry.ts` carries the `#!/usr/bin/env node`
+// shebang Rolldown preserves to line 1 of the bundle.
 export default defineConfig({
   entry: { "demo-agent": "src/bundle-entry.ts" },
   format: "cjs",
@@ -21,7 +22,12 @@ export default defineConfig({
   treeshake: false,
   dts: false,
   // ONE self-contained file — the Dockerfile COPYs only `demo-agent.cjs` onto
-  // PATH, so puppeteer-core's dynamic imports (bidi, etc.) must be inlined
-  // rather than emitted as sibling chunks the container wouldn't have.
+  // PATH. `codeSplitting: false` collapses STATIC shared chunks, but it does
+  // NOT inline DYNAMIC `import()`s (puppeteer-core lazy-loads its BiDi module)
+  // nor the Rolldown CJS runtime chunk — under #185 those still emitted as
+  // sibling `*.cjs` the container never copied, so the single binary `require`d
+  // files that weren't there (image build froze on `demo-agent --help`).
+  // `inlineDynamicImports` forces everything into the one entry file.
   codeSplitting: false,
+  outputOptions: { inlineDynamicImports: true },
 });
