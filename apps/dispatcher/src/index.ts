@@ -21,6 +21,7 @@ import { proxyToSandbox } from "@cloudflare/sandbox";
 
 import type { Env } from "./env";
 import { handleRequest } from "./router";
+import { handleInboundEmail } from "./routes/email-handler";
 import { handleScheduled } from "./routes/scheduled";
 import { RunSandbox, RunSandboxBrowser, RunSandboxAgent } from "./sandbox";
 
@@ -62,5 +63,21 @@ export default {
     ctx.waitUntil(
       handleScheduled(env, controller.cron, controller.scheduledTime),
     );
+  },
+  /**
+   * Email Routing entry — Cloudflare invokes this for every message a routing
+   * rule directs to this Worker (a catch-all on `INBOX_DOMAIN`). The handler
+   * is the receive half of the `mailbox` capability: it `setReject`s any RCPT
+   * that is not a minted `demo-…` address BEFORE reading the body, then stores
+   * the message + signals the paused `email-otp-login` run. See
+   * `routes/email-handler.ts`. No wrangler binding is needed for inbound — the
+   * routing rule wires the address to this Worker.
+   */
+  async email(
+    message: ForwardableEmailMessage,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    await handleInboundEmail(message, env);
   },
 } satisfies ExportedHandler<Env>;

@@ -1,0 +1,62 @@
+# Recipe: provision a user through an OTP / magic-link login on Cloudflare
+#
+# Use case: prove a REAL signup/login works — against an OTP-based auth provider
+# (Auth0 / Clerk / Stytch / Supabase) or your own app — without a seeded fixture
+# user. Offload to the `email-otp-login` run, which provisions a disposable
+# inbox, asks the auth API to email it, waits for the verification message to
+# land in your Cloudflare Email Routing catch-all, extracts the code/link, and
+# verifies it.
+#
+# Mode: Action mode, fire-and-forget. The run reports through the
+#       `flare-dispatch/email-otp-login` check-run. See specs/04-gha-integration.md.
+# Run:  email-otp-login — see ./email-otp-login.run.ts (canonical: runs/email-otp-login.ts).
+#
+# Prerequisites (one-time, see ./README.md):
+#   * INBOX_DOMAIN set + an Email Routing catch-all rule → the dispatcher Worker.
+#   * The auth provider's tenant must allow disposable/unknown email domains
+#     (it's YOUR domain, so turn its disposable-block OFF) and drive only YOUR
+#     own tenant.
+
+name: email-otp-login
+on:
+  # On-demand: point it at any auth API base URL.
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Auth API origin, e.g. https://app.example.com"
+        required: true
+      provider:
+        description: "generic | auth0 | clerk | stytch | supabase"
+        required: false
+        default: "generic"
+  # Nightly smoke of the login path against staging.
+  schedule:
+    - cron: "0 7 * * *"
+
+jobs:
+  email-otp-login:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: openhackersclub/flare-dispatch-action@v1
+        with:
+          run: email-otp-login
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          inputs: |
+            {
+              "repo": "${{ github.repository }}",
+              "sha": "${{ github.sha }}",
+              "baseURL": ${{ toJSON(github.event.inputs.base_url || vars.AUTH_BASE_URL) }},
+              "provider": ${{ toJSON(github.event.inputs.provider || 'generic') }}
+            }
+          # Tune per provider by adding to the inputs JSON above:
+          #   "startPath" / "startBody"   — the "send me a code" endpoint
+          #   "verifyPath" / "verifyBody" — the "here's my code" endpoint
+          #   "codePattern"               — override the OTP regex (first group)
+          #   "linkHost"                  — for magic links, the provider auth host
+          #   "waitSeconds"               — raise for slow providers (default 120)
+
+# Fire-and-forget: this GHA step succeeds as soon as the dispatch is accepted;
+# the login flow runs on Cloudflare and reports back through the
+# `flare-dispatch/email-otp-login` check-run on the SHA. Require THAT check (not
+# this GHA job) in branch protection.

@@ -83,6 +83,7 @@ import { appendFailureSummary, failureSummaryMd } from "./failure-summary";
 import { renderResultEmail } from "./notify";
 import { workflowDashboardUrl } from "./dashboard-url";
 import { buildLogsUrl, resolveLogLinkSecret, signLogToken } from "./log-token";
+import { resolveMailboxLinkSecret, signMailboxToken } from "./mailbox-token";
 import { resolveAgentProxySecret, signAgentToken } from "./agent-token";
 import type { Env } from "./env";
 
@@ -410,6 +411,24 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       ...(configOverrides !== undefined ? { configOverrides } : {}),
       browser: resolveBrowserConfig(this.env),
       email: resolveEmailConfig(this.env),
+      // `mailbox` capability — live when an INBOX_DOMAIN + mailbox-link secret
+      // are configured. The signer closure keeps the HKDF/HMAC in the Dispatcher
+      // (mailbox-token.ts); runtime-cf only calls it. Absent → the dying stub.
+      ...((): { mailbox?: Parameters<typeof makeCFRuntimeLive>[0]["mailbox"] } => {
+        const mailboxSecret = resolveMailboxLinkSecret(this.env);
+        if (this.env.INBOX_DOMAIN === undefined || mailboxSecret === undefined) {
+          return {};
+        }
+        return {
+          mailbox: {
+            inboxDomain: this.env.INBOX_DOMAIN,
+            db,
+            executionId: payload.executionId,
+            signToken: (localPart, expEpochS) =>
+              signMailboxToken(mailboxSecret, localPart, expEpochS),
+          },
+        };
+      })(),
       // Workers AI binding backs the `modelGateway` capability (the `pr-review`
       // engine's model backend). The binding is the auth — no model API key.
       // `AI_GATEWAY_ID`, when set, routes the calls through an AI Gateway.

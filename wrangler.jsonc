@@ -130,6 +130,25 @@
     //   EMAIL_ALLOWED_RECIPIENTS (comma-separated recipient allowlist).
     // "EMAIL_FROM": "flare-dispatch@<your-zone>",
     // "EMAIL_FROM_NAME": "FlareDispatch"
+
+    // INBOX_DOMAIN — the Email Routing catch-all domain disposable test inboxes
+    //   are minted on (the `mailbox` capability + the inbound `email()`
+    //   handler). The `email-otp-login` run provisions `demo-<rand>@<INBOX_DOMAIN>`
+    //   and the handler stores mail addressed to it. Set a DEDICATED host (e.g.
+    //   `inbox.openhackers.club`) — NOT the zone apex — with an Email Routing
+    //   catch-all rule → THIS worker, so the catch-all can't swallow real mail.
+    //   Inbound has no verified-destination constraint (that only gates the
+    //   outbound `send_email`/`forward`), so any `demo-*` local-part is received.
+    //   Absent → the `mailbox` capability is the dying stub (an `email-otp-login`
+    //   run fails loudly). See recipes/email-otp-login/README.md for the
+    //   one-time Email Routing setup.
+    // "INBOX_DOMAIN": "inbox.openhackers.club",
+    // INBOX_ALLOWED_SENDERS — optional comma-separated envelope-From DOMAIN
+    //   allowlist for the inbound handler (e.g. "auth0.com,clerk.com"). When set,
+    //   mail from any other sender domain is rejected before storage —
+    //   recommended hardening for a catch-all. Absent → all senders to a valid
+    //   `demo-` address are accepted (a warning is logged).
+    // "INBOX_ALLOWED_SENDERS": "auth0.com,clerk.com,stytch.com"
   },
 
   // Custom domain — the worker's public hostname on a zone we control
@@ -157,6 +176,17 @@
   // "send_email": [
   //   { "name": "SEND_EMAIL" }
   // ],
+
+  // INBOUND email — the worker also exports an `email()` handler
+  // (apps/dispatcher/src/routes/email-handler.ts) backing the `mailbox`
+  // capability's receive side. Inbound needs NO wrangler binding: a routing
+  // RULE wires addresses → this worker. To enable, set INBOX_DOMAIN above and
+  // create an Email Routing catch-all rule sending to this worker on that host
+  // (`wrangler email routing rule catch-all` or the dashboard). The handler
+  // `setReject`s any RCPT that is not a minted `demo-…` address, so a catch-all
+  // is safe even on a shared zone.
+
+
 
   // RunWorkflow (apps/dispatcher/src/workflow.ts) maps each run `step(...)` to a
   // durable WorkflowStep.do checkpoint under an Effect runtime — see PR4.

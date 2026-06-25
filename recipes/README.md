@@ -26,6 +26,7 @@ The **Recommended mode** column is the default each recipe is tuned for. See [sp
 | [test-matrix](test-matrix/) | Same command fanned out across N shards | Action | `ci.yml`, `matrix-fanout.run.ts`, `README.md` |
 | [cdp-acceptance](cdp-acceptance/) | Boot an app, drive it over CDP, assert on observations | Action | `ci.yml`, `cdp-acceptance.run.ts`, `README.md` |
 | [product-demo](product-demo/) | AI-driven walkthrough video of a deployed site, with a per-story summary | Action (+ Schedule) | `ci.yml`, `product-demo.run.ts`, `README.md` |
+| [email-otp-login](email-otp-login/) | Provision a fresh user through an OTP / magic-link login (Auth0/Clerk/own app) via a self-hosted disposable inbox | Action (+ Schedule) | `ci.yml`, `email-otp-login.run.ts`, `demo-form/`, `README.md` |
 
 | [security-scan](security-scan/) | Dependency / vulnerability scan, on PR and weekly | Action | `ci.yml`, `security-scan.run.ts`, `README.md` |
 | [deploy-smoke](deploy-smoke/) | Hit critical URLs after a successful deploy | Webhook | `smoke.run.ts`, `ci.yml`, `README.md` |

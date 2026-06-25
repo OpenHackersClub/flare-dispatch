@@ -14,6 +14,7 @@ import {
   cdpAcceptance,
   ciTriagePr,
   deploySmoke,
+  emailOtpLogin,
   matrixFanout,
   offloadTest,
   oxlint,
@@ -43,6 +44,7 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [releaseNotes.name]: releaseNotes as Run<unknown, unknown>,
   [oxlint.name]: oxlint as Run<unknown, unknown>,
   [vitestShard.name]: vitestShard as Run<unknown, unknown>,
+  [emailOtpLogin.name]: emailOtpLogin as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

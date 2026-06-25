@@ -23,3 +23,4 @@ export { refreshFixtures } from "./refresh-fixtures";
 export { selfHealPr } from "./self-heal-pr";
 export { releaseNotes } from "./release-notes";
 export { oxlint } from "./oxlint";
+export { emailOtpLogin } from "./email-otp-login";
