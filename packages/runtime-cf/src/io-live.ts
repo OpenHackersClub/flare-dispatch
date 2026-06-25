@@ -51,6 +51,11 @@ export const makeIOLive = (opts: IOLiveOptions = {}): Layer.Layer<IO> =>
     // replay-safe UUID source the DSL routes `io.uuid` through.
     uuid: Effect.sync(() => crypto.randomUUID()),
 
+    // This execution's id == the Workflow instanceId (the dispatcher passes it
+    // as `currentExecutionId`). A run reads it to address itself — e.g. the
+    // release-PR approval marker. `""` on a bare stand-alone IO layer.
+    executionId: Effect.succeed(opts.currentExecutionId ?? ""),
+
     // V0 runs are dispatched with explicit inputs, not env reads — there is no
     // per-run env surface yet. Honest `undefined` keeps `io.env` total.
     env: () => Effect.succeed(undefined),

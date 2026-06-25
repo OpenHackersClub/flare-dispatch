@@ -40,6 +40,12 @@ export type IOFakeOptions = {
    * comment links back to the log viewer.
    */
   readonly viewerUrl?: string;
+  /**
+   * The id `io.executionId` returns — the test stand-in for the Workflow
+   * instance id. `makeCFRuntimeTest` threads its own execution id in here so a
+   * run that reads `io.executionId` sees the same id steps record under.
+   */
+  readonly executionId?: string;
 };
 
 /**
@@ -67,6 +73,7 @@ export const makeIOFake = (
       const n = uuidSeq.toString().padStart(12, "0");
       return `00000000-0000-4000-8000-${n}`;
     }),
+    executionId: Effect.succeed(opts.executionId ?? ""),
     env: () => Effect.succeed(undefined),
     viewerUrl: Effect.succeed(Option.fromNullable(opts.viewerUrl)),
     sleep: () => Effect.void,

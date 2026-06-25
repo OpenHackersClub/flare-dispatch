@@ -22,6 +22,15 @@ export type PriorExecution<O> = {
 export interface IOService {
   readonly now: Effect.Effect<number>;
   readonly uuid: Effect.Effect<string>;
+  /**
+   * THIS execution's id — which is also the Workflow `instanceId`
+   * (`RUNS_WORKFLOW.create({ id: executionId })`). A run reads it to correlate
+   * an external surface back to itself: e.g. the `release-notes` run embeds it
+   * in the release-PR body so the webhook can `sendEvent` to the exact paused
+   * instance on merge/label. `""` when no per-execution id is wired (a bare
+   * stand-alone IO layer).
+   */
+  readonly executionId: Effect.Effect<string>;
   readonly env: (key: string) => Effect.Effect<string | undefined>;
   readonly sleep: (d: Duration.Duration | string) => Effect.Effect<void>;
   readonly log: (
@@ -53,6 +62,7 @@ export class IO extends Context.Tag("@flare-dispatch/core/IO")<IO, IOService>() 
 export const io = {
   now: Effect.flatMap(IO, (s) => s.now),
   uuid: Effect.flatMap(IO, (s) => s.uuid),
+  executionId: Effect.flatMap(IO, (s) => s.executionId),
   env: (key: string) => Effect.flatMap(IO, (s) => s.env(key)),
   sleep: (d: Duration.Duration | string) => Effect.flatMap(IO, (s) => s.sleep(d)),
   log: (level: LogLevel, msg: string, attrs?: Record<string, unknown>) =>

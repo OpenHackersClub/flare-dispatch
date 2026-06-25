@@ -24,8 +24,10 @@ flowchart LR
   CRON[Cron Trigger<br/>0 9 * * 1] -->|scheduled| RN[release-notes Workflow]
   RN --> D[collect-git<br/>last-tag..HEAD]
   D --> R[render notes<br/>semver bump + changelog<br/>in the Worker]
-  R --> U[upload-draft → R2]
+  R --> U[open-release-pr<br/>notes + wfId marker]
   U --> W{{waitForEvent<br/>hibernate ≤ 72h}}
+  PRm[Human merges PR<br/>or release:approve label] -->|webhook| W
+  PRr[Human closes PR<br/>or release:reject label] -->|webhook| W
   W -->|approve| P[publish-release<br/>github.createRelease]
   W -->|reject| X[stop]
 ```
@@ -38,8 +40,8 @@ The work is *thin orchestration over real primitives*; there is **no bespoke `re
 |---|---|
 | `collect-git` | `workspace` checkout + `sandbox.exec` plain `git` (`git describe --tags`, `git log <last-tag>..HEAD`) on the **existing** `flare-dispatch-review` image — used only for `git`, exactly like `spec-drift-pr`. |
 | *(render)* | Pure helpers in the Worker (`parseConventional`, `nextVersion`, `renderReleaseNotes`) — a semver bump derived from [Conventional Commits](https://www.conventionalcommits.org/) (`feat` → minor, `fix`/other → patch, `!`/`BREAKING CHANGE` → major) and a categorized changelog (Breaking / Features / Fixes / Performance / Documentation / Other) with PR links + contributors. Unit-tested and replay-safe. |
-| `upload-draft` | `artifact.upload` → signed R2 URL, linked from the check-run summary. |
-| `release approval` | `step.waitForEvent` — the durable 72h pause. |
+| `open-release-pr` | `github.openDraftPullRequest({ draft: false })` — commits the notes as `.flare-dispatch/releases/<tag>.md` and opens a **mergeable** PR whose body carries the notes + a hidden marker (see below). |
+| `release approval` | `step.waitForEvent` — the durable 72h pause, resumed by the webhook. |
 | `publish-release` | `github.createRelease` — see below. |
 
 ## The publish boundary — a capability write, not a PAT
@@ -48,25 +50,27 @@ Publishing a GitHub Release is a *write*. Rather than a container `gh` shell-out
 
 So there is **no `RELEASE_PUBLISH_TOKEN` secret to set**. On a deploy without App credentials, `createRelease` degrades to a logged no-op (the run returns `reason: "not-configured"`) rather than failing.
 
-## The approval payload
+## The approval surface — a release PR (GitHub-native)
 
-The approver authenticates against `/v1/admin/*` (the `ADMIN_TOKEN` bearer / Cloudflare Access) and POSTs:
+Approval happens **on GitHub**, not via a shared admin token. The PR body carries a hidden marker that pins the run's own Workflow instance id:
 
-```http
-POST /v1/admin/events/{wf_id}
-Authorization: Bearer ${ADMIN_TOKEN}
-Content-Type: application/json
-
-{ "type": "release-approval",
-  "payload": { "decision": "approve", "deciderEmail": "you@example.com" } }
+```html
+<!-- flare-dispatch:release-approval wf=<instanceId> tag=<tag> -->
 ```
 
-`decision: "reject"` stops the run (`reason: "rejected"`); the `wf_id` is the workflow instance id from the drafted run's check-run summary / log.
+A human:
+
+- **approves** by **merging the PR** (or adding the `release:approve` label), or
+- **rejects** by **closing it unmerged** (or the `release:reject` label).
+
+The Dispatcher's webhook (`apps/dispatcher/src/release-approval.ts`) reads the marker off the `pull_request` event, verifies the App webhook HMAC, and signals the paused run. **GitHub's own repo permissions are the authZ** (only someone who can merge/label a PR can approve), and the decider is a real GitHub identity — so no `ADMIN_TOKEN` is needed for this flow. The `pull_request` event is already in the App's subscription set (it powers `pr-review`), so nothing new to subscribe.
+
+The generic [`POST /v1/admin/events/:wf_id`](../../specs/05-byoc.md) endpoint (`ADMIN_TOKEN` bearer / Cloudflare Access) remains a **manual override** for the same `{ "type": "release-approval", "payload": { "decision": "approve", "decider": "you" } }` signal.
 
 ## Install
 
-1. Deploy FlareDispatch and install the GitHub App — [specs/05-byoc.md](../../specs/05-byoc.md). The App's installation must grant `contents: write` on the release repo (releases + tags).
+1. Deploy FlareDispatch and install the GitHub App with **webhooks on** — [specs/05-byoc.md](../../specs/05-byoc.md). The installation must grant `pull_requests: write` (open the release PR) and `contents: write` (releases + tags), and subscribe to `pull_request` events.
 2. Copy [`release-notes.run.ts`](release-notes.run.ts) into `runs/`, set `TARGET` to your release repo, register it in `runs/index.ts` + the Dispatcher registry.
 3. Add the cron to `wrangler.jsonc` — `"triggers": { "crons": ["0 9 * * 1"] }` — matching `schedules[].cron`, and `wrangler deploy`.
-4. Set `ADMIN_TOKEN` (`wrangler secret put ADMIN_TOKEN`) so approvers can authenticate, or front `/v1/admin/*` with a Cloudflare Access app ([specs/05-byoc.md § ship-ready checklist](../../specs/05-byoc.md#reference-ship-ready-checklist)).
-5. Each Monday 09:00 UTC the run drafts notes and pauses; approve from the link in the check-run summary to publish.
+4. *(Optional)* Set `ADMIN_TOKEN` only if you want the manual-override signalling path; the merge/label flow needs no secret.
+5. Each Monday 09:00 UTC the run drafts notes and opens the release PR; **merge it to publish** the GitHub Release.

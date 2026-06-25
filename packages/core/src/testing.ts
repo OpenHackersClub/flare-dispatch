@@ -74,6 +74,7 @@ import {
   type SandboxFakeState,
 } from "./fakes/sandbox-fake";
 import {
+  DEFAULT_TEST_EXECUTION_ID,
   makeStepRunnerInline,
   StepRunnerInline,
 } from "./fakes/step-runner-inline";
@@ -262,7 +263,11 @@ export const makeCFRuntimeTest = (
   );
   const browser = makeBrowserFake(opts.browser);
   const artifact = makeArtifactFake();
-  const io = makeIOFake(opts.io);
+  // One execution id shared by the step runner AND `io.executionId`, so a run
+  // that addresses itself (e.g. the release-PR marker) sees the same id its
+  // steps record under.
+  const executionId = opts.executionId ?? DEFAULT_TEST_EXECUTION_ID;
+  const io = makeIOFake({ ...opts.io, executionId });
   const checks = makeChecksFake();
   const emailFake = makeEmailFake();
   const github = makeGithubFake(opts.github);
@@ -273,7 +278,7 @@ export const makeCFRuntimeTest = (
   const executions = makeExecutionsFake();
   const eventQueue = opts.eventQueue ?? new Map<string, unknown[]>();
   const stepRunner = makeStepRunnerInline({
-    executionId: opts.executionId,
+    executionId,
     eventQueue,
   });
 

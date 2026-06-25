@@ -268,6 +268,8 @@ export type OpenDraftPullRequestOptions = {
   readonly body: string;
   readonly commitMessage: string;
   readonly files: readonly { readonly path: string; readonly content: string }[];
+  /** Open as a draft. Default `true`. */
+  readonly draft?: boolean;
   readonly apiBase?: string;
   readonly fetchImpl?: typeof fetch;
 };
@@ -278,7 +280,7 @@ export type OpenDraftPullRequestResult = {
   readonly created: boolean;
 };
 
-/** Commit the file edits and open (or update) a DRAFT PR. */
+/** Commit the file edits and open (or update) a PR (draft by default). */
 export const openDraftPullRequest = async (
   opts: OpenDraftPullRequestOptions,
 ): Promise<OpenDraftPullRequestResult> => {
@@ -289,7 +291,7 @@ export const openDraftPullRequest = async (
     headBranch: opts.headBranch,
     commitMessage: opts.commitMessage,
     files: opts.files,
-    pr: { title: opts.title, body: opts.body, draft: true },
+    pr: { title: opts.title, body: opts.body, draft: opts.draft ?? true },
     ...(opts.apiBase !== undefined ? { apiBase: opts.apiBase } : {}),
     ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
   });

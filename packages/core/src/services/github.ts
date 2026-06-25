@@ -102,6 +102,12 @@ export type OpenDraftPullRequest = {
   /** The files to write — full new contents, keyed by repo-relative path. */
   readonly files: readonly { readonly path: string; readonly content: string }[];
   /**
+   * Open the PR as a draft. Defaults to `true` (the spec-drift / ci-triage
+   * recipes want a draft a human promotes). The `release-notes` recipe opens a
+   * NON-draft PR (`draft: false`) so "merge to approve" is a one-click action.
+   */
+  readonly draft?: boolean;
+  /**
    * The GitHub installation id authenticating the writes. Optional — the live
    * Layer resolves it from the repo when absent (the App is the source of truth
    * for which installation covers a repo).

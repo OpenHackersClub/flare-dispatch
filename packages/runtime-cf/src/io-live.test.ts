@@ -280,6 +280,17 @@ describe("IOLive.viewerUrl", () => {
     expect(result).toEqual(Option.some(url));
   });
 
+  it("returns the dispatcher-threaded currentExecutionId via io.executionId", async () => {
+    const id = "release-notes:owner/repo:2026-W26";
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const io = yield* IO;
+        return yield* io.executionId;
+      }).pipe(Effect.provide(makeIOLive({ currentExecutionId: id }))),
+    );
+    expect(result).toBe(id);
+  });
+
   it("returns None when no logsViewerBase is configured", async () => {
     const result = await readViewerUrl(makeIOLive());
     expect(Option.isNone(result)).toBe(true);

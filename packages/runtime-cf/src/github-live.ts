@@ -242,6 +242,7 @@ export const makeGithubLive = (
               body: req.body,
               commitMessage: req.commitMessage,
               files: req.files,
+              ...(req.draft !== undefined ? { draft: req.draft } : {}),
             }),
           catch: (cause) => toGitHubApiError(cause),
         });
