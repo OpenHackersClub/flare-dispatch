@@ -24,6 +24,7 @@ import {
   refreshFixtures,
   releaseNotes,
   specDriftPr,
+  vitestShard,
 } from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
@@ -41,6 +42,7 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [refreshFixtures.name]: refreshFixtures as Run<unknown, unknown>,
   [releaseNotes.name]: releaseNotes as Run<unknown, unknown>,
   [oxlint.name]: oxlint as Run<unknown, unknown>,
+  [vitestShard.name]: vitestShard as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

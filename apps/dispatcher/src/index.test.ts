@@ -125,6 +125,7 @@ describe("GET /health", () => {
         "refresh-fixtures",
         "release-notes",
         "spec-drift-pr",
+        "vitest-shard",
       ],
     });
   });
