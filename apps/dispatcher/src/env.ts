@@ -281,6 +281,39 @@ export interface Env {
   readonly EMAIL_ALLOWED_RECIPIENTS?: string;
 
   /**
+   * The Email Routing catch-all domain disposable test inboxes are minted on —
+   * e.g. `inbox.openhackers.club`. A var, not a secret (a public domain). The
+   * `mailbox` capability mints `demo-<rand>@<INBOX_DOMAIN>` and the inbound
+   * `email()` handler stores mail addressed to it. Absent → the `mailbox`
+   * capability is the dying stub (an `email-otp-login` run fails loudly); the
+   * inbound handler still runs but every RCPT it sees would be `setReject`ed by
+   * the prefix guard. Requires an Email Routing catch-all rule → this Worker on
+   * that domain (`wrangler email routing` / dashboard). specs/03-dsl.md § mailbox.
+   */
+  readonly INBOX_DOMAIN?: string;
+
+  /**
+   * Optional comma-separated allowlist of envelope-From DOMAINS the inbound
+   * `email()` handler will accept mail from (e.g.
+   * `auth0.com,clerk.com,accounts.google.com`). When set, mail whose sender
+   * domain is not listed is `setReject`ed before storage — the recommended
+   * hardening for a catch-all (the prefix guard alone already refuses non-`demo-`
+   * RCPTs). Absent → all senders to a valid `demo-` address are accepted (a
+   * warning is logged). A var, not a secret.
+   */
+  readonly INBOX_ALLOWED_SENDERS?: string;
+
+  /**
+   * Optional dedicated keying material for the mailbox read-route capability
+   * tokens (apps/dispatcher/src/mailbox-token.ts). A Worker secret. When unset,
+   * mailbox tokens derive from `HMAC_SECRET` instead (HKDF label keeps them
+   * independent). Set a dedicated value to rotate mailbox-read links
+   * independently of the dispatch HMAC. Absent AND `HMAC_SECRET` absent → the
+   * `GET /v1/mailbox/:localPart` route default-denies (`503`).
+   */
+  readonly MAILBOX_LINK_SECRET?: string;
+
+  /**
    * Cloudflare Workers AI binding — backs the `modelGateway` capability the
    * `pr-review` engine calls. The binding IS the auth (Workers AI is
    * account-billed), so no model API key is configured. Declared as

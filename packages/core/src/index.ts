@@ -139,6 +139,27 @@ export {
   type EmailRejection,
 } from "./services/email";
 export {
+  mailbox,
+  Mailbox,
+  type MailboxService,
+  type AllocateOpts,
+} from "./services/mailbox";
+export {
+  INBOX_EVENT_TYPE,
+  INBOX_LOCAL_PREFIX,
+  INBOX_LOCAL_PART_RE,
+  INBOX_DEFAULT_TTL_SEC,
+  INBOX_DEFAULT_WAIT,
+  InboxMessage,
+  InboxAddress,
+  buildInboxAddress,
+  mintLocalPart,
+  isInboxLocalPart,
+  parseInboxLocalPart,
+  type OtpExtraction,
+} from "./mailbox/contract";
+export { extractOtp, extractCode, extractLink } from "./mailbox/extract";
+export {
   github,
   Github,
   type GithubService,

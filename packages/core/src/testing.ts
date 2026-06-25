@@ -41,6 +41,11 @@ import {
 } from "./fakes/executions-fake";
 import { IOFake, type IOFakeState, makeIOFake } from "./fakes/io-fake";
 import {
+  MailboxFake,
+  type MailboxFakeState,
+  makeMailboxFake,
+} from "./fakes/mailbox-fake";
+import {
   BrowserFake,
   type BrowserFakeState,
   CacheFake,
@@ -105,6 +110,12 @@ export {
   makeEmailFake,
   type EmailFakeState,
 } from "./fakes/email-fake";
+export {
+  MailboxFake,
+  makeMailboxFake,
+  type MailboxFakeState,
+  type MailboxFakeOptions,
+} from "./fakes/mailbox-fake";
 export {
   ExecutionsFake,
   makeExecutionsFake,
@@ -181,6 +192,7 @@ export const CFRuntimeTest: Layer.Layer<RunContext> = Layer.mergeAll(
   ConfigFake,
   ChecksFake,
   EmailFake,
+  MailboxFake,
   GithubFake,
   CloudflareFake,
   ModelGatewayFake,
@@ -199,6 +211,7 @@ export type CFRuntimeTestHandles = {
   readonly io: IOFakeState;
   readonly checks: ChecksFakeState;
   readonly email: EmailFakeState;
+  readonly mailbox: MailboxFakeState;
   readonly executions: ExecutionsFakeState;
   readonly github: GithubFakeState;
   readonly cloudflare: CloudflareFakeState;
@@ -224,6 +237,9 @@ export type CFRuntimeTestOptions = {
   readonly browser?: Parameters<typeof makeBrowserFake>[0];
   /** Config-store seed — `config.get` keys a run / `loadSecrets` resolves. */
   readonly config?: Record<string, string>;
+  /** Mailbox fake options — the inbox domain + local-part seed the
+   * deterministic `allocate` mint uses. */
+  readonly mailbox?: Parameters<typeof makeMailboxFake>[0];
   /** Github fake seed — repos + PRs + workflow runs returned by `github.*`. */
   readonly github?: Parameters<typeof makeGithubFake>[0];
   /** Cloudflare fake seed — deployments returned by `cloudflare.*`. */
@@ -270,6 +286,7 @@ export const makeCFRuntimeTest = (
   const io = makeIOFake({ ...opts.io, executionId });
   const checks = makeChecksFake();
   const emailFake = makeEmailFake();
+  const mailboxFake = makeMailboxFake(opts.mailbox);
   const github = makeGithubFake(opts.github);
   const cloudflare = makeCloudflareFake(opts.cloudflare);
   const modelGateway = makeModelGatewayFake(opts.modelGateway);
@@ -291,6 +308,7 @@ export const makeCFRuntimeTest = (
     makeConfigFake(opts.config),
     checks.layer,
     emailFake.layer,
+    mailboxFake.layer,
     github.layer,
     cloudflare.layer,
     modelGateway.layer,
@@ -309,6 +327,7 @@ export const makeCFRuntimeTest = (
       io: io.state,
       checks: checks.state,
       email: emailFake.state,
+      mailbox: mailboxFake.state,
       github: github.state,
       cloudflare: cloudflare.state,
       modelGateway: modelGateway.state,

@@ -115,6 +115,7 @@ describe("GET /health", () => {
         "cdp-acceptance",
         "ci-triage-pr",
         "deploy-smoke",
+        "email-otp-login",
         "matrix-fanout",
         "offload-test",
         "oxlint",

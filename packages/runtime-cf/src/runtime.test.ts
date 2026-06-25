@@ -45,6 +45,7 @@ import {
 } from "./deferred";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
 import { makeEmailCloudflareLive } from "./email-cf";
+import { makeMailboxCloudflareLive } from "./mailbox-cf";
 import { makeIOLive } from "./io-live";
 import { makeStepRunnerCloudflare } from "./step-runner-cf";
 import { countRows, makeTestBindings, type TestBindings } from "./test-support";
@@ -105,6 +106,8 @@ const makeRuntimeUnderTest = (
     makeChecksGithubLive(undefined),
     // No Email Routing in this suite → the no-op `Email` Layer.
     makeEmailCloudflareLive(undefined),
+    // No INBOX_DOMAIN in this suite → the dying `Mailbox` stub.
+    makeMailboxCloudflareLive(undefined),
     // No RUNS_WORKFLOW binding in this suite → the dying `ChildRuns` stub.
     ChildRunsDeferred,
     executions,

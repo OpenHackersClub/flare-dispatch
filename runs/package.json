@@ -13,7 +13,8 @@
     "./matrix-fanout": "./matrix-fanout.ts",
     "./playwright-e2e": "./playwright-e2e.ts",
     "./product-demo": "./product-demo.ts",
-    "./pr-review": "./pr-review.ts"
+    "./pr-review": "./pr-review.ts",
+    "./email-otp-login": "./email-otp-login.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -1,0 +1,16 @@
+{
+  // Generic OTP auth demo target for the `email-otp-login` recipe.
+  // Deploy: `wrangler kv namespace create OTP_KV` (paste the id below), then
+  // `wrangler secret put RESEND_API_KEY` + set RESEND_FROM, then `wrangler deploy`.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "otp-demo",
+  "main": "worker.ts",
+  "compatibility_date": "2025-06-01",
+  "kv_namespaces": [{ "binding": "OTP_KV", "id": "<run: wrangler kv namespace create OTP_KV>" }],
+  "vars": {
+    // The DKIM-signed sender Resend delivers from. The disposable inbox domain
+    // then RECEIVES it (inbound has no verified-destination constraint).
+    "RESEND_FROM": "login@<your-resend-domain>"
+    // RESEND_API_KEY is a secret: `wrangler secret put RESEND_API_KEY`.
+  }
+}

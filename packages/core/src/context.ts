@@ -22,6 +22,7 @@ import type { Email } from "./services/email";
 import type { Executions } from "./services/executions";
 import type { Github } from "./services/github";
 import type { IO } from "./services/io";
+import type { Mailbox } from "./services/mailbox";
 import type { ModelGateway } from "./services/model-gateway";
 import type { Oidc } from "./services/oidc";
 import type { Sandbox } from "./services/sandbox";
@@ -37,6 +38,7 @@ export type RunContext =
   | Config
   | Checks
   | Email
+  | Mailbox
   | Github
   | Cloudflare
   | ModelGateway

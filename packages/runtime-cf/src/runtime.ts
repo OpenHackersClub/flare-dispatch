@@ -38,6 +38,10 @@ import {
   makeEmailCloudflareLive,
 } from "./email-cf";
 import {
+  type MailboxCloudflareConfig,
+  makeMailboxCloudflareLive,
+} from "./mailbox-cf";
+import {
   BrowserDeferred,
   ChildRunsDeferred,
   CloudflareDeferred,
@@ -186,6 +190,15 @@ export type CFRuntimeLiveOptions = {
    */
   readonly email?: EmailCloudflareConfig;
   /**
+   * Cloudflare Email Routing + D1 config for the `mailbox` capability — the
+   * `INBOX_DOMAIN` catch-all domain + the read-token signer. `undefined` (no
+   * `INBOX_DOMAIN` on this deploy) selects the dying `Mailbox` stub: a run that
+   * calls `mailbox.allocate` (via `provisionInbox`) fails loudly rather than
+   * minting an address no inbound rule will deliver to. Only the
+   * `email-otp-login` family of runs touches the Tag.
+   */
+  readonly mailbox?: MailboxCloudflareConfig;
+  /**
    * Cloudflare Workers AI binding (`env.AI`) for the `modelGateway` capability —
    * the model backend the `pr-review` engine calls. The binding is the auth
    * (Workers AI is account-billed), so no model API key is configured. `undefined`
@@ -284,6 +297,10 @@ export const makeCFRuntimeLive = (
   // configured; absent, the no-op Layer logs and skips (notification must never
   // fail a run).
   const email = makeEmailCloudflareLive(opts.email);
+  // `Mailbox` is live when `INBOX_DOMAIN` is configured; absent, the dying stub
+  // keeps a provisioning run (`email-otp-login`) from minting addresses no
+  // inbound rule delivers to.
+  const mailbox = makeMailboxCloudflareLive(opts.mailbox);
   // `ModelGateway` is live when the Workers AI `"ai"` binding is present; absent,
   // the dying stub keeps a model-calling run from silently mis-behaving. The
   // binding is the auth (account-billed) — no model API key is configured.
@@ -363,6 +380,7 @@ export const makeCFRuntimeLive = (
     config,
     checks,
     email,
+    mailbox,
     github,
     cloudflare,
     modelGateway,

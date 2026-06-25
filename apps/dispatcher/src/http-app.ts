@@ -49,6 +49,7 @@ import {
   handleInstalled,
 } from "./routes/github";
 import { handleLogFile, handleLogsAggregate, handleLogViewer } from "./routes/logs";
+import { handleMailboxRead } from "./routes/mailbox";
 import { handleOidcDiscovery, handleOidcJwks } from "./routes/oidc";
 import { handleProductDemo } from "./routes/product-demos";
 import { handleReplay } from "./routes/replay";
@@ -446,6 +447,15 @@ const router = baseRouter.pipe(
     route("GET", ({ request }) => handleInstalled(request)),
   ),
   HttpRouter.all("/v1/dashboard.json", dashboardJsonRoute),
+  // Container-side OTP read — TOKEN-ONLY (no `viewer: true`): a sandbox can't
+  // carry an Access JWT, so the expiring capability token + burn-after-read are
+  // the gate. See routes/mailbox.ts for the posture.
+  HttpRouter.all(
+    "/v1/mailbox/:localPart",
+    route("GET", ({ env, params, url }) =>
+      handleMailboxRead(env, decode(params, "localPart"), url),
+    ),
+  ),
   HttpRouter.all("/*", Effect.succeed(notFound)),
 );
 

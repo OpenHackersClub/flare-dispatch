@@ -17,5 +17,10 @@ export { waitForChildren } from "./wait-for-children";
 export { bootApp } from "./boot-app";
 export { probeHttp, type ProbeResult } from "./probe-http";
 export { loadSecrets } from "./load-secrets";
+export {
+  provisionInbox,
+  waitForOtp,
+  type OtpResult,
+} from "./wait-for-otp";
 export { awsAssumeRole, type AwsCredentials } from "./aws-assume-role";
 export { isoDate, parseList } from "./scheduling";
