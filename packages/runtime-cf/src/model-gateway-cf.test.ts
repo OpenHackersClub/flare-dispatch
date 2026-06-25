@@ -110,6 +110,28 @@ describe("makeModelGatewayLive", () => {
     expect(seen.options).toEqual({ gateway: { id: "numu-staging" } });
   });
 
+  it("forwards a jsonSchema as response_format (constrained decoding)", async () => {
+    const { ai, seen } = stubAi({ response: '{"findings":[]}' });
+    await run(ai, "g", {
+      model: "@cf/zai-org/glm-5.2",
+      system: "s",
+      user: "u",
+      jsonSchema: { type: "object", properties: { findings: {} } },
+    });
+    expect((seen.inputs as Record<string, unknown>).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { type: "object", properties: { findings: {} } },
+    });
+  });
+
+  it("omits response_format when no jsonSchema is set", async () => {
+    const { ai, seen } = stubAi({ response: "ok" });
+    await run(ai, "g", { model: "m", system: "s", user: "u" });
+    expect(
+      "response_format" in (seen.inputs as Record<string, unknown>),
+    ).toBe(false);
+  });
+
   it("fails ModelGatewayError when the binding throws", async () => {
     const ai: AiBinding = {
       run: () => Promise.reject(new Error("429 Too Many Requests")),
@@ -329,6 +351,24 @@ describe("makeModelGatewayLive — deepseek universal route", () => {
     ]);
     // No tools sent in json mode.
     expect("tools" in query).toBe(false);
+  });
+
+  it("sets response_format json_object when a jsonSchema is present (no tools)", async () => {
+    const { ai, seen } = stubGatewayAi({
+      choices: [{ message: { content: '{"findings":[]}' } }],
+    });
+    await Effect.runPromise(
+      modelGateway
+        .complete({
+          model: "deepseek/deepseek-reasoner",
+          system: "s",
+          user: "u",
+          jsonSchema: { type: "object" },
+        })
+        .pipe(Effect.provide(makeModelGatewayLive(ai, "g"))),
+    );
+    const query = seen.request?.query as Record<string, unknown>;
+    expect(query.response_format).toEqual({ type: "json_object" });
   });
 
   it("maps OpenAI tool_calls (JSON-string arguments) to toolCalls and defaults max_tokens", async () => {

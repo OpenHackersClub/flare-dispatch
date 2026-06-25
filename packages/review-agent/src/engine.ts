@@ -48,15 +48,23 @@ import {
 import { Effect, Either, JSONSchema, ParseResult, Schema } from "effect";
 import { type ReviewMode } from "./backend.js";
 import { ModelCallFailed, StructuredOutputInvalid } from "./errors.js";
-import { extractJsonText } from "./json-extract.js";
+import { extractJsonCandidates } from "./json-extract.js";
 import {
   type CoordinatedReview as CoordinatedReviewType,
   Finding,
   type Tier,
 } from "./schemas.js";
 
-/** Token budget for a domain review model call. */
-const REVIEW_MAX_TOKENS = 2048;
+/**
+ * Fallback token budget for a domain review model call when the resolved backend
+ * doesn't specify one. Sized for reasoning models (GLM / Kimi / DeepSeek): they
+ * spend output tokens inside `<think>` BEFORE emitting the JSON answer, so a tight
+ * budget truncates the answer (the unterminated `<think>` is then stripped to EOF
+ * → "no JSON object found"). `max_tokens` is a ceiling, so non-reasoning models
+ * that answer in a few hundred tokens are unaffected. Per-backend overrides live
+ * in `pr-review.<backend>.maxTokens` (CONFIG_KV).
+ */
+const REVIEW_MAX_TOKENS = 8192;
 
 /** Max chars of raw model text we attach to a `StructuredOutputInvalid`. */
 const EXCERPT_LEN = 400;
@@ -185,8 +193,8 @@ const parseStructured = <A>(
         }),
       );
     }
-    const candidate = extractJsonText(text);
-    if (candidate === undefined) {
+    const candidates = extractJsonCandidates(text);
+    if (candidates.length === 0) {
       return yield* Effect.fail(
         new StructuredOutputInvalid({
           ...ctx,
@@ -198,18 +206,42 @@ const parseStructured = <A>(
       );
     }
 
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(candidate) as unknown,
-      catch: () =>
-        new StructuredOutputInvalid({
+    // Reasoning models bury the answer in the LAST balanced value and emit
+    // earlier JSON-ish fragments (quoted code, example objects) while thinking —
+    // so try candidates last-first and keep the first that BOTH parses AND
+    // decodes against the schema. `lastError` carries the most specific failure
+    // for the PR comment when none validate.
+    let lastError: StructuredOutputInvalid = new StructuredOutputInvalid({
+      ...ctx,
+      reason: "empty",
+      excerpt: excerpt(text),
+      message:
+        "no JSON object found in the model response (after stripping <think> + code fences)",
+    });
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const candidate = candidates[i] as string;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(candidate) as unknown;
+      } catch {
+        lastError = new StructuredOutputInvalid({
           ...ctx,
           reason: "not-json",
           excerpt: excerpt(candidate),
           message: "response text was not valid JSON",
-        }),
-    });
-
-    return yield* decodeAgainst(parsed, decode, ctx, candidate);
+        });
+        continue;
+      }
+      const decoded = decode(parsed);
+      if (Either.isRight(decoded)) return decoded.right;
+      lastError = new StructuredOutputInvalid({
+        ...ctx,
+        reason: "schema-mismatch",
+        excerpt: excerpt(candidate),
+        message: `value did not match the expected schema — ${ParseResult.TreeFormatter.formatErrorSync(decoded.left)}`,
+      });
+    }
+    return yield* Effect.fail(lastError);
   });
 
 /**
@@ -298,6 +330,12 @@ export type ReviewDomainInput = {
   /** Output mode — "tools" (default) sends a tool; "json" parses text. */
   readonly mode?: ReviewMode;
   /**
+   * Token budget for the call (the resolved backend's `maxTokens`). Falls back
+   * to {@link REVIEW_MAX_TOKENS} — sized so a reasoning model can think AND emit
+   * the JSON answer without truncation.
+   */
+  readonly maxTokens?: number;
+  /**
    * Optional AWS creds — required only for `bedrock/*` models. Threaded through
    * to `completeStructured` → `completeRaw` → `modelGateway.complete`. Other
    * backends ignore.
@@ -323,6 +361,13 @@ const completeRaw = (opts: {
   readonly tools?: ReadonlyArray<ModelTool>;
   readonly maxTokens?: number;
   /**
+   * Optional JSON Schema for constrained decoding (`response_format`). When set,
+   * a provider that supports guided generation emits schema-valid JSON by
+   * construction; providers that don't ignore it and the response still falls
+   * through the text extractor. Set on the json-mode path only.
+   */
+  readonly jsonSchema?: unknown;
+  /**
    * Optional AWS credentials threaded through to the modelGateway — required
    * only for `bedrock/*` model ids (the Bedrock route SigV4-signs with these
    * short-lived STS creds). Other backends ignore this field.
@@ -341,6 +386,7 @@ const completeRaw = (opts: {
       user: opts.user,
       maxTokens: opts.maxTokens ?? REVIEW_MAX_TOKENS,
       ...(opts.tools !== undefined ? { tools: opts.tools } : {}),
+      ...(opts.jsonSchema !== undefined ? { jsonSchema: opts.jsonSchema } : {}),
       ...(opts.aws !== undefined ? { aws: opts.aws } : {}),
     })
     .pipe(
@@ -471,6 +517,10 @@ export const completeStructured = <A>(
       model: input.model,
       system: input.system,
       user: framedUser("json"),
+      // Constrained decoding: providers that support guided JSON emit a
+      // schema-valid object directly; others ignore it and the text extractor
+      // still runs. The schema mirrors the `report` tool's parameters.
+      jsonSchema: toolParametersSchema(input.schema),
       ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
       ...(input.aws !== undefined ? { aws: input.aws } : {}),
     });
@@ -541,7 +591,7 @@ export const reviewDomain = (
     toolName: "report",
     toolDescription: REPORT_TOOL_DESCRIPTION,
     surface: "review",
-    maxTokens: REVIEW_MAX_TOKENS,
+    maxTokens: input.maxTokens ?? REVIEW_MAX_TOKENS,
   }).pipe(Effect.map((o) => o.findings));
 
 /** The domain-specific body of a reviewer's user message (no per-mode framing). */

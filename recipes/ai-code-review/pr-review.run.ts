@@ -30,6 +30,7 @@
 //   CONFIG_KV  pr-review.opencode.model  bare Workers AI model id (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast)
 //   CONFIG_KV  pr-review.opencode.mode   "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.<backend>.maxDiffChars  (optional) override the per-backend diff cap — a positive int clamped to [1_000, 1_000_000]. Defaults: catalog/opencode/reasonix 60_000, anthropic/bedrock 240_000. Raise it for a big-context Workers AI model (GLM / Kimi); a value above the model's context overflows invisibly.
+//   CONFIG_KV  pr-review.<backend>.maxTokens  (optional) override the per-backend output-token budget — a positive int clamped to [256, 32_768]. Defaults: catalog/opencode/reasonix 8_192, anthropic/bedrock 4_096. A ceiling (non-reasoning models unaffected); raise it if a reasoning model truncates inside <think> before the JSON answer.
 //   CONFIG_KV  pr-review.reasonix.model  reasoning-model id — a bare Workers AI distill (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b) OR a `deepseek/`-prefixed hosted reasoner (e.g. deepseek/deepseek-reasoner) — BYOK via AI Gateway, the real model
 //   CONFIG_KV  pr-review.reasonix.mode   "tools" | "json"  (default "json" — DeepSeek ignores tool-calls)
 //   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
@@ -454,6 +455,7 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
             model: resolved.model,
             backend: resolved.backend,
             mode: resolved.mode,
+            maxTokens: resolved.maxTokens,
             systemPrompt,
             ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
           }),

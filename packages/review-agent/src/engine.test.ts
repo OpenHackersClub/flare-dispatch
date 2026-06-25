@@ -290,6 +290,33 @@ describe("reviewDomain", () => {
     expect(result).toEqual([]);
   });
 
+  it("json mode — skips earlier reasoning fragments and decodes the real answer last", async () => {
+    // A reasoning model writes an unrelated example object + quotes code while
+    // thinking, THEN emits the real findings object last. The engine must skip
+    // the schema-mismatching / non-JSON candidates and decode the last valid one
+    // (the GLM-5.2 / Kimi-k2.7 failure mode that the old first-brace extractor hit).
+    const text = [
+      'I might shape it as { "severity": "high" }.',
+      "```rust",
+      "let cfg = Config { retries: 3 };",
+      "```",
+      JSON.stringify({ findings: [finding] }),
+    ].join("\n");
+    const { layer } = withGateway([textResult(text)]);
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/zai-org/glm-5.2",
+        backend: "opencode",
+        mode: "json",
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual([finding]);
+  });
+
   it("json mode — fails StructuredOutputInvalid on schema mismatch", async () => {
     const { layer } = withGateway([
       // `level` is not in the allowed set → schema mismatch after parse.
