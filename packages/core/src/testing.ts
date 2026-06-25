@@ -72,10 +72,8 @@ import {
   makeSandboxFake,
   SandboxFake,
   type SandboxFakeState,
-  sandboxFakeProgram,
 } from "./fakes/sandbox-fake";
 import {
-  DEFAULT_TEST_EXECUTION_ID,
   makeStepRunnerInline,
   StepRunnerInline,
 } from "./fakes/step-runner-inline";

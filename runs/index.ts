@@ -21,3 +21,4 @@ export { ciTriagePr } from "./ci-triage-pr";
 export { refreshFixtures } from "./refresh-fixtures";
 export { selfHealPr } from "./self-heal-pr";
 export { releaseNotes } from "./release-notes";
+export { oxlint } from "./oxlint";

@@ -91,7 +91,7 @@ export const awsAssumeRole = (opts: {
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body,
         }),
-      catch: (cause) =>
+      catch: (_cause) =>
         new StsAssumeRoleFailed({
           provider: "aws",
           status: 0,

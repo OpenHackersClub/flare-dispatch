@@ -16,6 +16,7 @@ import {
   deploySmoke,
   matrixFanout,
   offloadTest,
+  oxlint,
   playwrightDemo,
   playwrightE2E,
   prReview,
@@ -39,6 +40,7 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [ciTriagePr.name]: ciTriagePr as Run<unknown, unknown>,
   [refreshFixtures.name]: refreshFixtures as Run<unknown, unknown>,
   [releaseNotes.name]: releaseNotes as Run<unknown, unknown>,
+  [oxlint.name]: oxlint as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

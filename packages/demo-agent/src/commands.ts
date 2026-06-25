@@ -13,7 +13,7 @@
 
 import * as Command from "@effect/cli/Command";
 import * as Options from "@effect/cli/Options";
-import { Console, Effect, Layer, Match, Option } from "effect";
+import { Console, Effect, Match, Option } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { attachCdp, applyViewport } from "./cdp.js";

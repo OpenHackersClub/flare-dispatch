@@ -232,7 +232,7 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
     expect(seen.request?.endpoint).toBe("v1/messages");
     // Anthropic rejects a Messages call without its API version pin.
     expect(
-      (seen.request?.headers as Record<string, string>)["anthropic-version"],
+      (seen.request!.headers as Record<string, string>)["anthropic-version"],
     ).toBe("2023-06-01");
     const query = seen.request?.query as Record<string, unknown>;
     // The `anthropic/` prefix is stripped — the provider gets its own naming.
@@ -297,7 +297,7 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
         ),
     );
     expect(
-      (seen.request?.headers as Record<string, string>)["cf-aig-authorization"],
+      (seen.request!.headers as Record<string, string>)["cf-aig-authorization"],
     ).toBe("Bearer tok_abc");
   });
 
@@ -309,7 +309,7 @@ describe("makeModelGatewayLive — anthropic universal route", () => {
       user: "u",
     });
     expect(
-      "cf-aig-authorization" in (seen.request?.headers as Record<string, string>),
+      "cf-aig-authorization" in (seen.request!.headers as Record<string, string>),
     ).toBe(false);
   });
 });
@@ -451,7 +451,7 @@ describe("makeModelGatewayLive — deepseek universal route", () => {
         ),
     );
     expect(
-      (seen.request?.headers as Record<string, string>)["cf-aig-authorization"],
+      (seen.request!.headers as Record<string, string>)["cf-aig-authorization"],
     ).toBe("Bearer tok_xyz");
   });
 });

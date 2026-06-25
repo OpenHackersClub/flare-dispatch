@@ -75,6 +75,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # Lint with oxlint (the Oxc Rust linter). Fast, deterministic, no infra —
+      # a correctness gate that runs natively on GHA next to typecheck rather
+      # than burning a Container roundtrip. The `oxlint` *run* offloads linting
+      # of consumer repos; this lints FlareDispatch's own source (dogfood).
+      - name: Lint (oxlint)
+        run: pnpm lint
+
       # The dashboard SPA (apps/dashboard) is outside the root `typecheck`
       # filter, so type-check + build it here: catches both type errors and a
       # broken Vite build before merge. This is the same `dist/` the deploy

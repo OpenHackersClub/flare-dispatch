@@ -156,7 +156,7 @@ export const makeOidcLive = (config: OidcLiveConfig): Layer.Layer<Oidc> => {
               iat,
               exp,
               jti: crypto.randomUUID(),
-              ...(claims ?? {}),
+              ...claims,
             }),
           );
           const signingInput = `${headerSegment}.${payloadSegment}`;
