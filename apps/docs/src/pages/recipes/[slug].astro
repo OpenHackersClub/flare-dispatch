@@ -4,7 +4,7 @@ import { Code } from "astro:components";
 import BaseLayout from "../../layouts/BaseLayout.astro";
 import RecipeSidebar from "../../components/RecipeSidebar.astro";
 import MermaidRunner from "../../components/MermaidRunner.astro";
-import { recipes } from "../../lib/recipes";
+import { recipes, WIRING_SUMMARY } from "../../lib/recipes";
 import { readRecipeFile } from "../../lib/recipe-files";
 
 export async function getStaticPaths() {
@@ -65,21 +65,42 @@ const fileSubGroup = `compare-files-${recipe.slug}`;
         <div class="doc-header__crumb">
           <a href="/recipes">Recipes</a>
           <span class="sep">/</span>
-          <span>{recipe.mode} mode</span>
+          <span>{recipe.triggerKind === "wall-clock" ? "Wall-clock" : "Event-driven"}</span>
         </div>
         <h1>{recipe.label}</h1>
       </header>
 
       <p class="recipe-lede">{recipe.blurb}</p>
 
+      {/* Wiring strip — a recipe is a run you can plumb several ways. The run
+          is the constant; these are the wirings, recommended first. */}
+      <section class="wiring-strip" aria-label="How to wire this recipe">
+        <p class="wiring-strip__trigger">
+          <span class="wiring-strip__label">Fires on</span>
+          <strong>{recipe.trigger}</strong>
+          <span class="wiring-strip__hint">— wire it any of these ways:</span>
+        </p>
+        <ul class="wiring-strip__list">
+          {recipe.wirings.map((w, i) => (
+            <li class:list={["wiring-row", i === 0 && "wiring-row--rec"]}>
+              <span class:list={["wiring-chip", `wiring-chip--${w.status}`]}>
+                {w.kind}
+                {w.status === "pattern" && <span class="wiring-chip__tag">pattern</span>}
+              </span>
+              {i === 0 && <span class="wiring-row__rec">recommended</span>}
+              <span class="wiring-row__summary">
+                {WIRING_SUMMARY[w.kind]}
+                {w.note && <em> ({w.note})</em>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
       <dl class="recipe-meta">
         <div>
           <dt>Use case</dt>
           <dd>{recipe.useCase}</dd>
-        </div>
-        <div>
-          <dt>Recommended mode</dt>
-          <dd>{recipe.mode}</dd>
         </div>
         {
           recipe.shape && (

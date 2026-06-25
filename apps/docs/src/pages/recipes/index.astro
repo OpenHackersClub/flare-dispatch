@@ -2,24 +2,21 @@
 import BaseLayout from "../../layouts/BaseLayout.astro";
 import { recipes } from "../../lib/recipes";
 
+// Grouped by what FIRES the run — NOT by a single "mode". A recipe is a run +
+// a use case; the wiring (Webhook / Action / Schedule) is a dimension shown
+// per card, recommended-first.
 const sections = [
   {
     number: "01",
-    title: "Action mode",
-    note: "Recommended trigger: a GitHub Actions workflow (ci.yml) that calls the shipped run via openhackersclub/flare-dispatch-action. The typed Effect-TS run is included alongside it.",
-    items: recipes.filter((r) => r.mode === "Action"),
+    title: "Event-driven",
+    note: "Fires on a GitHub event (a PR push, a deploy). Wire it as Webhook (the App fires the run directly — no ci.yml) or Action (a ci.yml step), whichever fits; both post back as a Check Run. Webhook is shipped where the run's inputs come from the event itself.",
+    items: recipes.filter((r) => r.triggerKind === "github-event"),
   },
   {
     number: "02",
-    title: "Webhook mode",
-    note: "Recommended trigger: the typed run's own triggers block — the FlareDispatch GitHub App webhook fires it directly, zero GHA minutes. An Action-mode ci.yml is included as the GHA-native alternative.",
-    items: recipes.filter((r) => r.mode === "Webhook"),
-  },
-  {
-    number: "03",
-    title: "Schedule mode",
-    note: "Recommended trigger: the typed run's own schedules block — a Cloudflare Cron Trigger fires it on a wall-clock cadence. No GitHub event, no GHA minutes, no workflow file; the cron expression also goes in wrangler.jsonc triggers.crons.",
-    items: recipes.filter((r) => r.mode === "Schedule"),
+    title: "Wall-clock",
+    note: "Fires on a Cloudflare Cron Trigger — no GitHub event, no GHA minutes, no workflow file. The cron expression also goes in wrangler.jsonc triggers.crons; a GHA on: schedule step is the GHA-native alternative.",
+    items: recipes.filter((r) => r.triggerKind === "wall-clock"),
   },
 ];
 ---
@@ -37,15 +34,15 @@ const sections = [
       <p>
         Each recipe is a copy-paste starting point for wiring a real CI use case
         onto FlareDispatch — adjust the inputs and drop it into your repo. Every
-        recipe ships a typed Effect-TS run (<code>*.run.ts</code>); Action-mode
-        recipes also ship a thin GitHub Actions dispatcher (<code>ci.yml</code>).
-        Recipes are grouped below by their recommended trigger mode.
+        recipe is a typed Effect-TS run (<code>*.run.ts</code>); the wiring —
+        <strong>Webhook</strong>, <strong>Action</strong>, or
+        <strong>Schedule</strong> — is a dimension, not a category. The chips on
+        each card show which wirings it supports, recommended first.
       </p>
       <p class="docs-index__compare-hint">
-        Action- and Webhook-mode recipes also surface a <em>baseline</em> on
-        their page — the full GitHub Actions workflow you'd have to maintain
-        to do the same job <em>without</em> FlareDispatch — so the contrast
-        is in plain sight.
+        Event-driven recipes also surface a <em>baseline</em> on their page —
+        the full GitHub Actions workflow you'd have to maintain to do the same
+        job <em>without</em> FlareDispatch — so the contrast is in plain sight.
       </p>
     </header>
 
@@ -62,6 +59,21 @@ const sections = [
               <a class="docs-index__card" href={`/recipes/${recipe.slug}`}>
                 <span class="docs-index__card-title">{recipe.label}</span>
                 <p class="docs-index__card-blurb">{recipe.useCase}.</p>
+                <span class="wiring-chips">
+                  {recipe.wirings.map((w, i) => (
+                    <span
+                      class:list={[
+                        "wiring-chip",
+                        `wiring-chip--${w.status}`,
+                        i === 0 && "wiring-chip--rec",
+                      ]}
+                      title={w.status === "shipped" ? "Shipped wiring" : "Setup pattern you add"}
+                    >
+                      {w.kind}
+                      {w.status === "pattern" && <span class="wiring-chip__tag">pattern</span>}
+                    </span>
+                  ))}
+                </span>
               </a>
             ))}
           </div>

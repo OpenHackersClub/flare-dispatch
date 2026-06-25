@@ -322,7 +322,20 @@ const shikiThemes = { light: "vitesse-light", dark: "vesper" } as const;
             hidden={i !== 0}
           >
             <div class="snippets__blurb">
-              <span>{r.useCase}. <em>Recommended: {r.mode} mode{r.mode !== "Action" ? " — no ci.yml needed" : ""}.</em></span>
+              <span>
+                {r.useCase}. <em>Fires on {r.trigger.toLowerCase()}.</em>
+                <span class="wiring-chips wiring-chips--inline">
+                  {r.wirings.map((w, k) => (
+                    <span
+                      class:list={["wiring-chip", `wiring-chip--${w.status}`, k === 0 && "wiring-chip--rec"]}
+                      title={w.status === "shipped" ? "Shipped wiring" : "Setup pattern you add"}
+                    >
+                      {w.kind}
+                      {w.status === "pattern" && <span class="wiring-chip__tag">pattern</span>}
+                    </span>
+                  ))}
+                </span>
+              </span>
               <a href={`/recipes/${r.slug}`}>Full recipe →</a>
             </div>
             <div class="snippets__subtabs" role="tablist" aria-label={`${r.label} source files`}>
