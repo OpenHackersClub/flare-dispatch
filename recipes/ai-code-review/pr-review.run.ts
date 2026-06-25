@@ -607,6 +607,17 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
         );
         return { findings, domainCounts };
       }),
+      // Cap the per-step retry. CF Workflows' default is `limit: 5` (up to 6
+      // attempts), and a step retry REPLAYS the whole fan-out. This step throws
+      // ONLY when EVERY reviewer failed — an all-fail is systemic: a 429 storm
+      // from the concurrent burst (`concurrency: plan.agents.length`) hitting a
+      // low-per-model-rate-limit model, a backend down, or a wrong model/mode.
+      // The per-domain calls are NOT individually retried on 429, so replaying
+      // the 7-way burst 5 more times just re-throttles the same model and
+      // re-issues every call. One retry (after the backoff, by which the
+      // per-minute rate window may have rolled over) keeps recovery for a
+      // genuine transient while bounding the worst case from ×6 attempts to ×2.
+      { retries: 1 },
     );
     const allFindings: ReadonlyArray<Finding> = reviewed.findings;
     const domainCounts: ReadonlyArray<DomainCount> = reviewed.domainCounts;
