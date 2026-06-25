@@ -13,16 +13,16 @@
   },
   "scripts": {
     "demo-agent": "tsx src/main.ts",
-    "build": "esbuild src/bundle-entry.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/demo-agent.cjs --banner:js=\"#!/usr/bin/env node\"",
+    "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@effect/ai": "^0.35.0",
     "@effect/cli": "^0.75.1",
-    "@flare-dispatch/bedrock-sigv4": "workspace:*",
     "@effect/platform": "^0.96.0",
     "@effect/platform-node": "^0.106.0",
+    "@flare-dispatch/bedrock-sigv4": "workspace:*",
     "effect": "^3.21.0",
     "gifenc": "^1.0.3",
     "pngjs": "^7.0.0",
@@ -31,7 +31,7 @@
   "devDependencies": {
     "@types/node": "^22.19.19",
     "@types/pngjs": "^6.0.5",
-    "esbuild": "^0.28.0",
+    "tsdown": "^0.22.3",
     "tsx": "^4.22.3",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

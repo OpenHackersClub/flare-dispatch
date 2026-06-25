@@ -41,8 +41,8 @@ RUN apt-get update \
 WORKDIR /build
 # Sparse + shallow clone — only the agent packages + their workspace deps are
 # needed to bundle. `packages/bedrock-sigv4/` is a workspace dependency of
-# demo-agent (since #153 extracted the SigV4 signer); omit it and esbuild fails
-# to resolve `@flare-dispatch/bedrock-sigv4`. Keep this list in sync when an
+# demo-agent (since #153 extracted the SigV4 signer); omit it and the bundler
+# (tsdown) fails to resolve `@flare-dispatch/bedrock-sigv4`. Keep this list in sync when an
 # agent package gains a new in-repo dependency.
 RUN git init . \
  && git remote add origin https://github.com/OpenHackersClub/flare-dispatch.git \
