@@ -520,10 +520,11 @@ export const completeStructured = <A>(
             : {}),
         });
 
-  // One json-mode attempt with a given user message — the body shared by the
-  // first attempt and its repair retry.
-  const runJson = (user: string) =>
+  // One json-mode attempt with a given user message + token budget — the body
+  // shared by the first attempt and its repair retry.
+  const runJson = (user: string, maxTokensOverride?: number) =>
     Effect.gen(function* () {
+      const maxTokens = maxTokensOverride ?? input.maxTokens;
       const result = yield* completeRaw({
         backend: input.backend,
         model: input.model,
@@ -533,26 +534,38 @@ export const completeStructured = <A>(
         // schema-valid object directly; others ignore it and the text extractor
         // still runs. The schema mirrors the `report` tool's parameters.
         jsonSchema: toolParametersSchema(input.schema),
-        ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
         ...(input.aws !== undefined ? { aws: input.aws } : {}),
       });
       return yield* parseStructured(result.text, decode, ctx);
     });
 
+  // Repair budget. The repair tells the model to drop the `<think>` block, so the
+  // WHOLE budget now goes to the answer rather than the reasoning. Floor it at the
+  // default ceiling so neither a tight operator budget NOR a first answer the
+  // model truncated inside `<think>` can truncate the retry too — the structured
+  // object must FIT, or we'd fail `empty`/`not-json` a second time for the very
+  // same reason. `max` never lowers a configured budget; the ceiling keeps a
+  // short answer cheap (`max_tokens` is a ceiling, not a target).
+  const repairMaxTokens = Math.max(
+    input.maxTokens ?? REVIEW_MAX_TOKENS,
+    REVIEW_MAX_TOKENS,
+  );
+
   // The json-mode attempt WITH a single repair retry. A model asked for strict
   // JSON sometimes answers in prose, or truncates inside a reasoning block —
   // leaving NO parseable JSON (`empty`) or a half-emitted value (`not-json`).
-  // Re-ask ONCE with a blunt correction before giving up: one extra call that
-  // turns a hard `StructuredOutputInvalid` into a real answer far more often than
-  // not. A `schema-mismatch` is NOT repaired — the model DID emit JSON, just the
-  // wrong shape; `parseStructured` already kept the most specific error and a
-  // blind retry rarely fixes structure. Bounded to ONE retry (the repair
-  // attempt's own failure propagates), so there is no loop.
+  // Re-ask ONCE with a blunt correction (and the repair budget above) before
+  // giving up: one extra call that turns a hard `StructuredOutputInvalid` into a
+  // real answer far more often than not. A `schema-mismatch` is NOT repaired —
+  // the model DID emit JSON, just the wrong shape; `parseStructured` already kept
+  // the most specific error and a blind retry rarely fixes structure. Bounded to
+  // ONE retry (the repair attempt's own failure propagates), so there is no loop.
   const jsonUser = framedUser("json");
   const jsonAttempt = runJson(jsonUser).pipe(
     Effect.catchTag("StructuredOutputInvalid", (e) =>
       e.reason === "empty" || e.reason === "not-json"
-        ? runJson(`${jsonUser}\n\n${JSON_REPAIR_SUFFIX}`)
+        ? runJson(`${jsonUser}\n\n${JSON_REPAIR_SUFFIX}`, repairMaxTokens)
         : Effect.fail(e),
     ),
   );

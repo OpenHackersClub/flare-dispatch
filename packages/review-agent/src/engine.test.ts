@@ -554,6 +554,31 @@ describe("completeStructured (the reusable structured-output engine)", () => {
     expect(out).toEqual(value);
   });
 
+  it("json mode — the repair retry gets budget headroom so the answer can't truncate", async () => {
+    // A tight operator budget (512) that forced prose / truncation on the first
+    // call. The repair tells the model to skip the <think> block AND floors the
+    // budget at the default ceiling, so the full JSON answer fits on the retry.
+    const value = { summary: "ok", severity: "low" as const };
+    const fake = makeModelGatewayFake({
+      responses: [
+        textResult("I think it's fine but let me explain at length in prose…"),
+        textResult(JSON.stringify(value)),
+      ],
+    });
+    const out = await Effect.runPromise(
+      completeStructured({ ...input, mode: "json", maxTokens: 512 }).pipe(
+        Effect.provide(fake.layer),
+      ),
+    );
+    expect(out).toEqual(value);
+    expect(fake.state.requests).toHaveLength(2);
+    // First attempt honoured the tight operator budget…
+    expect(fake.state.requests[0]!.maxTokens).toBe(512);
+    // …the repair was floored to the default ceiling (REVIEW_MAX_TOKENS) so the
+    // structured answer has room to fit.
+    expect(fake.state.requests[1]!.maxTokens).toBe(8192);
+  });
+
   it("tools mode — renders a DIFFERENT user message on the json auto-fallback", async () => {
     const value = { summary: "x", severity: "low" as const };
     const fake = makeModelGatewayFake({
