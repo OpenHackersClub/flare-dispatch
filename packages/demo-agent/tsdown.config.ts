@@ -21,7 +21,13 @@ export default defineConfig({
   treeshake: false,
   dts: false,
   // ONE self-contained file — the Dockerfile COPYs only `demo-agent.cjs` onto
-  // PATH, so puppeteer-core's dynamic imports (bidi, etc.) must be inlined
-  // rather than emitted as sibling chunks the container wouldn't have.
+  // PATH, so puppeteer-core's dynamic imports (bidi, etc.) AND rolldown's shared
+  // runtime must be inlined rather than emitted as sibling chunks the container
+  // wouldn't have. `codeSplitting: false` alone does NOT do this — rolldown still
+  // emits `bidi-*.cjs` / `rolldown-runtime-*.cjs` chunks the main bundle
+  // `require()`s, so a container with only `demo-agent.cjs` dies at load with
+  // "Cannot find module './rolldown-runtime-…'". `inlineDynamicImports` forces
+  // a single chunk (what the old esbuild single-file build produced).
   codeSplitting: false,
+  outputOptions: { inlineDynamicImports: true },
 });
