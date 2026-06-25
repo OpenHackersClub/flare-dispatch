@@ -161,3 +161,77 @@ describe("GET / — dashboard route", () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe("GET /v1/dashboard.json — SPA feed", () => {
+  const fixture = (executions: Record<string, unknown>[]) => {
+    const metadata = makeFakeD1({ executions });
+    const env = makeFakeEnv({
+      hmacSecret: "dashboard-test-secret",
+      workflow: makeFakeWorkflow(),
+      storage: makeFakeR2(),
+      metadata,
+      publicOrigin: "https://flare-dispatch-app.openhackers.club",
+    });
+    return { env };
+  };
+
+  const execRow = (over: Record<string, unknown>) => ({
+    id: "offload-test:owner_repo:abc1234",
+    run: "offload-test",
+    repo: "owner/repo",
+    ref: "refs/heads/main",
+    sha: "abc1234def567",
+    status: "success",
+    started_at: 1000,
+    completed_at: 2000,
+    parent_execution_id: null,
+    input_json: "{}",
+    summary_json: null,
+    check_run_id: null,
+    ...over,
+  });
+
+  it("returns 200 application/json with rows carrying tokened log links", async () => {
+    const { env } = fixture([execRow({ id: "a:b:c", run: "offload-test" })]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/v1/dashboard.json"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as {
+      repoSlug: string;
+      rows: { id: string; run: string; logsUrl: string | null }[];
+    };
+    expect(body.repoSlug).toBe("OpenHackersClub/flare-dispatch");
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]?.id).toBe("a:b:c");
+    expect(body.rows[0]?.logsUrl).toContain("/logs/a%3Ab%3Ac?t=");
+  });
+
+  it("405s a non-GET method", async () => {
+    const { env } = fixture([]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/v1/dashboard.json", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("503s when Cloudflare Access is required but unconfigured (default-deny)", async () => {
+    const env = makeFakeEnv({
+      hmacSecret: "s",
+      workflow: makeFakeWorkflow(),
+      storage: makeFakeR2(),
+      metadata: makeFakeD1({ executions: [] }),
+      viewerAccessMode: "required",
+    });
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/v1/dashboard.json"),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+});

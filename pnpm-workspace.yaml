@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "apps/dispatcher"
+  - "apps/dashboard"
   - "runs"
 
 # pnpm 10+ gates dependency lifecycle (build) scripts behind an explicit

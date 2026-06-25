@@ -75,6 +75,13 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The dashboard SPA (apps/dashboard) is outside the root `typecheck`
+      # filter, so type-check + build it here: catches both type errors and a
+      # broken Vite build before merge. This is the same `dist/` the deploy
+      # workflow ships via Workers Static Assets.
+      - name: Build dashboard SPA
+        run: pnpm --filter @flare-dispatch/dashboard build
+
       # Verify the committed `actions/flare-dispatch-action/dist/index.js`
       # matches a fresh build from `packages/cli/src/`. JS Actions execute the
       # committed bundle verbatim — without this gate, a PR can edit `dist/`

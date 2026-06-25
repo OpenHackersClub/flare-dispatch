@@ -10,6 +10,40 @@
 
   "observability": { "enabled": true },
 
+  // Workers Static Assets — the dashboard SPA (apps/dashboard), built to
+  // ./apps/dashboard/dist by `pnpm --filter @flare-dispatch/dashboard build`
+  // (run before `wrangler deploy` in CI + the dispatcher `deploy` script). The
+  // SPA replaces the inline SSR `GET /` page as the served dashboard; the SSR
+  // renderer (apps/dispatcher/src/dashboard.ts) stays as the zero-JS fallback
+  // for no-asset deploys and is what the route tests drive.
+  //
+  // ROUTING (Cloudflare resolves assets BEFORE the Worker unless run_worker_first
+  // claims the path):
+  //   * `/` and unmatched navigations → the SPA shell (index.html), via
+  //     `single-page-application` not-found handling, so client routes like
+  //     `/executions/:id` survive a refresh / deep-link.
+  //   * `run_worker_first` lists the API + viewer prefixes so the SPA fallback
+  //     never shadows them — they always reach the Worker (the HttpRouter).
+  //     `/v1/*` covers the Access-gated `/v1/dashboard.json` feed the SPA reads.
+  //
+  // SECURITY: data confidentiality is enforced IN-WORKER on `/v1/dashboard.json`,
+  // `/v1/executions/...`, and `/logs` (Cloudflare Access JWT, default-secure) —
+  // the SPA shell carries no execution data, so serving it from assets is safe.
+  // For defense-in-depth, keep the edge "FlareDispatch viewer" Access app's path
+  // policy covering `/` and the SPA's static assets on the custom domain.
+  "assets": {
+    "directory": "./apps/dashboard/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/v1/*",
+      "/health",
+      "/logs/*",
+      "/demos/*",
+      "/replay/*",
+      "/.well-known/*"
+    ]
+  },
+
   // Workers AI binding — backs the `modelGateway` capability the `pr-review`
   // engine calls. The binding IS the auth (Workers AI is account-billed), so no
   // model API key is configured. Optionally routed through an AI Gateway via the

@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "pnpm --filter @flare-dispatch/dashboard build && wrangler deploy"
   },
   "dependencies": {
     "@cloudflare/sandbox": "0.10.1",

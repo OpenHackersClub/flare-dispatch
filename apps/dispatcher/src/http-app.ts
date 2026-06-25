@@ -207,16 +207,16 @@ const routeEffect = (
 // Bespoke routes
 // ---------------------------------------------------------------------------
 
-/** `GET /` — the dashboard. A viewer surface, so Access-gated like the rest. */
-const dashboardRoute = Effect.gen(function* () {
-  const request = yield* currentRequest;
-  const denied = yield* accessGate(request);
-  if (Option.isSome(denied)) return fromWebResponse(denied.value);
-  if (request.method !== "GET") return methodNotAllowed;
-
+/**
+ * Resolve the latest executions into `DashboardRow`s with their tokened viewer
+ * links. Shared by the SSR `GET /` page and the `GET /v1/dashboard.json` feed
+ * the static-asset SPA consumes — one D1 read + token-minting path, two renders.
+ */
+const dashboardData = Effect.gen(function* () {
   const env = yield* CurrentEnv;
   const reads = yield* ExecutionsRead;
   const logTokens = yield* LogToken;
+  const request = yield* currentRequest;
   const url = new URL(request.url);
   const origin = env.PUBLIC_ORIGIN ?? url.origin;
 
@@ -242,10 +242,26 @@ const dashboardRoute = Effect.gen(function* () {
       } satisfies DashboardRow;
     }),
   );
+  return { origin, rows: dashRows };
+});
 
+/**
+ * `GET /` — the SSR dashboard. With the Workers Static Assets binding wired
+ * (wrangler.jsonc), production serves the SPA shell from `apps/dashboard/dist`
+ * for `/` and the asset layer never reaches this route; it remains the zero-JS
+ * fallback (no-asset deploys) and the surface the route tests drive. A viewer
+ * surface, so Access-gated like the rest.
+ */
+const dashboardRoute = Effect.gen(function* () {
+  const request = yield* currentRequest;
+  const denied = yield* accessGate(request);
+  if (Option.isSome(denied)) return fromWebResponse(denied.value);
+  if (request.method !== "GET") return methodNotAllowed;
+
+  const { origin, rows } = yield* dashboardData;
   const html = renderDashboard({
     origin,
-    rows: dashRows,
+    rows,
     nowMs: Date.now(),
     repoSlug: REPO_SLUG,
   });
@@ -253,6 +269,26 @@ const dashboardRoute = Effect.gen(function* () {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
+});
+
+/**
+ * `GET /v1/dashboard.json` — the executions feed for the static-asset SPA. Same
+ * Access gate + tokened links as the SSR page, returned as JSON so the SPA shell
+ * (served publicly from assets) can render the list only once the operator's
+ * Access cookie lets this request through. Listed under `run_worker_first`
+ * (wrangler.jsonc) so the SPA fallback never shadows it.
+ */
+const dashboardJsonRoute = Effect.gen(function* () {
+  const request = yield* currentRequest;
+  const denied = yield* accessGate(request);
+  if (Option.isSome(denied)) return fromWebResponse(denied.value);
+  if (request.method !== "GET") return methodNotAllowed;
+
+  const { origin, rows } = yield* dashboardData;
+  return HttpServerResponse.raw(
+    JSON.stringify({ origin, repoSlug: REPO_SLUG, rows }),
+    { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
+  );
 });
 
 /** `POST/GET /v1/agent/:execution/inference` — no method guard (any verb). */
@@ -389,6 +425,7 @@ const router = baseRouter.pipe(
     "/v1/github/installed",
     route("GET", ({ request }) => handleInstalled(request)),
   ),
+  HttpRouter.all("/v1/dashboard.json", dashboardJsonRoute),
   HttpRouter.all("/*", Effect.succeed(notFound)),
 );
 
