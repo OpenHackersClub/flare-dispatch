@@ -34,7 +34,7 @@ export const splitRepo = (repo: string): { owner: string; name: string } => {
 export const ghHeaders = (
   token: string,
   opts: { json?: boolean } = {},
-): HeadersInit => ({
+): Record<string, string> => ({
   Authorization: `Bearer ${token}`,
   Accept: "application/vnd.github+json",
   ...(opts.json ? { "Content-Type": "application/json" } : {}),

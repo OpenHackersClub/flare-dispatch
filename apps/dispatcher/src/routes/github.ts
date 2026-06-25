@@ -69,7 +69,12 @@ import { Effect, Either, Match, Schema } from "effect";
  * follow-up could enforce template-vs-shipped-JSON parity with a snapshot if
  * the file ever drifts from this copy.
  */
-const MANIFEST_TEMPLATE = {
+// Exported so the manifest-parity test (`github-manifest-parity.test.ts`) and
+// the registration drift-detect (`scripts/emit-app-manifest.mjs`,
+// `github-app verify`) can assert this Worker-bundled literal stays in lockstep
+// with the committed `infra/github-app-manifest.json` mirror. spec 04 § Webhook
+// mode calls these two copies out as mirrors; the parity test makes that real.
+export const MANIFEST_TEMPLATE = {
   name: "FlareDispatch",
   description: "BYOC CI offload running on Cloudflare",
   url: "https://runs.example.com",
@@ -83,7 +88,11 @@ const MANIFEST_TEMPLATE = {
     contents: "read",
     deployments: "read",
     metadata: "read",
-    pull_requests: "read",
+    // `write`, not `read`: the check-run callback (workflow.ts) creates/updates
+    // check-runs AND the `pr-review` run posts a PR review comment — both need
+    // pull_requests:write. The committed JSON mirror + the live dogfood App
+    // already carry `write`; this literal had drifted to `read`.
+    pull_requests: "write",
   },
   default_events: [
     "check_run",

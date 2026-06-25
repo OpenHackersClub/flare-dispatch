@@ -117,6 +117,15 @@ jobs:
       - name: Verify incident JSON Schema is in sync
         run: node scripts/emit-incident-schema.mjs --check
 
+      # The GitHub App manifest (`infra/github-app-manifest.json`) is the BYOC
+      # source of truth, mirrored as an inlined literal in the Worker
+      # (apps/dispatcher/src/routes/github.ts). Fail if the committed JSON drifts
+      # from `scripts/emit-app-manifest.mjs` (run `pnpm emit-app-manifest`). The
+      # literal↔JSON tie is asserted by github-manifest-parity.test.ts; live-App
+      # drift is the separate verify-app-registration workflow.
+      - name: Verify App manifest is in sync
+        run: node scripts/emit-app-manifest.mjs --check
+
   # The `dispatch-test` dogfood job (an `offload-test` sandbox run on every
   # PR/push) was removed: each dispatch held a sandbox container — DO +
   # container duration billing — to duplicate what the native `typecheck` job
