@@ -33,6 +33,12 @@ Why event-driven, not polling: `io.sleep` isn't replay-safe in a CF Workflow;
 
 ## One-time operator setup
 
+> **Automated:** steps 2–3 (enable Email Routing + the catch-all rule) are an
+> idempotent script — `CLOUDFLARE_API_TOKEN=… scripts/setup-inbox-routing.sh
+> --apply` (dry-run without `--apply`). It needs a token scoped **Email Routing
+> Rules/Addresses : Edit + DNS : Edit** on the zone (the *deploy* token is not
+> enough). Step 4 is a `wrangler.jsonc` edit. The manual breakdown:
+
 1. **Pick a dedicated inbox host** — e.g. `inbox.openhackers.club`. Do **not**
    use a zone apex that carries real mail: a catch-all routes *everything* on the
    host to the Worker (the handler rejects non-`demo-` RCPTs, but a dedicated host
