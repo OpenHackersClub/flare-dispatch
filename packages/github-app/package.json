@@ -7,7 +7,8 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./registration": "./src/registration.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

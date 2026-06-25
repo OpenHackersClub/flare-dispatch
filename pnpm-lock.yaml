@@ -118,6 +118,9 @@ importers:
       '@flare-dispatch/core':
         specifier: workspace:*
         version: link:../core
+      '@flare-dispatch/github-app':
+        specifier: workspace:*
+        version: link:../github-app
       effect:
         specifier: ^3.21.0
         version: 3.21.2

@@ -63,4 +63,15 @@ export {
   type CreateReleaseOptions,
   type CreateReleaseResult,
 } from "./releases";
+export {
+  fetchPublicAppRegistration,
+  diffRegistration,
+  hasFailingDrift,
+  appSettingsUrl,
+  type AppRegistration,
+  type DesiredRegistration,
+  type PermissionDrift,
+  type RegistrationDrift,
+  type FetchAppRegistrationOptions,
+} from "./registration";
 export { GithubApiError } from "./errors";

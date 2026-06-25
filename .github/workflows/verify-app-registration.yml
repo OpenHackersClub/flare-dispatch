@@ -1,0 +1,69 @@
+# Verify the live FlareDispatch GitHub App registration matches the committed
+# manifest — on every merge to `main`.
+#
+# Why this exists: GitHub exposes NO API to *push* an App's permissions/events
+# to an existing registration (they're UI-only, and a permission change forces
+# every install to re-approve). So the App registration can't be "deployed"
+# from `main` the way the Worker is (deploy-dispatcher.yml). The next best thing
+# is to DETECT drift: read the live App's public registration and fail if it
+# diverges from `infra/github-app-manifest.json`.
+#
+# `github-app verify` is read-only — it hits the unauthenticated public App view
+# (`GET /apps/<slug>`), so this needs NO secrets and runs on a clean checkout.
+#   * permission mismatch / event the manifest needs but the App lacks → FAIL
+#   * event subscribed on the App but absent from the manifest          → WARN
+#
+# Triggers:
+#   * push → main — the "whenever the repo merges to main" signal.
+#   * schedule (weekly) — catches drift introduced UI-side with no repo change
+#     (someone edits the App settings); a push-only trigger would never fire.
+#   * workflow_dispatch — manual re-check.
+#
+# This is the detect half. The webhook config (url/secret) IS programmatically
+# writable via `PATCH /app/hook/config`, but pushing it needs the App private
+# key as an Actions secret + authorizes live writes — deliberately out of scope.
+
+name: Verify App registration
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Mondays 08:00 UTC — weekly drift sweep independent of repo activity.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-app-registration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: github-app verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No --slug ⇒ defaults to the dogfood App "flaredispatch"; no --manifest ⇒
+      # defaults to this repo's infra/github-app-manifest.json. A failing exit
+      # surfaces the drift report (+ ::error:: / ::warning:: annotations) and a
+      # link to the App settings UI to reconcile by hand.
+      - name: Verify App registration matches the manifest
+        run: pnpm --filter @flare-dispatch/cli cli github-app verify

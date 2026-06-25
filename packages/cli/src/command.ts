@@ -14,6 +14,14 @@ import {
 } from "./dispatch.js";
 import { InvalidEndpoint, MissingInput } from "./errors.js";
 import { runGithubAppCreateFromOption } from "./github-app.js";
+import {
+  DEFAULT_MANIFEST_PATH,
+  ManifestInvalid,
+  ManifestUnreadable,
+  RegistrationDrifted,
+  RegistrationFetchFailed,
+  runGithubAppVerify,
+} from "./github-app-verify.js";
 
 /**
  * The `dispatch` subcommand. Takes no flags — every input is an env var,
@@ -79,6 +87,77 @@ const githubAppCreateCommand = Command.make(
     ),
 );
 
+/**
+ * Map any `github-app verify` failure to a clean, non-zero exit. Drift is the
+ * expected "interesting" outcome of a CI gate, so we print the report (already
+ * done in the flow) and `process.exit(1)` rather than letting `Effect.die`
+ * dump a defect stack trace. The read/fetch errors get a one-line cause first.
+ */
+const reportVerifyFailure = (
+  e:
+    | ManifestUnreadable
+    | ManifestInvalid
+    | RegistrationFetchFailed
+    | RegistrationDrifted,
+): Effect.Effect<never> =>
+  Match.value(e).pipe(
+    Match.tag("RegistrationDrifted", ({ slug, failing }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `\nregistration drift: ${failing} failing difference(s) for App "${slug}"`,
+        );
+        return yield* Effect.sync(() => process.exit(1) as never);
+      }),
+    ),
+    Match.tag("ManifestUnreadable", ({ path, reason }) =>
+      Effect.gen(function* () {
+        yield* Console.error(`error: cannot read manifest ${path}: ${reason}`);
+        return yield* Effect.sync(() => process.exit(1) as never);
+      }),
+    ),
+    Match.tag("ManifestInvalid", ({ path, reason }) =>
+      Effect.gen(function* () {
+        yield* Console.error(`error: invalid manifest ${path}: ${reason}`);
+        return yield* Effect.sync(() => process.exit(1) as never);
+      }),
+    ),
+    Match.tag("RegistrationFetchFailed", ({ slug, reason }) =>
+      Effect.gen(function* () {
+        yield* Console.error(
+          `error: could not read live App "${slug}": ${reason}`,
+        );
+        return yield* Effect.sync(() => process.exit(1) as never);
+      }),
+    ),
+    Match.exhaustive,
+  );
+
+/**
+ * The `github-app verify` subcommand — drift-detect the live App registration
+ * against `infra/github-app-manifest.json`. Read-only; no secrets.
+ */
+const githubAppVerifyCommand = Command.make(
+  "verify",
+  {
+    slug: Options.text("slug").pipe(
+      Options.withDescription(
+        "GitHub App slug to read via GET /apps/{slug}. Defaults to the dogfood App.",
+      ),
+      Options.withDefault("flaredispatch"),
+    ),
+    manifest: Options.text("manifest").pipe(
+      Options.withDescription(
+        "Path to the App manifest JSON. Defaults to the repo's infra/github-app-manifest.json; a relative override resolves against cwd.",
+      ),
+      Options.withDefault(DEFAULT_MANIFEST_PATH),
+    ),
+  },
+  ({ slug, manifest }) =>
+    runGithubAppVerify({ slug, manifestPath: manifest }).pipe(
+      Effect.catchAll(reportVerifyFailure),
+    ),
+);
+
 export const githubAppCommand = Command.make("github-app", {}).pipe(
-  Command.withSubcommands([githubAppCreateCommand]),
+  Command.withSubcommands([githubAppCreateCommand, githubAppVerifyCommand]),
 );

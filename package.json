@@ -15,7 +15,8 @@
     "test": "vitest run --passWithNoTests",
     "sync-recipes": "node scripts/sync-recipes.mjs",
     "emit-signals-schema": "node scripts/emit-signals-schema.mjs",
-    "emit-incident-schema": "node scripts/emit-incident-schema.mjs"
+    "emit-incident-schema": "node scripts/emit-incident-schema.mjs",
+    "emit-app-manifest": "node scripts/emit-app-manifest.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250510.0",
