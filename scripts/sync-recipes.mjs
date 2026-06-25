@@ -23,6 +23,10 @@ const PAIRS = [
     run: "runs/ci-triage-pr.ts",
     recipe: "recipes/ci-triage-pr/ci-triage-pr.run.ts",
   },
+  {
+    run: "runs/release-notes.ts",
+    recipe: "recipes/release-notes/release-notes.run.ts",
+  },
 ];
 
 /** The recipe banner that replaces the run's `// Run: <title>` first line. */

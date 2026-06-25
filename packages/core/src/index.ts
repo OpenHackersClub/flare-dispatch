@@ -148,6 +148,8 @@ export {
   type PullReviewRequest,
   type OpenDraftPullRequest,
   type DraftPullRequestResult,
+  type CreateRelease,
+  type ReleaseResult,
 } from "./services/github";
 export {
   cloudflare,

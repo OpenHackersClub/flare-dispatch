@@ -1,7 +1,4 @@
-// Recipe: weekly release notes with a human gate
-//
-// Identical to the deployed `runs/release-notes.ts`. Drop into your repo's
-// `runs/` directory; the Dispatcher auto-discovers it. See ./README.md.
+// Run: weekly release notes with a human gate
 //
 // A Schedule-mode run that, every Monday, drafts release notes for the unreleased
 // range (`<last-tag>..HEAD`), uploads the draft for review, and HIBERNATES on a

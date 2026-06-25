@@ -58,4 +58,9 @@ export {
   type OpenDraftPullRequestOptions,
   type OpenDraftPullRequestResult,
 } from "./pull-requests";
+export {
+  createRelease,
+  type CreateReleaseOptions,
+  type CreateReleaseResult,
+} from "./releases";
 export { GithubApiError } from "./errors";
