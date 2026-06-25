@@ -209,6 +209,17 @@ export interface Env {
   readonly BROWSER?: Fetcher;
 
   /**
+   * Workers Static Assets binding for the dashboard SPA (apps/dashboard/dist).
+   * Declared as `"assets": { "binding": "ASSETS", … }` in wrangler.jsonc. Used
+   * by the navigation routes (`/`, `/executions/*`) to serve the SPA shell from
+   * the asset layer AFTER the Cloudflare Access gate, so the shell is gated
+   * in-Worker while hashed `/assets/*` stay public (not in `run_worker_first`).
+   * Absent (no-asset deploys + the route tests) → those routes fall back to the
+   * SSR `renderDashboard` page.
+   */
+  readonly ASSETS?: Fetcher;
+
+  /**
    * CF Browser session `keep_alive` ceiling in ms for the `/v1/browser/cdp`
    * proxy (default 600000 = CF's documented 10-min max). A var, not a secret.
    */

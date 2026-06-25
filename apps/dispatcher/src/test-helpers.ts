@@ -243,6 +243,8 @@ export const makeFakeEnv = (opts: {
    * Pass "required" to drive the Access path through `handleRequest`.
    */
   viewerAccessMode?: "required" | "token-only";
+  /** Workers Static Assets binding — the SPA shell source for `/` navigations. */
+  assets?: Fetcher;
 }): Env =>
   ({
     HMAC_SECRET: opts.hmacSecret,
@@ -266,6 +268,7 @@ export const makeFakeEnv = (opts: {
     ...(opts.cloudflareAccountId !== undefined
       ? { CLOUDFLARE_ACCOUNT_ID: opts.cloudflareAccountId }
       : {}),
+    ...(opts.assets !== undefined ? { ASSETS: opts.assets } : {}),
     // Not exercised by PR5 routes — cast away.
     RUNS_SANDBOX: {} as Env["RUNS_SANDBOX"],
     RUNS_METADATA: (opts.metadata?.binding ?? {}) as Env["RUNS_METADATA"],

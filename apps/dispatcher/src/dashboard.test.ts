@@ -249,3 +249,90 @@ describe("GET /v1/dashboard.json — SPA feed", () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe("app shell routing — gated SPA shell with SSR fallback", () => {
+  // A stub Workers Static Assets binding that returns the SPA shell regardless
+  // of the requested path (the asset layer's SPA fallback behaviour).
+  const fakeAssets = (body: string): Fetcher =>
+    ({
+      fetch: async () =>
+        new Response(body, { status: 200, headers: { "content-type": "text/html" } }),
+    }) as unknown as Fetcher;
+
+  const base = {
+    hmacSecret: "dashboard-test-secret",
+    workflow: makeFakeWorkflow(),
+    storage: makeFakeR2(),
+    metadata: makeFakeD1({ executions: [] }),
+    publicOrigin: "https://flare-dispatch-app.openhackers.club",
+  };
+
+  it("serves the SPA shell from the asset binding for / when ASSETS is present", async () => {
+    const env = makeFakeEnv({ ...base, assets: fakeAssets("<!doctype html><div id=\"root\"></div>") });
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('id="root"');
+  });
+
+  it("gates and serves the shell for /executions/:id (SPA deep-link)", async () => {
+    const env = makeFakeEnv({ ...base, assets: fakeAssets("SHELL") });
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/executions/a%3Ab%3Ac"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("SHELL");
+  });
+
+  it("503s /executions/:id when Cloudflare Access is required but unconfigured", async () => {
+    const env = makeFakeEnv({
+      hmacSecret: "s",
+      workflow: makeFakeWorkflow(),
+      storage: makeFakeR2(),
+      metadata: makeFakeD1({ executions: [] }),
+      viewerAccessMode: "required",
+      assets: fakeAssets("SHELL"),
+    });
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/executions/x"),
+      env,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it("falls back to the SSR dashboard for / when no asset binding is present", async () => {
+    const env = makeFakeEnv({
+      ...base,
+      metadata: makeFakeD1({
+        executions: [
+          {
+            id: "a:b:c",
+            run: "offload-test",
+            repo: "owner/repo",
+            ref: "refs/heads/main",
+            sha: "abc1234def567",
+            status: "success",
+            started_at: 1000,
+            completed_at: 2000,
+            parent_execution_id: null,
+            input_json: "{}",
+            summary_json: null,
+            check_run_id: null,
+          },
+        ],
+      }),
+    });
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // The SSR marker the SPA shell never contains.
+    expect(body).toContain("Latest executions");
+    expect(body).toContain("offload-test");
+  });
+});

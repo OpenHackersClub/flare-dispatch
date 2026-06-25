@@ -19,22 +19,30 @@
   //
   // ROUTING (Cloudflare resolves assets BEFORE the Worker unless run_worker_first
   // claims the path):
-  //   * `/` and unmatched navigations → the SPA shell (index.html), via
-  //     `single-page-application` not-found handling, so client routes like
-  //     `/executions/:id` survive a refresh / deep-link.
-  //   * `run_worker_first` lists the API + viewer prefixes so the SPA fallback
-  //     never shadows them — they always reach the Worker (the HttpRouter).
+  //   * The app navigation routes (`/`, `/executions/*`) and the API + viewer
+  //     prefixes are in `run_worker_first`, so they ALWAYS reach the Worker (the
+  //     HttpRouter) — the SPA fallback can't shadow them. The Worker serves the
+  //     SPA shell for the navigations after the Access gate (appShellRoute), and
   //     `/v1/*` covers the Access-gated `/v1/dashboard.json` feed the SPA reads.
+  //   * Everything else — hashed `/assets/*`, any unmatched path — is served by
+  //     the asset layer, with `single-page-application` not-found handling
+  //     returning index.html so deep-links survive a refresh.
   //
-  // SECURITY: data confidentiality is enforced IN-WORKER on `/v1/dashboard.json`,
-  // `/v1/executions/...`, and `/logs` (Cloudflare Access JWT, default-secure) —
-  // the SPA shell carries no execution data, so serving it from assets is safe.
-  // For defense-in-depth, keep the edge "FlareDispatch viewer" Access app's path
-  // policy covering `/` and the SPA's static assets on the custom domain.
+  // SECURITY (default-secure, enforced IN-WORKER via Cloudflare Access JWT):
+  //   * The shell at `/` + `/executions/*` is GATED — those navigations run
+  //     through the Worker's Access gate before the shell is served.
+  //   * The data surfaces (`/v1/dashboard.json`, `/v1/executions/...`, `/logs`)
+  //     are gated too.
+  //   * Hashed `/assets/*` are intentionally PUBLIC (static JS/CSS, no data, not
+  //     in run_worker_first) — gating them would invoke the Worker per asset for
+  //     no confidentiality gain.
   "assets": {
+    "binding": "ASSETS",
     "directory": "./apps/dashboard/dist",
     "not_found_handling": "single-page-application",
     "run_worker_first": [
+      "/",
+      "/executions/*",
       "/v1/*",
       "/health",
       "/logs/*",
