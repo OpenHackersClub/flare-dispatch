@@ -6,9 +6,11 @@ interface Props {
 }
 const { currentSlug } = Astro.props;
 
+// Grouped by what fires the run, not by a single mode — so every recipe
+// appears (the old Action/Webhook split dropped the wall-clock family).
 const groups = [
-  { mode: "Action" as const, number: "01", title: "Action mode" },
-  { mode: "Webhook" as const, number: "02", title: "Webhook mode" },
+  { kind: "github-event" as const, number: "01", title: "Event-driven" },
+  { kind: "wall-clock" as const, number: "02", title: "Wall-clock" },
 ];
 ---
 
@@ -22,7 +24,7 @@ const groups = [
         </div>
         <ul class="sidebar-section__list">
           {recipes
-            .filter((r) => r.mode === group.mode)
+            .filter((r) => r.triggerKind === group.kind)
             .map((r) => (
               <li>
                 <a

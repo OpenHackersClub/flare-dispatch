@@ -12,16 +12,36 @@
 // run for self-contained copy-paste.
 
 import { Effect, Schema } from "effect";
-import { artifact, defineRun, sandbox, step } from "@flare-dispatch/core";
+import {
+  artifact,
+  config,
+  defineRun,
+  sandbox,
+  step,
+  type WebhookPayload,
+} from "@flare-dispatch/core";
 import { sharded, workspace } from "@flare-dispatch/core/primitives";
 
 const PlaywrightE2EInput = Schema.Struct({
   repo: Schema.String,
   sha: Schema.String,
-  baseURL: Schema.String,
+  // Optional so the run is wirable BOTH ways. Action mode (the recipe `ci.yml`)
+  // passes it explicitly — typically the PR's preview-deploy URL the workflow
+  // already knows. Webhook mode omits it: a `pull_request` payload carries no
+  // deploy URL, so the run resolves it from `playwright-e2e.base-url` in
+  // CONFIG_KV (see the run body) and dies loudly if neither is set.
+  baseURL: Schema.optional(Schema.String),
   shards: Schema.optional(Schema.Number),
   project: Schema.optional(Schema.String),
 });
+
+type PlaywrightE2EInputT = Schema.Schema.Type<typeof PlaywrightE2EInput>;
+
+/** True when the PR carries `name` as a label — the opt-in gate for Webhook mode. */
+const hasLabel = (payload: WebhookPayload, name: string): boolean =>
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+  payload.pull_request?.labels?.some((l: { name: string }) => l.name === name) ??
+  false;
 
 const PlaywrightE2EOutput = Schema.Struct({
   shards: Schema.Number,
@@ -47,8 +67,45 @@ export const playwrightE2E = defineRun({
   outputs: PlaywrightE2EOutput,
   limits: { maxDurationSec: 2400, maxConcurrency: 8, requiresBrowser: true },
 
+  // Webhook-mode trigger — receiver-side equivalent of a GHA `on:` filter, and
+  // OPT-IN: it fires only when the PR carries the `request-e2e` label, so
+  // installing the App does NOT blanket-run e2e on every push. `inputs` maps
+  // {repo, sha} straight from the payload; `baseURL` is intentionally omitted
+  // and resolved from `playwright-e2e.base-url` (CONFIG_KV) in the run body —
+  // a PR payload has no deploy URL to hand it. The semantic `idempotencyKey`
+  // matches Action mode's `{run}:{repo_}:{sha12}`, so a repo that BOTH installs
+  // the App and dispatches from CI collapses to one run per head SHA.
+  triggers: [
+    {
+      event: "pull_request",
+      actions: ["opened", "synchronize", "ready_for_review", "labeled"],
+      gate: ({ payload }) =>
+        hasLabel(payload, "request-e2e") &&
+        !payload.pull_request.user.login.endsWith("[bot]"),
+      idempotencyKey: ({ payload }) =>
+        `playwright-e2e:${payload.repository.full_name.replace(/\//g, "_")}:${payload.pull_request.head.sha.slice(0, 12)}`,
+      inputs: ({ payload }): PlaywrightE2EInputT => ({
+        repo: payload.repository.full_name,
+        sha: payload.pull_request.head.sha,
+      }),
+    },
+  ],
+
   run: (input) =>
     Effect.gen(function* () {
+      // Resolve the target URL up front so a misconfigured wiring dies cheaply,
+      // before any shard container boots. Action mode passes `baseURL`; Webhook
+      // mode leaves it unset and we fall back to CONFIG_KV.
+      const baseURL =
+        input.baseURL ?? (yield* config.get("playwright-e2e.base-url"));
+      if (!baseURL) {
+        return yield* Effect.die(
+          new Error(
+            "playwright-e2e: no baseURL — pass `inputs.baseURL` (Action mode) " +
+              "or set `playwright-e2e.base-url` in CONFIG_KV (Webhook mode)",
+          ),
+        );
+      }
       const shards = input.shards ?? DEFAULT_SHARDS;
       const projectArg = input.project ? ["--project", input.project] : [];
 
@@ -65,7 +122,7 @@ export const playwrightE2E = defineRun({
               const exec = yield* sandbox.exec({
                 cwd: dir,
                 container,
-                env: { BASE_URL: input.baseURL },
+                env: { BASE_URL: baseURL },
                 command: [
                   "pnpm", "exec", "playwright", "test",
                   "--shard", `${index}/${total}`,

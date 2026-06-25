@@ -246,17 +246,33 @@ const dashboardData = Effect.gen(function* () {
 });
 
 /**
- * `GET /` — the SSR dashboard. With the Workers Static Assets binding wired
- * (wrangler.jsonc), production serves the SPA shell from `apps/dashboard/dist`
- * for `/` and the asset layer never reaches this route; it remains the zero-JS
- * fallback (no-asset deploys) and the surface the route tests drive. A viewer
- * surface, so Access-gated like the rest.
+ * The dashboard SPA shell for an app navigation route (`/`, `/executions/*`),
+ * gated by Cloudflare Access. With the Workers Static Assets binding present the
+ * shell (index.html) is fetched from the asset layer AFTER the gate — so the
+ * shell is gated in-Worker, while hashed `/assets/*` stay public (they are NOT
+ * in `run_worker_first`, so the asset layer serves them without invoking this
+ * Worker). Without the binding — no-asset deploys and the route tests — it falls
+ * back to the zero-JS SSR `renderDashboard` page. A viewer surface, so
+ * Access-gated like the rest.
+ *
+ * The shell is route-independent: we always fetch the SPA index and let the
+ * client router render `/`, `/executions/:id`, etc. from it.
  */
-const dashboardRoute = Effect.gen(function* () {
+const appShellRoute = Effect.gen(function* () {
   const request = yield* currentRequest;
   const denied = yield* accessGate(request);
   if (Option.isSome(denied)) return fromWebResponse(denied.value);
   if (request.method !== "GET") return methodNotAllowed;
+
+  const env = yield* CurrentEnv;
+  if (env.ASSETS !== undefined) {
+    const origin = new URL(request.url).origin;
+    const shell = yield* Effect.promise(() =>
+      // env.ASSETS is the asset layer, not this Worker — no recursion.
+      env.ASSETS!.fetch(new Request(`${origin}/`, { headers: request.headers })),
+    );
+    return fromWebResponse(shell);
+  }
 
   const { origin, rows } = yield* dashboardData;
   const html = renderDashboard({
@@ -333,7 +349,11 @@ const artifactsRoute = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 const baseRouter = HttpRouter.empty.pipe(
-  HttpRouter.all("/", dashboardRoute),
+  HttpRouter.all("/", appShellRoute),
+  // Client navigation routes — gated, serve the SPA shell (or SSR fallback).
+  // Listed in `run_worker_first` so the asset SPA-fallback can't serve them
+  // ungated; hashed `/assets/*` are deliberately NOT, so they stay public.
+  HttpRouter.all("/executions/*", appShellRoute),
   HttpRouter.all("/health", route("GET", () => handleHealth())),
   HttpRouter.all(
     "/replay/:sessionId",

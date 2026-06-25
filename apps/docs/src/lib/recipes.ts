@@ -14,11 +14,40 @@ export type RecipeFile = {
   lang: "yaml" | "ts";
 };
 
-export type Recipe = {
+/** How a run is plumbed to fire. Orthogonal to WHAT fires it (the trigger). */
+export type WiringKind = "Webhook" | "Action" | "Schedule";
+
+/**
+ * One way to wire a recipe. `status: "shipped"` = the run (or its recipe
+ * artifacts) declares this wiring today; `"pattern"` = the setup you add to
+ * enable it. A run can only declare a Webhook wiring when its inputs are
+ * derivable from the GitHub event payload — otherwise webhook stays a pattern
+ * (the target has to come from config), which is why most event recipes are
+ * Action-first. See specs/04-gha-integration.md.
+ */
+export type Wiring = {
+  kind: WiringKind;
+  status: "shipped" | "pattern";
+  /** Extra qualifier, e.g. "opt-in via the request-e2e label". */
+  note?: string;
+};
+
+/** One-liner per wiring kind — how that wiring fires the run. */
+export const WIRING_SUMMARY: Record<WiringKind, string> = {
+  Webhook:
+    "The GitHub App webhook fires the run directly — no .github/workflows file, no GHA minutes.",
+  Action:
+    "A ci.yml step dispatches the run — when it must interleave with other CI jobs or gate the PR.",
+  Schedule:
+    "A Cloudflare Cron Trigger fires it on a wall-clock cadence — no GitHub event, no workflow file.",
+};
+
+type RecipeBase = {
   slug: string;
   label: string;
   useCase: string;
-  mode: "Action" | "Webhook" | "Schedule";
+  /** The recommended/primary wiring — derived from `wirings[0]` on export. */
+  mode: WiringKind;
   blurb: string;
   /** Source files shown as code on the recipe page (the FlareDispatch shape). */
   files: RecipeFile[];
@@ -54,14 +83,28 @@ export type Recipe = {
   hasReadme: boolean;
 };
 
-export const recipes: Recipe[] = [
+/**
+ * A recipe = a typed run + a use case. The TRIGGER (what event fires it) and
+ * the WIRINGS (how it's plumbed) are separate axes — a recipe is not "an X-mode
+ * recipe", it's a run you can wire one of several ways.
+ */
+export type Recipe = RecipeBase & {
+  /** What event the run fires on — the constant. Wiring is how you plumb it. */
+  trigger: string;
+  /** GitHub-event recipes can use Webhook/Action; wall-clock recipes use Schedule. */
+  triggerKind: "github-event" | "wall-clock";
+  /** Supported wirings, recommended first. `mode` mirrors `wirings[0].kind`. */
+  wirings: Wiring[];
+};
+
+const baseRecipes: RecipeBase[] = [
   {
     slug: "ai-code-review",
     label: "AI code review",
     useCase: "Configurable single- or multi-agent code review on every PR — plus a nightly sweep",
     mode: "Webhook",
     blurb:
-      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR (`pr-review.agents=multi`), findings deduplicated into one consolidated review; or one generalist reviewer (`agents=single`) for a leaner pass. Backend is selectable from CONFIG_KV without redeploy (Workers AI, Anthropic-via-AI-Gateway BYOK, or Bedrock via the OIDC→STS→SigV4 BYOC trust path), and a dispatch can override the model/region/role per call for model bake-offs. Fires on every push (Webhook mode) for zero GHA minutes; an optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
+      "A FlareDispatch port of Cloudflare's multi-agent code reviewer — up to seven domain-specific agents review every PR (`pr-review.agents=multi`), findings deduplicated into one consolidated review; or one generalist reviewer (`agents=single`) for a leaner pass. Backend is selectable from CONFIG_KV without redeploy (Workers AI, Anthropic-via-AI-Gateway BYOK, or Bedrock via the OIDC→STS→SigV4 BYOC trust path), and a dispatch can override the model/region/role per call for model bake-offs. The GitHub App webhook fires it directly on every push — no `.github/workflows/` file and zero GHA minutes; the `ci.yml` shown is the optional Action-mode alternative, not a requirement. An optional Schedule-mode sweep re-reviews every open PR on a cron cadence.",
     files: [
       { name: "pr-review.run.ts", lang: "ts" },
       { name: "pr-review-sweep.run.ts", lang: "ts" },
@@ -281,3 +324,114 @@ export const recipes: Recipe[] = [
     hasReadme: true,
   },
 ];
+
+/**
+ * The wiring axis, per recipe — the honest matrix of what fires each run and
+ * how it can be plumbed. `wirings[0]` is the recommended one (and becomes
+ * `mode`). A Webhook wiring is only `shipped` where the run's inputs are
+ * derivable from the GitHub event payload (pr-review, deploy-smoke,
+ * playwright-e2e's opt-in target-from-config); elsewhere it's a `pattern`.
+ */
+const WIRINGS: Record<
+  string,
+  { trigger: string; triggerKind: Recipe["triggerKind"]; wirings: Wiring[] }
+> = {
+  "ai-code-review": {
+    trigger: "Every PR push",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Webhook", status: "shipped" },
+      { kind: "Action", status: "shipped" },
+      { kind: "Schedule", status: "shipped", note: "the pr-review-sweep run re-reviews open PRs on a cron" },
+    ],
+  },
+  "browser-tests": {
+    trigger: "Every PR push",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Action", status: "shipped" },
+      { kind: "Webhook", status: "shipped", note: "opt-in via the request-e2e label; baseURL from CONFIG_KV" },
+      { kind: "Schedule", status: "pattern", note: "fan out against fixed environments on a cron" },
+    ],
+  },
+  "test-matrix": {
+    trigger: "Every PR push",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Action", status: "shipped" },
+      { kind: "Webhook", status: "pattern", note: "needs command + shards from config" },
+    ],
+  },
+  "cdp-acceptance": {
+    trigger: "Every PR push",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Action", status: "shipped" },
+      { kind: "Webhook", status: "pattern", note: "needs app boot + target from config" },
+    ],
+  },
+  "product-demo": {
+    trigger: "Per PR · daily",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Action", status: "shipped" },
+      { kind: "Schedule", status: "shipped", note: "daily stakeholder run against staging" },
+      { kind: "Webhook", status: "pattern", note: "needs a deployed URL from config" },
+    ],
+  },
+  "security-scan": {
+    trigger: "Every PR · weekly",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Action", status: "shipped" },
+      { kind: "Schedule", status: "pattern", note: "weekly full-repo scan on a cron" },
+    ],
+  },
+  "deploy-smoke": {
+    trigger: "After each deploy",
+    triggerKind: "github-event",
+    wirings: [
+      { kind: "Webhook", status: "shipped", note: "fires on deployment_status.success" },
+      { kind: "Action", status: "shipped" },
+    ],
+  },
+  "nightly-e2e": {
+    trigger: "Nightly cron",
+    triggerKind: "wall-clock",
+    wirings: [
+      { kind: "Schedule", status: "shipped" },
+      { kind: "Action", status: "pattern", note: "a GHA on: schedule step as the GHA-native alternative" },
+    ],
+  },
+  "release-notes": {
+    trigger: "Weekly cron",
+    triggerKind: "wall-clock",
+    wirings: [{ kind: "Schedule", status: "shipped" }],
+  },
+  "scheduled-deps": {
+    trigger: "Nightly cron",
+    triggerKind: "wall-clock",
+    wirings: [{ kind: "Schedule", status: "shipped" }],
+  },
+  "spec-drift-pr": {
+    trigger: "Daily cron",
+    triggerKind: "wall-clock",
+    wirings: [{ kind: "Schedule", status: "shipped" }],
+  },
+  "ci-triage-pr": {
+    trigger: "Daily cron",
+    triggerKind: "wall-clock",
+    wirings: [{ kind: "Schedule", status: "shipped" }],
+  },
+};
+
+/**
+ * The exported catalog. Each base recipe is enriched with its wiring axis;
+ * `mode` is forced to mirror `wirings[0].kind` so the recommended wiring is a
+ * single source of truth.
+ */
+export const recipes: Recipe[] = baseRecipes.map((r) => {
+  const w = WIRINGS[r.slug];
+  if (!w) throw new Error(`recipes.ts: no WIRINGS entry for "${r.slug}"`);
+  return { ...r, ...w, mode: w.wirings[0].kind };
+});

@@ -1586,11 +1586,123 @@ pre code {
   font-size: 0.85em;
   opacity: 0.7;
 }
+.snippets__subtab-opt,
+.recipe-compare__subtab-opt {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.72em;
+  padding: 0.05rem 0.36rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+}
 .snippets__panel pre {
   margin: 0;
   border: 0;
   border-radius: 0;
   max-height: 32rem;
+}
+
+/* ---- Wiring chips & strip (recipe wiring axis) ------------------------- */
+
+.wiring-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+.wiring-chips--inline {
+  margin-top: 0.4rem;
+}
+.wiring-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.16rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Shipped = the run declares this wiring today; pattern = setup you add. */
+.wiring-chip--shipped {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+.wiring-chip--rec {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.wiring-chip--pattern {
+  border-style: dashed;
+}
+.wiring-chip__tag {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
+.wiring-strip {
+  margin: 1.25rem 0 1.5rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--paper-soft);
+}
+.wiring-strip__trigger {
+  margin: 0 0 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+.wiring-strip__label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: var(--fs-tiny);
+  color: var(--muted);
+}
+.wiring-strip__hint {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.wiring-strip__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+.wiring-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+@media (max-width: 560px) {
+  .wiring-row {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+}
+.wiring-row__rec {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: var(--accent);
+}
+.wiring-row__summary {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.wiring-row__summary em {
+  font-style: italic;
+  opacity: 0.85;
 }
 
 /* ---- Recipe pages ------------------------------------------------------ */
