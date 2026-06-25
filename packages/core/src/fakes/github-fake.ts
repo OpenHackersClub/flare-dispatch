@@ -10,12 +10,14 @@
 
 import { Effect, Layer } from "effect";
 import {
+  type CreateRelease,
   type DraftPullRequestResult,
   Github,
   type GithubService,
   type OpenDraftPullRequest,
   type PullRequestRef,
   type PullReviewRequest,
+  type ReleaseResult,
   type RepoRef,
   type WorkflowRunRef,
 } from "../services/github";
@@ -49,6 +51,8 @@ export type GithubFakeState = {
   readonly pullReviewCalls: PullReviewRequest[];
   /** Every `openDraftPullRequest` call, in order. */
   readonly openDraftPullRequestCalls: OpenDraftPullRequest[];
+  /** Every `createRelease` call, in order — lets a test assert a release published. */
+  readonly createReleaseCalls: CreateRelease[];
 };
 
 /** Default reference clock — fakes use this when callers don't override. */
@@ -72,6 +76,7 @@ export const makeGithubFake = (
     actionRunsCalls: [],
     pullReviewCalls: [],
     openDraftPullRequestCalls: [],
+    createReleaseCalls: [],
   };
   const now = opts.now ?? DEFAULT_NOW;
   // Branches the fake has already "opened" a PR for — so a re-run with the same
@@ -154,6 +159,19 @@ export const makeGithubFake = (
           number,
           url: `https://github.com/${req.repo}/pull/${number}`,
           created,
+        };
+      }),
+
+    createRelease: (req): Effect.Effect<ReleaseResult, never> =>
+      Effect.sync(() => {
+        state.createReleaseCalls.push(req);
+        // Deterministic fake release id derived from call order.
+        const id = state.createReleaseCalls.length;
+        return {
+          id,
+          url: `https://github.com/${req.repo}/releases/tag/${req.tag}`,
+          tag: req.tag,
+          published: true,
         };
       }),
   };

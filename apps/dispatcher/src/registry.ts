@@ -21,6 +21,7 @@ import {
   prReview,
   productDemo,
   refreshFixtures,
+  releaseNotes,
   specDriftPr,
 } from "@flare-dispatch/runs";
 
@@ -37,6 +38,7 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [specDriftPr.name]: specDriftPr as Run<unknown, unknown>,
   [ciTriagePr.name]: ciTriagePr as Run<unknown, unknown>,
   [refreshFixtures.name]: refreshFixtures as Run<unknown, unknown>,
+  [releaseNotes.name]: releaseNotes as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

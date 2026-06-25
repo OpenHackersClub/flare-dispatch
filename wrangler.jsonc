@@ -319,11 +319,18 @@
   //   "0 6 * * *"   — 06:00 UTC daily, `ci-triage-pr` (runs/ci-triage-pr.ts):
   //                   triages recent GitHub Actions + Cloudflare deploy failures
   //                   and opens a draft PR with the triage write-up.
+  //   "0 9 * * 1"   — 09:00 UTC every Monday, `release-notes` (runs/release-notes.ts):
+  //                   drafts release notes for the unreleased range, uploads the
+  //                   draft, then hibernates on `step.waitForEvent` (≤72h, zero
+  //                   CPU) until an approver POSTs to /v1/admin/events/:wf_id;
+  //                   on approval publishes the GitHub Release via the github
+  //                   capability (App token — no PAT, no extra secret).
   "triggers": {
     "crons": [
       "0 14 * * *",
       "0 5 * * *",
-      "0 6 * * *"
+      "0 6 * * *",
+      "0 9 * * 1"
     ]
   }
 }

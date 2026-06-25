@@ -120,6 +120,54 @@ export type DraftPullRequestResult = {
 };
 
 /**
+ * A request to publish a **GitHub Release** — the narrow *release write* the
+ * `release-notes` recipe uses on approval. Like `openDraftPullRequest` and
+ * `pullReview`, this is a deliberate, bounded exception to the capability's
+ * read-only stance: a run that drafts release notes and waits for a human gate
+ * needs exactly "publish this tag with this body" and nothing more.
+ *
+ * The live Layer creates the release via `POST /repos/{o}/{r}/releases`, which
+ * also creates the git tag at `target` when it does not exist — no separate
+ * container `git push --tags`. A deploy without App credentials degrades to a
+ * logged no-op (`published: false`), mirroring the other writes.
+ */
+export type CreateRelease = {
+  /** "owner/name". */
+  readonly repo: string;
+  /** The tag to create/point the release at (e.g. `v0.1.0`). */
+  readonly tag: string;
+  /**
+   * The commit sha (or branch) the tag is created at when it does not already
+   * exist — pin it to the drafted HEAD sha for a reproducible tag. Defaults to
+   * the repo's default-branch tip when omitted.
+   */
+  readonly target?: string;
+  /** The release title — defaults to `tag`. */
+  readonly name?: string;
+  /** The release body (markdown). */
+  readonly body: string;
+  /** Publish as a pre-release. Default `false`. */
+  readonly prerelease?: boolean;
+  /**
+   * The GitHub installation id authenticating the write. Optional — the live
+   * Layer resolves it from the repo when absent.
+   */
+  readonly installationId?: number;
+};
+
+/** The outcome of {@link GithubService.createRelease}. */
+export type ReleaseResult = {
+  /** The release's numeric id (`0` when degraded to a no-op). */
+  readonly id: number;
+  /** The release's web URL (`""` when degraded to a no-op). */
+  readonly url: string;
+  /** The tag the release points at. */
+  readonly tag: string;
+  /** `true` when a release was actually published; `false` on a no-op deploy. */
+  readonly published: boolean;
+};
+
+/**
  * A top-level PR review to post — `POST /repos/{o}/{r}/pulls/{n}/reviews`.
  * `event: "COMMENT"` leaves a visible review comment without approving or
  * requesting changes (the run's *verdict* is reported separately via the
@@ -203,6 +251,15 @@ export interface GithubService {
   readonly openDraftPullRequest: (
     req: OpenDraftPullRequest,
   ) => Effect.Effect<DraftPullRequestResult, GitHubApiError>;
+
+  /**
+   * Publish a GitHub Release (creating the tag at `target` when absent) — the
+   * release write the `release-notes` recipe calls on human approval. A deploy
+   * without App credentials degrades to a logged no-op (`published: false`).
+   */
+  readonly createRelease: (
+    req: CreateRelease,
+  ) => Effect.Effect<ReleaseResult, GitHubApiError>;
 }
 
 /** Context.Tag — the dependency a run carries until a Layer provides it. */
@@ -239,4 +296,6 @@ export const github = {
     Effect.flatMap(Github, (g) => g.pullReview(req)),
   openDraftPullRequest: (req: OpenDraftPullRequest) =>
     Effect.flatMap(Github, (g) => g.openDraftPullRequest(req)),
+  createRelease: (req: CreateRelease) =>
+    Effect.flatMap(Github, (g) => g.createRelease(req)),
 } as const;

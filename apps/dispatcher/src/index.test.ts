@@ -122,6 +122,7 @@ describe("GET /health", () => {
         "pr-review",
         "product-demo",
         "refresh-fixtures",
+        "release-notes",
         "spec-drift-pr",
       ],
     });

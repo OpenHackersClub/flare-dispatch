@@ -23,6 +23,7 @@
 
 import {
   createPullReview,
+  createRelease,
   getInstallationToken,
   listActionRuns,
   openDraftPullRequest,
@@ -35,6 +36,7 @@ import {
   Github,
   GitHubApiError,
   type GithubService,
+  type ReleaseResult,
   type WorkflowRunRef,
 } from "@flare-dispatch/core";
 
@@ -243,6 +245,42 @@ export const makeGithubLive = (
             }),
           catch: (cause) => toGitHubApiError(cause),
         });
+      }),
+
+    createRelease: (req): Effect.Effect<ReleaseResult, GitHubApiError> =>
+      Effect.gen(function* () {
+        if (config === undefined) {
+          // No App credentials (local dev / no secrets) — a logged no-op, the
+          // same graceful degradation the other writes use. The recipe sees
+          // `published: false` and reports "release not published (App not
+          // configured)".
+          yield* Effect.logInfo(
+            `github.createRelease skipped (no GitHub App credentials) — ${req.repo}@${req.tag} not published`,
+          );
+          return { id: 0, url: "", tag: req.tag, published: false };
+        }
+        const token = yield* mintToken(config, req.repo, req.installationId);
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            createRelease({
+              token,
+              repo: req.repo,
+              tag: req.tag,
+              ...(req.target !== undefined ? { target: req.target } : {}),
+              ...(req.name !== undefined ? { name: req.name } : {}),
+              body: req.body,
+              ...(req.prerelease !== undefined
+                ? { prerelease: req.prerelease }
+                : {}),
+            }),
+          catch: (cause) => toGitHubApiError(cause),
+        });
+        return {
+          id: result.id,
+          url: result.htmlUrl,
+          tag: result.tagName,
+          published: true,
+        };
       }),
   };
 
