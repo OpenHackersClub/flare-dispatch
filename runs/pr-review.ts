@@ -39,7 +39,14 @@
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
-// silently drops tool-calling still produces a review.
+// silently drops tool-calling still produces a review. A json-mode answer that
+// carries no parseable JSON (prose, or a value truncated inside a reasoning
+// block) gets ONE blunt "JSON only" repair retry before it counts as failed.
+//
+// The per-domain fan-out is fault-ISOLATED: one reviewer whose model call fails
+// (unparseable output, a transient 429) is dropped to zero findings and flagged
+// in the engagement line — the review still ships with the domains that
+// succeeded. The run only goes red when EVERY reviewer fails.
 //
 // --- Per-dispatch overrides (Action mode) -----------------------------------
 //
@@ -54,7 +61,7 @@
 //       Action mode (a GHA workflow dispatches it with per-call overrides).
 // DSL:  see specs/03-dsl.md (uses `config` + `github`).
 
-import { Effect, Schema, Match, Option } from "effect";
+import { Effect, Schema, Match, Option, Either } from "effect";
 import {
   defineRun,
   step,
@@ -529,31 +536,76 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
     //    capability (provided by the runtime, like `config`/`sandbox`); findings
     //    are Schema-validated tool-call / json output. The reviewers see the
     //    GROUNDED diff (oxlint findings prepended), not the raw diff.
-    const fanned = yield* step("review", () =>
-      Effect.forEach(
-        plan.agents,
-        (agent) =>
-          reviewDomain({
-            agent,
-            diff: groundedDiff,
-            tier: plan.tier,
-            model: resolved.model,
-            backend: resolved.backend,
-            mode: resolved.mode,
-            maxTokens: resolved.maxTokens,
-            systemPrompt,
-            ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
-          }),
-        { concurrency: plan.agents.length },
-      ),
+    //
+    //    FAULT-ISOLATED fan-out: each reviewer is wrapped in `Effect.either`, so
+    //    one domain whose model call fails — unparseable output
+    //    (`StructuredOutputInvalid`), a transient 429 under the concurrent
+    //    fan-out (`ModelCallFailed`) — is dropped to zero findings and flagged
+    //    `errored` in the engagement line, rather than aborting the whole review.
+    //    The review still ships with every domain that DID succeed — resilience
+    //    is the point of the multi-agent design. ONLY when EVERY reviewer fails
+    //    do we re-raise (the typed cause), so the boundary posts an honest "could
+    //    not complete" for a systemic fault (misconfigured backend, wrong
+    //    model/mode, gateway down) instead of masking it as an empty review.
+    const reviewed = yield* step("review", () =>
+      Effect.gen(function* () {
+        const results = yield* Effect.forEach(
+          plan.agents,
+          (agent) =>
+            reviewDomain({
+              agent,
+              diff: groundedDiff,
+              tier: plan.tier,
+              model: resolved.model,
+              backend: resolved.backend,
+              mode: resolved.mode,
+              maxTokens: resolved.maxTokens,
+              systemPrompt,
+              ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
+            }).pipe(Effect.either),
+          { concurrency: plan.agents.length },
+        );
+
+        // Log each failed domain's cause (the per-reviewer error is otherwise
+        // swallowed by the tolerance below) for operator diagnosis in the logs.
+        for (let i = 0; i < plan.agents.length; i++) {
+          const r = results[i];
+          if (r !== undefined && Either.isLeft(r)) {
+            yield* io.log(
+              "warn",
+              `pr-review: reviewer "${plan.agents[i]}" failed — ${describeError(r.left)}`,
+            );
+          }
+        }
+
+        // Every reviewer failed → no partial review to salvage; re-raise the
+        // first cause (typed) so the error boundary names it precisely.
+        const firstLeft = results.find(Either.isLeft);
+        if (firstLeft !== undefined && results.every(Either.isLeft)) {
+          return yield* Effect.fail(firstLeft.left);
+        }
+
+        // Findings from the domains that succeeded; failed domains contribute
+        // none. Per-domain counts (or an `errored` flag) render in the comment so
+        // an all-empty review is visibly "N reviewers each reported 0", and a
+        // degraded review is visibly "this domain errored" — never silently
+        // indistinguishable from "found nothing".
+        const findings: ReadonlyArray<Finding> = results.flatMap((r) =>
+          Either.isRight(r) ? r.right : [],
+        );
+        const domainCounts: ReadonlyArray<DomainCount> = plan.agents.map(
+          (agent, i) => {
+            const r = results[i];
+            return r !== undefined && Either.isRight(r)
+              ? { agent, count: r.right.length }
+              : { agent, count: 0, errored: true };
+          },
+        );
+        return { findings, domainCounts };
+      }),
     );
-    const allFindings: ReadonlyArray<Finding> = fanned.flat();
-    // Per-domain finding counts — rendered in the comment so an all-domains-
-    // empty review is visibly "7 reviewers each reported 0", not a bare
-    // "No findings" indistinguishable from the reviewers never engaging.
-    const domainCounts: ReadonlyArray<DomainCount> = plan.agents.map(
-      (agent, i) => ({ agent, count: fanned[i]?.length ?? 0 }),
-    );
+    const allFindings: ReadonlyArray<Finding> = reviewed.findings;
+    const domainCounts: ReadonlyArray<DomainCount> = reviewed.domainCounts;
 
     // 7. Coordinate — PURE deterministic assembly (dedup + counts + verdict) over
     //    THIS run's findings. No model call; the current run is authoritative, so
@@ -759,8 +811,13 @@ const sanitizeModelText = (s: string): string =>
     .replace(/@(?=[\w-])/g, `@${ZWSP}`)
     .slice(0, SANITIZE_MAX);
 
-/** One domain reviewer's engagement — how many findings it reported. */
-type DomainCount = { readonly agent: string; readonly count: number };
+/** One domain reviewer's engagement — how many findings it reported, or
+ *  `errored: true` when its model call failed and it was skipped (count 0). */
+type DomainCount = {
+  readonly agent: string;
+  readonly count: number;
+  readonly errored?: boolean;
+};
 
 /** How many findings render in the comment; the rest land as check annotations. */
 const MAX_RENDERED_FINDINGS = 25;
@@ -887,8 +944,10 @@ const renderDefault = (
     `Risk tier: \`${output.tier}\` · ${output.critical} critical · ${output.warnings} warnings · ${output.suggestions} suggestions`,
     "",
     // Engagement line: every domain that ran, with its finding count — the
-    // counts may exceed the deduped totals above.
-    `Reviewers: ${domainCounts.map((d) => `${d.agent} ${d.count}`).join(" · ")}`,
+    // counts may exceed the deduped totals above. A domain whose model call
+    // failed (and was skipped) shows `⚠️` instead of a count, so a degraded
+    // review is visibly partial rather than silently under-reporting.
+    `Reviewers: ${domainCounts.map((d) => (d.errored === true ? `${d.agent} ⚠️` : `${d.agent} ${d.count}`)).join(" · ")}`,
   ];
 
   const rendered = output.findings.slice(0, MAX_RENDERED_FINDINGS);
