@@ -27,6 +27,7 @@ import { it } from "@effect/vitest";
 import { Effect, Exit } from "effect";
 import { describe, expect } from "vitest";
 import { makeCFRuntimeTest } from "@flare-dispatch/core/testing";
+import { ModelGatewayError } from "@flare-dispatch/core";
 import { prReview } from "./pr-review";
 
 const baseInput = {
@@ -526,6 +527,97 @@ describe("pr-review", () => {
         expect(comment.body).toContain(
           `📋 [View full logs & reviewed diff ↗](${VIEWER_URL})`,
         );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  // ---- fault-isolated fan-out: one bad reviewer must not sink the review -----
+  // The whole point of the multi-agent fan-out is resilience. A single domain
+  // whose model call returns unparseable output (the live `StructuredOutputInvalid:
+  // empty` failure) or a transient gateway error is dropped to zero findings and
+  // flagged in the engagement line — the review still ships with the domains that
+  // succeeded. Only when EVERY reviewer fails does the run go red.
+
+  // A diff big enough to classify `lite` (4 domain reviewers) on a NON-lintable
+  // path, so `oxlint-scan` short-circuits (no exec/read) and the model fan-out
+  // is the only model path under test.
+  const liteDiff = [
+    "diff --git a/notes/feature.txt b/notes/feature.txt",
+    "+++ b/notes/feature.txt",
+    ...Array.from({ length: 60 }, (_, i) => `+line ${i}`),
+  ].join("\n");
+
+  it.effect(
+    "one reviewer's unparseable output is tolerated — the review still completes",
+    () => {
+      // json mode so each domain makes exactly one model call. The first response
+      // is a schema-mismatch (valid JSON, bad `level`) → that ONE domain fails;
+      // the other three return an empty findings object and succeed. Whichever
+      // domain grabs the bad response, exactly one errors and the review ships.
+      const schemaMismatch = {
+        toolCalls: [],
+        text: '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
+      } as const;
+      const emptyJsonReport = { toolCalls: [], text: '{"findings":[]}' } as const;
+
+      const { layer, handles } = makeCFRuntimeTest({
+        config: { ...backendConfig, "pr-review.opencode.mode": "json" },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: liteDiff },
+        modelGateway: {
+          responses: [
+            schemaMismatch,
+            emptyJsonReport,
+            emptyJsonReport,
+            emptyJsonReport,
+          ],
+        },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run(baseInput));
+
+        // The review COMPLETED — a normal comment, not a "could not complete".
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).toContain("### AI code review");
+        expect(body).not.toContain("could not complete");
+        // Exactly one domain errored — its engagement entry shows `⚠️`.
+        expect(body).toMatch(/Reviewers:.*⚠️/);
+        // Four domains, one model call each (no schema-mismatch repair retry).
+        expect(handles.modelGateway.requests).toHaveLength(4);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "EVERY reviewer failing → the run goes red with an honest 'could not complete'",
+    () => {
+      // A gateway auth failure on every call → every domain reviewer fails the
+      // same way. With nothing to salvage, the run re-raises the cause so the
+      // boundary posts a precise failure comment (not a misleading empty review).
+      const { layer, handles } = makeCFRuntimeTest({
+        config: backendConfig,
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: liteDiff },
+        modelGateway: {
+          responses: [
+            new ModelGatewayError({
+              model: "@cf/test/model",
+              reason: "auth-failed",
+              message: "Workers AI run failed: 401 unauthorized",
+            }),
+          ],
+        },
+      });
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(prReview.run(baseInput));
+        expect(Exit.isFailure(exit)).toBe(true);
+
+        const comment = handles.github.pullReviewCalls[0]!;
+        expect(comment.body).toContain("could not complete");
+        // The re-raised typed cause is named precisely in the comment.
+        expect(comment.body).toContain("model call failed (auth-failed)");
       }).pipe(Effect.provide(layer));
     },
   );

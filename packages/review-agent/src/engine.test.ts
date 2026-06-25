@@ -392,6 +392,109 @@ describe("reviewDomain", () => {
     expect(calls()).toBe(2); // tools attempt + json fallback
   });
 
+  it("json mode — repairs once with a blunt correction when the first response has no JSON", async () => {
+    // A model in json mode answers in prose (no JSON) on the first call. The
+    // engine re-asks ONCE with a repair instruction; the retry returns valid
+    // JSON, so the reviewer still produces findings instead of failing the whole
+    // review with `StructuredOutputInvalid: empty`.
+    const fake = makeModelGatewayFake({
+      responses: [
+        textResult("I reviewed the diff and everything looks fine to me."),
+        textResult(JSON.stringify({ findings: [finding] })),
+      ],
+    });
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        backend: "reasonix",
+        mode: "json",
+      }).pipe(Effect.provide(fake.layer)),
+    );
+    expect(result).toEqual([finding]);
+    // Exactly two calls: the first (no JSON) + one repair retry.
+    expect(fake.state.requests).toHaveLength(2);
+    // The repair call carries the blunt "ONLY the JSON object" correction.
+    expect(fake.state.requests[1]!.user).toContain(
+      "did not contain a valid JSON object",
+    );
+  });
+
+  it("json mode — gives up after a SINGLE repair retry (no loop)", async () => {
+    // Both the first call and its repair return prose (the fake repeats its last
+    // response) → the engine fails after exactly two calls, never looping.
+    const fake = makeModelGatewayFake({
+      responses: [textResult("still just prose, no json here")],
+    });
+    const exit = await Effect.runPromiseExit(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        backend: "reasonix",
+        mode: "json",
+      }).pipe(Effect.provide(fake.layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    expect(fake.state.requests).toHaveLength(2);
+  });
+
+  it("json mode — does NOT repair a schema-mismatch (the model emitted JSON, just the wrong shape)", async () => {
+    // A valid JSON object with a bad `level` → schema-mismatch. A blind repair
+    // retry won't fix structure, so the engine fails on the first call (no retry).
+    const fake = makeModelGatewayFake({
+      responses: [
+        textResult(
+          '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
+        ),
+      ],
+    });
+    const exit = await Effect.runPromiseExit(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        backend: "reasonix",
+        mode: "json",
+      }).pipe(Effect.provide(fake.layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    expect(fake.state.requests).toHaveLength(1);
+  });
+
+  it("tools mode — empty tool calls, then a no-JSON fallback, gets one repair", async () => {
+    // The full chain: tools attempt returns no tool call → json fallback returns
+    // prose → ONE repair retry returns valid JSON. Proves the repair composes
+    // with the tools→json auto-fallback, bounded to three calls total.
+    const fake = makeModelGatewayFake({
+      responses: [
+        emptyToolsResult("<think>I won't use tools</think>"),
+        textResult("here is my prose review, no json"),
+        textResult(JSON.stringify({ findings: [finding] })),
+      ],
+    });
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        backend: "reasonix",
+        mode: "tools",
+      }).pipe(Effect.provide(fake.layer)),
+    );
+    expect(result).toEqual([finding]);
+    expect(fake.state.requests).toHaveLength(3);
+  });
+
   it("fails ModelCallFailed on a gateway error", async () => {
     const { layer } = withGateway([
       new ModelGatewayError({

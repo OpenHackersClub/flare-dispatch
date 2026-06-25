@@ -69,6 +69,16 @@ const REVIEW_MAX_TOKENS = 8192;
 const EXCERPT_LEN = 400;
 const excerpt = (text: string): string => text.slice(0, EXCERPT_LEN);
 
+/**
+ * Blunt correction appended on the SINGLE json-mode repair retry, after a first
+ * response carried no parseable JSON — prose only, or a value truncated inside a
+ * reasoning block (the `empty` / `not-json` failures). Kept terse and
+ * imperative: the smaller catalog models that ignore the original "respond with
+ * only JSON" framing tend to comply with a direct second-person correction.
+ */
+const JSON_REPAIR_SUFFIX =
+  'Your previous response did not contain a valid JSON object. Reply with ONLY the JSON object — no reasoning, no explanation, no <think> block, no markdown code fences. Begin your reply with "{" and end it with "}".';
+
 /** A JSON Schema (draft-07) for a tool's `function.parameters`. */
 const toolParametersSchema = (schema: Schema.Schema<any, any>): unknown => {
   const js = JSONSchema.make(schema) as unknown as Record<string, unknown>;
@@ -510,21 +520,42 @@ export const completeStructured = <A>(
             : {}),
         });
 
-  const jsonAttempt = Effect.gen(function* () {
-    const result = yield* completeRaw({
-      backend: input.backend,
-      model: input.model,
-      system: input.system,
-      user: framedUser("json"),
-      // Constrained decoding: providers that support guided JSON emit a
-      // schema-valid object directly; others ignore it and the text extractor
-      // still runs. The schema mirrors the `report` tool's parameters.
-      jsonSchema: toolParametersSchema(input.schema),
-      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
-      ...(input.aws !== undefined ? { aws: input.aws } : {}),
+  // One json-mode attempt with a given user message — the body shared by the
+  // first attempt and its repair retry.
+  const runJson = (user: string) =>
+    Effect.gen(function* () {
+      const result = yield* completeRaw({
+        backend: input.backend,
+        model: input.model,
+        system: input.system,
+        user,
+        // Constrained decoding: providers that support guided JSON emit a
+        // schema-valid object directly; others ignore it and the text extractor
+        // still runs. The schema mirrors the `report` tool's parameters.
+        jsonSchema: toolParametersSchema(input.schema),
+        ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+        ...(input.aws !== undefined ? { aws: input.aws } : {}),
+      });
+      return yield* parseStructured(result.text, decode, ctx);
     });
-    return yield* parseStructured(result.text, decode, ctx);
-  });
+
+  // The json-mode attempt WITH a single repair retry. A model asked for strict
+  // JSON sometimes answers in prose, or truncates inside a reasoning block —
+  // leaving NO parseable JSON (`empty`) or a half-emitted value (`not-json`).
+  // Re-ask ONCE with a blunt correction before giving up: one extra call that
+  // turns a hard `StructuredOutputInvalid` into a real answer far more often than
+  // not. A `schema-mismatch` is NOT repaired — the model DID emit JSON, just the
+  // wrong shape; `parseStructured` already kept the most specific error and a
+  // blind retry rarely fixes structure. Bounded to ONE retry (the repair
+  // attempt's own failure propagates), so there is no loop.
+  const jsonUser = framedUser("json");
+  const jsonAttempt = runJson(jsonUser).pipe(
+    Effect.catchTag("StructuredOutputInvalid", (e) =>
+      e.reason === "empty" || e.reason === "not-json"
+        ? runJson(`${jsonUser}\n\n${JSON_REPAIR_SUFFIX}`)
+        : Effect.fail(e),
+    ),
+  );
 
   const toolsAttempt = Effect.gen(function* () {
     const result = yield* completeRaw({
