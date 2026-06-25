@@ -129,6 +129,18 @@ export type BackendKeyDescriptor = {
    */
   readonly maxDiffCharsKey: string;
   /**
+   * Default output-token budget. Sized so a reasoning model (GLM / Kimi /
+   * DeepSeek) can spend tokens inside `<think>` AND still emit the JSON answer —
+   * a tight budget truncates the answer and reads as "found nothing". A ceiling,
+   * so non-reasoning models that answer briefly are unaffected.
+   */
+  readonly defaultMaxTokens: number;
+  /**
+   * CONFIG_KV key overriding `defaultMaxTokens` (a positive int). Unset/blank/
+   * non-numeric → `defaultMaxTokens`.
+   */
+  readonly maxTokensKey: string;
+  /**
    * `bedrock` backend only — CONFIG_KV key carrying the AWS region the run
    * exchanges OIDC for STS in (and signs InvokeModel against). Other backends
    * leave this undefined.
@@ -165,6 +177,16 @@ const ANTHROPIC_MAX_DIFF_CHARS = 240_000;
  */
 const BEDROCK_MAX_DIFF_CHARS = 240_000;
 
+/**
+ * Default output-token budgets. Catalog/reasonix get reasoning headroom (these
+ * route to Workers AI models that may `<think>` before answering); anthropic /
+ * bedrock answer directly and need less. All are ceilings — overridable per
+ * backend via `pr-review.<backend>.maxTokens`.
+ */
+const CATALOG_MAX_TOKENS = 8_192;
+const ANTHROPIC_MAX_TOKENS = 4_096;
+const BEDROCK_MAX_TOKENS = 4_096;
+
 /** Default region a `bedrock` backend resolves to when `regionKey` is unset. */
 const BEDROCK_DEFAULT_REGION = "us-east-1";
 
@@ -180,6 +202,8 @@ export const namespacedKeys = (
     modelKey: `${namespace}.opencode.model`,
     modeKey: `${namespace}.opencode.mode`,
     maxDiffCharsKey: `${namespace}.opencode.maxDiffChars`,
+    maxTokensKey: `${namespace}.opencode.maxTokens`,
+    defaultMaxTokens: CATALOG_MAX_TOKENS,
     defaultMode: "tools",
     defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
   },
@@ -187,6 +211,8 @@ export const namespacedKeys = (
     modelKey: `${namespace}.reasonix.model`,
     modeKey: `${namespace}.reasonix.mode`,
     maxDiffCharsKey: `${namespace}.reasonix.maxDiffChars`,
+    maxTokensKey: `${namespace}.reasonix.maxTokens`,
+    defaultMaxTokens: CATALOG_MAX_TOKENS,
     // DeepSeek-class reasoning models don't honour tool-calls — default them
     // to json mode (validated against the live Workers AI binding).
     defaultMode: "json",
@@ -196,6 +222,8 @@ export const namespacedKeys = (
     modelKey: `${namespace}.anthropic.model`,
     modeKey: `${namespace}.anthropic.mode`,
     maxDiffCharsKey: `${namespace}.anthropic.maxDiffChars`,
+    maxTokensKey: `${namespace}.anthropic.maxTokens`,
+    defaultMaxTokens: ANTHROPIC_MAX_TOKENS,
     // Claude honours forced tool use (`tool_choice: any`) reliably; tool
     // arguments come back as a parsed object the engine already tolerates.
     defaultMode: "tools",
@@ -205,6 +233,8 @@ export const namespacedKeys = (
     modelKey: `${namespace}.bedrock.model`,
     modeKey: `${namespace}.bedrock.mode`,
     maxDiffCharsKey: `${namespace}.bedrock.maxDiffChars`,
+    maxTokensKey: `${namespace}.bedrock.maxTokens`,
+    defaultMaxTokens: BEDROCK_MAX_TOKENS,
     // The shared `invokeBedrockViaAiGateway` helper concatenates the response's
     // text content blocks but does NOT surface tool-use blocks — Bedrock route
     // is text-only V0. Force `json` so the engine doesn't send a `report` tool
@@ -263,6 +293,8 @@ export type ResolvedBackend = {
   readonly mode: ReviewMode;
   /** Diff cap (chars) sized to this backend's context window — see `capDiff`. */
   readonly maxDiffChars: number;
+  /** Output-token budget for each model call (reasoning headroom). */
+  readonly maxTokens: number;
   /**
    * `bedrock` backend only — AWS region the engine should mint STS creds in
    * (and the modelGateway Bedrock route signs against). `undefined` for other
@@ -307,6 +339,26 @@ export const parseMaxDiffChars = (
   return Math.min(Math.max(n, MIN_MAX_DIFF_CHARS), MAX_MAX_DIFF_CHARS);
 };
 
+/** Lower bound for a token-budget override. */
+const MIN_MAX_TOKENS = 256;
+/** Upper bound — guards against a runaway budget. */
+const MAX_MAX_TOKENS = 32_768;
+
+/**
+ * Narrow a CONFIG_KV token-budget override to a positive integer, or `fallback`
+ * when unset/blank/non-numeric/non-positive. Clamped to
+ * [{@link MIN_MAX_TOKENS}, {@link MAX_MAX_TOKENS}].
+ */
+export const parseMaxTokens = (
+  raw: string | undefined,
+  fallback: number,
+): number => {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return fallback;
+  return Math.min(Math.max(n, MIN_MAX_TOKENS), MAX_MAX_TOKENS);
+};
+
 /**
  * Resolve the active backend's profile from operator config. `getConfig` is the
  * `config.get`-shaped accessor — `(key) => Effect<string | undefined, never, R>`
@@ -336,6 +388,10 @@ export const resolveBackend = <R>(
     const maxDiffChars = parseMaxDiffChars(
       yield* getConfig(keys.maxDiffCharsKey),
       keys.defaultMaxDiffChars,
+    );
+    const maxTokens = parseMaxTokens(
+      yield* getConfig(keys.maxTokensKey),
+      keys.defaultMaxTokens,
     );
 
     if (backend === "bedrock") {
@@ -368,12 +424,13 @@ export const resolveBackend = <R>(
         model,
         mode,
         maxDiffChars,
+        maxTokens,
         region,
         roleArn,
       };
     }
 
-    return { backend, model, mode, maxDiffChars };
+    return { backend, model, mode, maxDiffChars, maxTokens };
   });
 
 /** Map a `Match`-classified provider error to a `ModelCallFailed.reason`. */

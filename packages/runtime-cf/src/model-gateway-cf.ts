@@ -112,7 +112,26 @@ type AiTextInputs = {
   readonly tools?: ReadonlyArray<AiTool>;
   readonly max_tokens?: number;
   readonly temperature?: number;
+  /**
+   * Constrained-decoding hint (Workers AI guided generation). Models that
+   * support it emit schema-valid JSON; others ignore the field.
+   */
+  readonly response_format?: {
+    readonly type: "json_schema";
+    readonly json_schema: unknown;
+  };
 };
+
+/**
+ * Build the OpenAI-style `response_format` for a JSON Schema, or `{}` when no
+ * schema is set — spread into a request so the no-schema path is unchanged.
+ */
+const jsonResponseFormat = (
+  jsonSchema: unknown,
+): { response_format?: { type: "json_schema"; json_schema: unknown } } =>
+  jsonSchema !== undefined
+    ? { response_format: { type: "json_schema", json_schema: jsonSchema } }
+    : {};
 
 /** The slice of `AiTextGenerationOutput` this Layer reads. */
 type AiTextOutput = {
@@ -281,6 +300,7 @@ const completeWorkersAi = (
       ...(req.temperature !== undefined
         ? { temperature: req.temperature }
         : {}),
+      ...jsonResponseFormat(req.jsonSchema),
     };
 
     const output = yield* Effect.tryPromise({
@@ -474,6 +494,13 @@ const deepseekBody = (
         // `reasonix` backend uses json mode so this branch is dormant there.)
         tool_choice: "required",
       }
+    : {}),
+  // Constrained decoding (json mode): OpenAI-compatible `json_object` is the
+  // widely-supported form — the schema itself rides in the prompt contract. Only
+  // set when no tools are sent (the two are mutually exclusive on this route).
+  ...(req.jsonSchema !== undefined &&
+  !(req.tools !== undefined && req.tools.length > 0)
+    ? { response_format: { type: "json_object" } }
     : {}),
   ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
 });

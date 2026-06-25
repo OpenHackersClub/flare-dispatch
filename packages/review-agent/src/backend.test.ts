@@ -14,6 +14,7 @@ import {
   namespacedKeys,
   parseBackend,
   parseMaxDiffChars,
+  parseMaxTokens,
   parseMode,
   promptKey,
   resolveBackend,
@@ -66,6 +67,21 @@ describe("parseMaxDiffChars", () => {
   });
 });
 
+describe("parseMaxTokens", () => {
+  it("parses a positive integer override", () => {
+    expect(parseMaxTokens("16000", 8_192)).toBe(16_000);
+  });
+  it("falls back on unset / blank / non-numeric / non-positive", () => {
+    expect(parseMaxTokens(undefined, 8_192)).toBe(8_192);
+    expect(parseMaxTokens("8k", 8_192)).toBe(8_192);
+    expect(parseMaxTokens("0", 8_192)).toBe(8_192);
+  });
+  it("clamps to [256, 32_768]", () => {
+    expect(parseMaxTokens("10", 8_192)).toBe(256);
+    expect(parseMaxTokens("99999", 8_192)).toBe(32_768);
+  });
+});
+
 describe("resolveBackend", () => {
   it("resolves the default backend (opencode) from config — no API key", async () => {
     const store = {
@@ -88,6 +104,20 @@ describe("resolveBackend", () => {
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.maxDiffChars).toBe(100_000);
+  });
+
+  it("resolves the default token budget and honours a maxTokens override", async () => {
+    const base = { [BACKEND_KEYS.opencode.modelKey]: "@cf/zai-org/glm-5.2" };
+    const def = await Effect.runPromise(resolveBackend(getter(base)));
+    // Catalog/opencode default — reasoning headroom.
+    expect(def.maxTokens).toBe(8_192);
+
+    const overridden = await Effect.runPromise(
+      resolveBackend(
+        getter({ ...base, [BACKEND_KEYS.opencode.maxTokensKey]: "16000" }),
+      ),
+    );
+    expect(overridden.maxTokens).toBe(16_000);
   });
 
   it("resolves the reasonix backend", async () => {

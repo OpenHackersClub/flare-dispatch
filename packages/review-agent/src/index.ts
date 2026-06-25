@@ -59,6 +59,7 @@ export {
 
 export {
   extractJsonText,
+  extractJsonCandidates,
   stripThinkBlocks,
   stripCodeFences,
 } from "./json-extract.js";

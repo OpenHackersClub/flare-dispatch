@@ -71,6 +71,13 @@ export type ModelCompletionRequest = {
   /** Optional sampling temperature. */
   readonly temperature?: number;
   /**
+   * Optional JSON Schema (draft-07 object) for constrained decoding. When set, a
+   * backend that supports guided generation forwards it as `response_format` so
+   * the model emits schema-valid JSON by construction; backends that don't
+   * support it ignore the field. Used by the json-mode review path.
+   */
+  readonly jsonSchema?: unknown;
+  /**
    * AWS credentials + region — required for `bedrock/*` model ids only.
    * Per-execution: short-lived STS creds minted by `awsAssumeRole` inside the
    * run, threaded here so the Bedrock route can SigV4-sign without holding any
