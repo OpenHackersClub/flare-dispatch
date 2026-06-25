@@ -1,7 +1,8 @@
 // Integration tests for the D1-backed run admission semaphore — the
 // atomic-correctness surface the pure decision logic (`@flare-dispatch/core`
 // run-admission.test.ts) cannot cover: the conditional FIFO claim against a
-// real D1 binding via Miniflare, mirroring container-lease-d1.test.ts.
+// real D1 binding, mirroring container-lease-d1.workers.test.ts. Runs INSIDE
+// workerd via `@cloudflare/vitest-pool-workers` (see `vitest.workers.config.ts`).
 //
 // The bounded poll loop + dispatch-age timeout live in the dispatcher's
 // `RunWorkflow` (durable steps) and are governed by the pure
@@ -23,7 +24,7 @@ import {
   makeRunAdmissionD1,
   resolveAdmissionCap,
 } from "./run-admission-d1";
-import { makeTestBindings, type TestBindings } from "./test-support";
+import { makeTestBindings, type TestBindings } from "./test-support-workers";
 
 const A = "01ARZ3NDEKTSV4RRFFQ69G5FAA";
 const B = "01ARZ3NDEKTSV4RRFFQ69G5FBB";

@@ -1,13 +1,16 @@
 // @flare-dispatch/runtime-cf — integration-test support.
 //
-// The PR4 integration tests exercise the live D1 / R2 Layers against real
-// bindings. `vitest-pool-workers` 0.16 requires Vitest 3, but this monorepo is
-// pinned to Vitest 2 — so the tests instead boot a Miniflare instance directly
-// (Miniflare is the same local Workers runtime `vitest-pool-workers` uses under
-// the hood). `makeTestBindings` spins up Miniflare with D1 + R2 + KV bindings,
-// applies every migration under infra/migrations/ in order, and hands back the live `D1Database` /
-// `R2Bucket` / `KVNamespace` objects. Plain Node + Vitest, no Workers pool —
-// the "or an equivalent" path the PR4 acceptance allows.
+// The integration tests exercise the live D1 / R2 Layers against real bindings.
+// This is the Node-side Miniflare harness: the test body runs in Node and
+// drives a Miniflare instance from the outside. The D1 state machines
+// (admission / leasing / executions) have since moved to `*.workers.test.ts`,
+// which run INSIDE workerd via `@cloudflare/vitest-pool-workers` against
+// `test-support-workers.ts` (unblocked by the Vitest 3 upgrade). The remaining
+// suites — R2 / KV and the msw-backed GitHub paths, which the Workers pool
+// can't host directly — stay on this helper. `makeTestBindings` spins up
+// Miniflare with D1 + R2 + KV bindings, applies every migration under
+// infra/migrations/ in order, and hands back the live `D1Database` /
+// `R2Bucket` / `KVNamespace` objects.
 //
 // Spec: specs/pm/plan.md § PR4 acceptance.
 

@@ -8,4 +8,15 @@
 // Dispatcher route suite under `apps/dispatcher`. This workspace file is the
 // seam each new package's tests slot into without touching the root script.
 
-export default ["packages/*", "runs", "apps/dispatcher"];
+// The `packages/*` glob resolves each package's default `vitest.config.ts`
+// (Node project). `packages/runtime-cf/vitest.workers.config.ts` is registered
+// explicitly as a SECOND runtime-cf project: its `*.workers.test.ts` suites run
+// inside workerd via `@cloudflare/vitest-pool-workers` (unblocked by the Vitest
+// 3 upgrade). Projects don't nest, so it can't live under the package's own
+// config — it's a sibling entry here.
+export default [
+  "packages/*",
+  "packages/runtime-cf/vitest.workers.config.ts",
+  "runs",
+  "apps/dispatcher",
+];

@@ -1,7 +1,9 @@
 // Integration tests for the D1-backed container lease — the atomic-correctness
 // surface that the pure decision logic (`@flare-dispatch/core`
 // container-lease.test.ts) cannot cover: the conditional upsert against a real
-// D1 binding via Miniflare.
+// D1 binding. Runs INSIDE workerd via `@cloudflare/vitest-pool-workers` (see
+// `vitest.workers.config.ts`) — the test body executes in the Workers runtime
+// and reads the live binding off `cloudflare:test`'s `env`.
 //
 // The bounded poll loop's TIMEOUT path (`ContainerBusy` after the wait ceiling)
 // sleeps real wall-clock and is governed by the pure `leaseAcquireAttempts`
@@ -15,7 +17,7 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ContainerBusy } from "@flare-dispatch/core";
 import { LEASE_TTL_MS, makeContainerLeaseD1 } from "./container-lease-d1";
-import { makeTestBindings, type TestBindings } from "./test-support";
+import { makeTestBindings, type TestBindings } from "./test-support-workers";
 
 const CID = "demo-acme-repo-abc123def456";
 const A = "playwright-demo:acme_repo:abc123def456";

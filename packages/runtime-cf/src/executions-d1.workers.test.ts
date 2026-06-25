@@ -1,6 +1,7 @@
 // Integration tests for D1ExecutionsLive — the live `executions` capability.
 //
-// Drives the real D1 binding via Miniflare (see test-support.ts). Asserts the
+// Runs INSIDE workerd via `@cloudflare/vitest-pool-workers` (see
+// `vitest.workers.config.ts` + test-support-workers.ts). Asserts the
 // `executions` + `steps` rows the service writes, and pins the per-step D1
 // write count (plan § 6 flags D1 hot-path writes — PR4 keeps it bounded).
 
@@ -8,7 +9,7 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Executions } from "@flare-dispatch/core";
 import { type ExecutionContext, makeD1ExecutionsLive } from "./executions-d1";
-import { countRows, makeTestBindings, type TestBindings } from "./test-support";
+import { countRows, makeTestBindings, type TestBindings } from "./test-support-workers";
 
 const EXECUTION_ID = "01TEST00000000000000000001";
 const CTX: ExecutionContext = {
