@@ -36,6 +36,8 @@ import { checkAndArmCooldown } from "../cooldown";
 import { verify } from "../hmac";
 import { toInstanceId } from "../instance-id";
 import { triggersByEvent } from "../registry";
+import { resolveReleaseApproval } from "../release-approval";
+import { signalWorkflow } from "../signal-workflow";
 import type { Env } from "../env";
 
 /** GitHub webhook signature header. */
@@ -166,6 +168,41 @@ export const handleGithubWebhook = async (
         detail: cause instanceof Error ? cause.message : String(cause),
       },
       400,
+    );
+  }
+
+  // 6b. Release-approval gate (GitHub-native human-in-the-loop). A bot-authored
+  //     release PR that was merged / closed-unmerged / labeled signals the
+  //     `release-notes` Workflow paused on `step.waitForEvent` — no ADMIN_TOKEN,
+  //     GitHub's repo permissions are the authZ. A PR event never ALSO fans out
+  //     a new run, so resolve-and-ack here and return. Always 202: an instance
+  //     that's already terminal (run timed out / published) is not retryable.
+  const approval = resolveReleaseApproval(event, payload);
+  if (approval !== undefined) {
+    const outcome = await signalWorkflow(
+      env.RUNS_WORKFLOW,
+      approval.wfId,
+      "release-approval",
+      { decision: approval.decision, decider: approval.decider },
+    );
+    if (env.IDEMPOTENCY_KV !== undefined) {
+      await env.IDEMPOTENCY_KV.put(deliveryKey, "1", {
+        expirationTtl: DEDUP_TTL_SEC,
+      });
+    }
+    return json(
+      {
+        event,
+        deliveryId,
+        releaseApproval: {
+          wfId: approval.wfId,
+          tag: approval.tag,
+          decision: approval.decision,
+          signalled: outcome.ok,
+          ...(outcome.ok ? {} : { error: outcome.reason }),
+        },
+      },
+      202,
     );
   }
 

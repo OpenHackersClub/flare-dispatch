@@ -287,7 +287,7 @@ const baseRecipes: RecipeBase[] = [
     useCase: "Weekly release notes, drafted then published behind a human gate",
     mode: "Schedule",
     blurb:
-      "A weekly Cron Trigger drafts release notes from git history, posts the draft, and hibernates on step.waitForEvent — up to 72h at zero CPU cost — until a human approves, then publishes the GitHub Release.",
+      "A weekly Cron Trigger drafts release notes from git history (a semver bump from Conventional Commits + a categorized changelog), opens a release PR, and hibernates on step.waitForEvent — up to 72h at zero CPU cost. Merge the PR (or a release:approve label) and the App-authenticated github.createRelease publishes the GitHub Release — GitHub's own permissions are the approval gate, no shared token.",
     files: [{ name: "release-notes.run.ts", lang: "ts" }],
     hasReadme: true,
   },

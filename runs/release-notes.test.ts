@@ -10,6 +10,7 @@ import { it } from "@effect/vitest";
 import { Effect, Exit } from "effect";
 import { describe, expect } from "vitest";
 import {
+  DEFAULT_TEST_EXECUTION_ID,
   enqueueInlineEvent,
   type InlineEventQueue,
   makeCFRuntimeTest,
@@ -40,7 +41,7 @@ const gitOut = (
   ].join("\n");
 
 describe("release-notes run", () => {
-  it.effect("drafts, uploads, and publishes the release on approval", () => {
+  it.effect("opens the release PR and publishes on approval", () => {
     const { layer, handles } = makeCFRuntimeTest({
       sandboxProgram: {
         "git log": {
@@ -55,7 +56,7 @@ describe("release-notes run", () => {
         const q: InlineEventQueue = new Map();
         enqueueInlineEvent(q, "release-approval", {
           decision: "approve",
-          deciderEmail: "approver@example.com",
+          decider: "alice",
         });
         return q;
       })(),
@@ -69,7 +70,18 @@ describe("release-notes run", () => {
       // No prior tag + a feat ⇒ first release is v0.1.0.
       expect(out.tag).toBe("v0.1.0");
       expect(out.releaseUrl).toContain("/releases/tag/v0.1.0");
-      expect(out.notesUri).not.toBe("");
+      expect(out.prNumber).toBeGreaterThan(0);
+
+      // The approval PR carries the notes file + the wfId marker (pinned to
+      // THIS run's instance id) so the webhook can resume it, and is non-draft.
+      const prs = handles.github.openDraftPullRequestCalls;
+      expect(prs).toHaveLength(1);
+      expect(prs[0]!.headBranch).toBe("flare-dispatch/release-v0.1.0");
+      expect(prs[0]!.draft).toBe(false);
+      expect(prs[0]!.files[0]!.path).toBe(".flare-dispatch/releases/v0.1.0.md");
+      expect(prs[0]!.body).toContain(
+        `<!-- flare-dispatch:release-approval wf=${DEFAULT_TEST_EXECUTION_ID} tag=v0.1.0 -->`,
+      );
 
       // The release write fired exactly once, pinned to the drafted HEAD sha.
       const calls = handles.github.createReleaseCalls;
@@ -79,10 +91,6 @@ describe("release-notes run", () => {
       expect(calls[0]!.target).toBe("headsha000000000000");
       expect(calls[0]!.body).toContain("### 🚀 Features");
       expect(calls[0]!.body).toContain("### 🐛 Fixes");
-
-      // A draft was uploaded for the reviewer.
-      expect(handles.artifact.uploads).toHaveLength(1);
-      expect(handles.artifact.uploads[0]!.name).toBe("release-notes.md");
     }).pipe(Effect.provide(layer));
   });
 
@@ -90,7 +98,7 @@ describe("release-notes run", () => {
     const q: InlineEventQueue = new Map();
     enqueueInlineEvent(q, "release-approval", {
       decision: "reject",
-      deciderEmail: "approver@example.com",
+      decider: "carol",
     });
     const { layer, handles } = makeCFRuntimeTest({
       sandboxProgram: {
@@ -109,6 +117,7 @@ describe("release-notes run", () => {
       expect(out.published).toBe(false);
       expect(out.reason).toBe("rejected");
       expect(out.tag).toBe("v1.2.4"); // patch bump from v1.2.3
+      expect(out.prNumber).toBeGreaterThan(0); // the PR was opened
       expect(handles.github.createReleaseCalls).toHaveLength(0);
     }).pipe(Effect.provide(layer));
   });
@@ -126,7 +135,7 @@ describe("release-notes run", () => {
       expect(out.reason).toBe("no-changes");
       expect(out.tag).toBe("v1.2.3");
       expect(handles.github.createReleaseCalls).toHaveLength(0);
-      expect(handles.artifact.uploads).toHaveLength(0); // never drafted
+      expect(handles.github.openDraftPullRequestCalls).toHaveLength(0); // never drafted
     }).pipe(Effect.provide(layer));
   });
 

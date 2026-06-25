@@ -4,7 +4,7 @@
 // `runs/` directory; the Dispatcher auto-discovers it. See ./README.md.
 //
 // A Schedule-mode run that, every Monday, drafts release notes for the unreleased
-// range (`<last-tag>..HEAD`), uploads the draft for review, and HIBERNATES on a
+// range (`<last-tag>..HEAD`), opens a release PR for review, and HIBERNATES on a
 // human approval before publishing the GitHub Release. It is the canonical
 // example of Schedule mode's two durable mechanisms working together:
 //
@@ -12,8 +12,17 @@
 //      Trigger is the heartbeat (must also be in wrangler.jsonc `triggers.crons`);
 //   2. a durable pause — `step.waitForEvent` (specs/03-dsl.md § Human-in-the-loop):
 //      after drafting, the Workflow sleeps for up to 72h at ZERO CPU cost,
-//      surviving Worker eviction, until an approver POSTs the decision to
-//      `/v1/admin/events/:wf_id` (behind the admin token / Cloudflare Access).
+//      surviving Worker eviction, until the gate is resolved.
+//
+// --- The approval surface: a release PR (GitHub-native) ---------------------
+//
+// The run opens a NON-draft PR carrying the rendered notes + a hidden marker
+// pinning its own Workflow instance id. A human approves by MERGING the PR (or
+// the `release:approve` label) and rejects by CLOSING it unmerged (or
+// `release:reject`). The dispatcher's webhook (apps/dispatcher/src/release-
+// approval.ts) reads the marker and signals this run — so GitHub's repo
+// permissions are the authZ and the decider is a real GitHub identity, no shared
+// ADMIN_TOKEN. /v1/admin/events/:wf_id stays as a manual override.
 //
 // --- What's real (no fictional CLI) -----------------------------------------
 //
@@ -21,29 +30,38 @@
 // `spec-drift-pr`: the ONE image is used only for `git`); the notes — a semver
 // bump derived from Conventional Commits + a categorized changelog — are
 // rendered IN THE WORKER by the pure helpers below (unit-tested, replay-safe).
-// Publishing is the `github.createRelease` capability write — the Dispatcher's
-// GitHub App installation token, NOT a PAT and NOT a container `gh` shell-out —
-// which also creates the tag at the drafted HEAD sha. So this run needs no extra
-// secret and no bespoke image.
+// The PR open and the publish are both `github` capability writes (the App
+// installation token) — no PAT, no container `gh`, no bespoke image.
 //
 // Mode: Schedule mode — specs/04-gha-integration.md § Schedule mode.
 
 import { Effect, Match, Schema } from "effect";
-import {
-  artifact,
-  defineRun,
-  github,
-  io,
-  sandbox,
-  step,
-} from "@flare-dispatch/core";
+import { defineRun, github, io, sandbox, step } from "@flare-dispatch/core";
 import { workspace } from "@flare-dispatch/core/primitives";
 
 // The repo this run cuts releases for. One scheduled run per release line.
 const TARGET = { repo: "openhackersclub/flare-dispatch", ref: "main" } as const;
 
-// In-container path for the rendered draft (uploaded to R2 for the reviewer).
-const NOTES = "/tmp/release-notes.md";
+// Where the approved notes land in the repo when the release PR merges — a
+// durable changelog archive, and the PR's diff.
+const releaseFile = (tag: string): string => `.flare-dispatch/releases/${tag}.md`;
+
+// The hidden marker the dispatcher's webhook reads off the PR body to resume
+// THIS run on merge/label. MUST match `RELEASE_APPROVAL_MARKER` in
+// apps/dispatcher/src/release-approval.ts.
+const approvalMarker = (wfId: string, tag: string): string =>
+  `<!-- flare-dispatch:release-approval wf=${wfId} tag=${tag} -->`;
+
+const renderPrBody = (notes: string, wfId: string, tag: string): string =>
+  [
+    `### 🚀 Release \`${tag}\` — approval gate`,
+    "",
+    "> 🤖 Drafted by `flare-dispatch/release-notes`. **Merge this PR to publish the GitHub Release**, or add the `release:reject` label / close it to cancel. (`release:approve` also publishes without merging.)",
+    "",
+    notes,
+    "",
+    approvalMarker(wfId, tag),
+  ].join("\n");
 
 // ISO year + week (e.g. "2026-W21") — the cron-window dedup key, so re-firing
 // the same week is a no-op (04-gha-integration § Receiver dedup).
@@ -63,11 +81,12 @@ const isoYearWeek = (ms: number): string => {
   return `${thu.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 };
 
-// The inbound approval signal — POSTed to /v1/admin/events/:wf_id behind the
-// admin token (specs/03-dsl.md § Human-in-the-loop).
+// The inbound approval signal. Primary path: the dispatcher's webhook resolves
+// a merge/label on the release PR and POSTs it (release-approval.ts). Fallback:
+// an operator POSTs to /v1/admin/events/:wf_id. Either way the payload is this.
 const ApprovalPayload = Schema.Struct({
   decision: Schema.Literal("approve", "reject"),
-  deciderEmail: Schema.String,
+  decider: Schema.String, // GitHub login (or email, via the admin path)
 });
 
 const Input = Schema.Struct({
@@ -80,10 +99,12 @@ const Output = Schema.Struct({
     "published",
     "rejected",
     "no-changes",
-    "not-configured",
+    "not-opened", // the App isn't configured, so no approval PR could be opened
+    "not-configured", // approved, but createRelease degraded to a no-op
   ),
   tag: Schema.String,
-  notesUri: Schema.String, // signed R2 URL to the rendered draft
+  prNumber: Schema.Number, // the approval PR ("0" when none opened)
+  prUrl: Schema.String,
   releaseUrl: Schema.String, // the published GitHub Release URL ("" unless published)
 });
 
@@ -273,14 +294,6 @@ export const renderReleaseNotes = (args: {
   return out.join("\n").trimEnd() + "\n";
 };
 
-/** UTF-8-safe base64 for shipping the rendered notes into the container. */
-const toBase64 = (s: string): string => {
-  const bytes = new TextEncoder().encode(s);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
-};
-
 // The in-container collector: HEAD sha, the most recent reachable tag, and the
 // commit log for the unreleased range. `git fetch --tags` is best-effort — the
 // clone may already carry tags; a fresh repo (this one, today) simply has none.
@@ -339,7 +352,8 @@ export const releaseNotes = defineRun({
           published: false as const,
           reason: "no-changes" as const,
           tag: git.lastTag || "v0.0.0",
-          notesUri: "",
+          prNumber: 0,
+          prUrl: "",
           releaseUrl: "",
         };
       }
@@ -356,40 +370,54 @@ export const releaseNotes = defineRun({
         date,
       });
 
-      // 5. Write the draft into the container, then upload it to R2 so reviewers
-      //    (and the check-run summary) have a stable link to read before deciding.
-      const notesUri = yield* step("upload-draft", () =>
-        sandbox
-          .exec({
-            cwd: dir,
-            container,
-            command: [
-              "sh",
-              "-lc",
-              `printf %s '${toBase64(notes)}' | base64 -d > ${NOTES}`,
-            ],
-          })
-          .pipe(
-            Effect.andThen(
-              artifact.upload({
-                name: "release-notes.md",
-                path: NOTES,
-                container,
-                contentType: "text/markdown",
-                signedUrlTTL: "30 days",
-              }),
-            ),
-          ),
-      );
-
-      yield* step("announce", () =>
-        io.log("info", `release ${tag} drafted — awaiting approval`, {
-          notesUri,
-          changes: git.commits.length,
+      // 5. Open the release PR — the GitHub-native approval surface. It carries
+      //    the notes (as a committed file + the body) and a hidden marker
+      //    pinning THIS run's instance id, so the dispatcher's webhook can
+      //    resume the exact paused run when a human merges or labels it. Opened
+      //    NON-draft so "merge to publish" is one click.
+      const wfId = yield* io.executionId;
+      const pr = yield* step("open-release-pr", () =>
+        github.openDraftPullRequest({
+          repo: TARGET.repo,
+          baseBranch: TARGET.ref,
+          headBranch: `flare-dispatch/release-${tag}`,
+          title: `release: ${tag}`,
+          body: renderPrBody(notes, wfId, tag),
+          commitMessage: `chore(release): notes for ${tag}`,
+          files: [{ path: releaseFile(tag), content: notes }],
+          draft: false,
         }),
       );
 
-      // 6. Hibernate until a human approves. The Workflow consumes no CPU and
+      // No PR opened (App not configured) — there's no surface to gate on, so
+      // don't hibernate forever; report and stop.
+      if (pr.number === 0) {
+        yield* step("notify-not-opened", () =>
+          io.log(
+            "warn",
+            `release-notes: could not open the approval PR for ${tag} (GitHub App not configured) — not gating`,
+          ),
+        );
+        return {
+          published: false as const,
+          reason: "not-opened" as const,
+          tag,
+          prNumber: 0,
+          prUrl: "",
+          releaseUrl: "",
+        };
+      }
+
+      yield* step("announce", () =>
+        io.log(
+          "info",
+          `release ${tag} drafted — PR #${pr.number} awaiting approval (merge to publish)`,
+          { prUrl: pr.url, changes: git.commits.length },
+        ),
+      );
+
+      // 6. Hibernate until the PR is merged/labeled (webhook) or an operator
+      //    signals via /v1/admin/events. The Workflow consumes no CPU and
       //    survives eviction for the full timeout window.
       const approval = yield* step.waitForEvent("release approval", {
         type: "release-approval",
@@ -405,7 +433,8 @@ export const releaseNotes = defineRun({
             published: false as const,
             reason: "rejected" as const,
             tag,
-            notesUri,
+            prNumber: pr.number,
+            prUrl: pr.url,
             releaseUrl: "",
           }),
         ),
@@ -430,7 +459,8 @@ export const releaseNotes = defineRun({
                 ? ("published" as const)
                 : ("not-configured" as const),
               tag,
-              notesUri,
+              prNumber: pr.number,
+              prUrl: pr.url,
               releaseUrl: release.url,
             };
           }),

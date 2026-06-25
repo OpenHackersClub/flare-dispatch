@@ -347,3 +347,81 @@ describe("POST /v1/webhooks/github — run cooldown", () => {
     ).toHaveLength(2);
   });
 });
+
+describe("POST /v1/webhooks/github — release-PR approval", () => {
+  const MARKER =
+    "<!-- flare-dispatch:release-approval wf=release-notes-2026-W26 tag=v0.1.0 -->";
+
+  const releasePr = (over: Record<string, unknown>) => ({
+    action: "closed",
+    sender: { login: "maintainer" },
+    pull_request: {
+      number: 7,
+      body: `Release v0.1.0\n\n${MARKER}`,
+      merged: true,
+      user: { type: "Bot" },
+    },
+    repository: { full_name: "openhackersclub/flare-dispatch" },
+    ...over,
+  });
+
+  it("merged release PR → signals approve, no run dispatched", async () => {
+    const { env, workflow } = fixture();
+    const res = await handleRequest(
+      await webhookRequest(releasePr({}), { event: "pull_request" }),
+      env,
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      releaseApproval?: { decision: string; signalled: boolean; wfId: string };
+    };
+    expect(body.releaseApproval).toMatchObject({
+      decision: "approve",
+      signalled: true,
+      wfId: "release-notes-2026-W26",
+    });
+    expect(workflow.events).toHaveLength(1);
+    expect(workflow.events[0]).toEqual({
+      wfId: "release-notes-2026-W26",
+      type: "release-approval",
+      payload: { decision: "approve", decider: "maintainer" },
+    });
+    // A PR approval never ALSO fans out a new run.
+    expect(workflow.calls).toHaveLength(0);
+  });
+
+  it("release:reject label → signals reject", async () => {
+    const { env, workflow } = fixture();
+    const res = await handleRequest(
+      await webhookRequest(
+        releasePr({ action: "labeled", label: { name: "release:reject" } }),
+        { event: "pull_request" },
+      ),
+      env,
+    );
+    expect(res.status).toBe(202);
+    expect(workflow.events[0]).toMatchObject({
+      type: "release-approval",
+      payload: { decision: "reject", decider: "maintainer" },
+    });
+  });
+
+  it("a non-marker pull_request is not treated as an approval", async () => {
+    const { env, workflow } = fixture();
+    // A plain label on a human PR with no marker — resolves to nothing, and
+    // `labeled` matches no run trigger, so neither a signal nor a dispatch.
+    await handleRequest(
+      await webhookRequest(
+        releasePr({
+          action: "labeled",
+          label: { name: "bug" },
+          pull_request: { number: 8, body: "no marker", user: { type: "User" } },
+        }),
+        { event: "pull_request" },
+      ),
+      env,
+    );
+    expect(workflow.events).toHaveLength(0);
+    expect(workflow.calls).toHaveLength(0);
+  });
+});

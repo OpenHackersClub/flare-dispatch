@@ -19,11 +19,13 @@
 //
 // --- Out of scope ------------------------------------------------------------
 //
-// Receiver-level dedup on `(wf_id, decider_email)` (spec 03-dsl § Human-in-
-// the-loop) is not implemented here; the spec describes it but no shipped
-// run uses `step.waitForEvent` yet. Lands with the first run that does.
+// Receiver-level dedup on `(wf_id, decider)` (spec 03-dsl § Human-in-the-loop)
+// is not implemented here; the GitHub-native release-PR path (webhook.ts) is the
+// primary approval surface for `release-notes` — this route stays as the manual
+// override / generic signalling endpoint.
 
 import type { Env } from "../env";
+import { signalWorkflow } from "../signal-workflow";
 
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), {
@@ -96,40 +98,25 @@ export const handleAdminEvent = async (
     );
   }
 
-  // 4. Forward to the Workflow. `.get()` returns a handle even for an
-  //    unknown id; `sendEvent` rejects when the id isn't a running instance.
-  try {
-    const handle = env.RUNS_WORKFLOW.get(wfId);
-    // sendEvent isn't on the older Workflow binding types; the cast keeps
-    // the runtime call typed once CF's types catch up.
-    const sendEvent = (handle as unknown as {
-      sendEvent?: (e: { type: string; payload: unknown }) => Promise<void>;
-    }).sendEvent;
-    if (typeof sendEvent !== "function") {
-      return json(
-        {
-          error: "platform_not_supported",
-          message:
-            "this Workflow binding does not expose `sendEvent` — upgrade wrangler / compatibility_date",
-        },
-        501,
-      );
-    }
-    await sendEvent.call(handle, { type: body.type, payload: body.payload });
+  // 4. Forward to the Workflow via the shared signalling helper (also used by
+  //    the GitHub-native release-PR approval path in webhook.ts).
+  const outcome = await signalWorkflow(
+    env.RUNS_WORKFLOW,
+    wfId,
+    body.type,
+    body.payload,
+  );
+  if (outcome.ok) {
     return json({ delivered: true, wfId, type: body.type }, 202);
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    // CF Workflows raises distinct errors for unknown vs. terminated; the
-    // signature is unstable across versions, so we keep this narrow.
-    if (/not.?found|unknown.?instance/i.test(message)) {
-      return json(
-        { error: "wf_not_found", wfId, message },
-        404,
-      );
-    }
-    return json(
-      { error: "send_event_failed", wfId, message },
-      502,
-    );
   }
+  const status =
+    outcome.reason === "platform_not_supported"
+      ? 501
+      : outcome.reason === "wf_not_found"
+        ? 404
+        : 502;
+  return json(
+    { error: outcome.reason, wfId, message: outcome.message },
+    status,
+  );
 };
