@@ -98,6 +98,36 @@ interface RawExecResult {
 }
 
 /**
+ * Detect the shell's "could not enter the working directory" failure.
+ *
+ * When an `exec`'s `cwd` (the cloned workspace) is GONE at run time — the
+ * per-execution container was reaped/recycled between the checkpointed
+ * `checkout` step and this `exec` step, leaving a fresh, empty filesystem — the
+ * SDK's shell prints `Failed to change directory to '<cwd>'` and exits non-zero
+ * WITHOUT ever running the command. That is an INFRA failure, not a command
+ * result. Folding it into a normal `ExecResult` is actively misleading: a
+ * `failOnNonZeroExit` run (`oxlint`, `offload-test`) then renders it as "oxlint
+ * found lint violations" / "tests failed" — a red verdict on a run that never
+ * executed. Detecting it here lets `exec` raise `ExecFailed` instead, so it
+ * surfaces as a generic, retryable "execution failed" — never a phantom finding.
+ *
+ * Tight by construction: only when a `cwd` was requested, the command exited
+ * non-zero, produced NO stdout, and the shell's directory-change error is on
+ * stderr. A real command that itself printed such a line would still have
+ * produced stdout or a zero exit. (`SANDBOX_SLEEP_AFTER` in apps/dispatcher
+ * keeps the container warm across the inter-step gap so this rarely fires; this
+ * is the honesty backstop for the residual eviction/replay cases.)
+ */
+export const isWorkingDirFailure = (
+  r: { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
+  cwd: string | undefined,
+): boolean =>
+  cwd !== undefined &&
+  r.exitCode !== 0 &&
+  r.stdout === "" &&
+  /failed to change directory/i.test(r.stderr);
+
+/**
  * Run a command and ALWAYS resolve to a result when the command *ran* —
  * regardless of its exit code or how its shell ended. Only a genuine
  * could-not-launch / timeout failure rejects (→ `ExecFailed`/`ExecTimeout`).
@@ -329,8 +359,21 @@ export const makeSandboxCloudflareLive = (
         try: async () => {
           const result = await execToResult(box, cmd, { cwd, env, timeoutSec });
           const logPath = nextLogKey();
-          // FULL output → R2 (the durable log the artifact step promotes).
+          // FULL output → R2 (the durable log the artifact step promotes). Kept
+          // even on the working-dir-missing path below, so the failure is
+          // diagnosable from the log viewer.
           await writeLog(logPath, cmd, result.stdout, result.stderr);
+          // A command whose shell could not even enter its working directory
+          // never ran — the checkout did not survive to this exec (container
+          // recycled between durable steps). Raise a real ExecFailed rather than
+          // fold a phantom non-zero result a `failOnNonZeroExit` run would render
+          // as a lint/test verdict (see `isWorkingDirFailure`). The throw is
+          // classified by the `catch` below.
+          if (isWorkingDirFailure(result, cwd)) {
+            throw new Error(
+              `working directory '${cwd}' was missing at exec time — the checkout did not survive to this step (container recycled). stderr: ${result.stderr.slice(0, 200)}`,
+            );
+          }
           // Only a bounded TAIL is inlined in the step's return value, so the
           // Workflow checkpoint stays small (see `inlineTail`). When a viewer
           // base is configured, the truncation breadcrumb deep-links to this
