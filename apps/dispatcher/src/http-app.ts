@@ -214,12 +214,18 @@ const routeEffect = (
  * the static-asset SPA consumes — one D1 read + token-minting path, two renders.
  */
 const dashboardData = Effect.gen(function* () {
-  const env = yield* CurrentEnv;
   const reads = yield* ExecutionsRead;
   const logTokens = yield* LogToken;
   const request = yield* currentRequest;
   const url = new URL(request.url);
-  const origin = env.PUBLIC_ORIGIN ?? url.origin;
+  // The dashboard's OWN viewer links (per-row Logs / Demo) must stay on the
+  // host the operator is browsing: the Worker is reachable on more than one
+  // custom domain, each fronted by its own Cloudflare Access app, so a link
+  // built from the canonical `PUBLIC_ORIGIN` would jump cross-host (to a
+  // different Access app) and fail to open. Use the request origin instead;
+  // `PUBLIC_ORIGIN` stays the absolute origin for GitHub check-run links, which
+  // have no request host.
+  const origin = url.origin;
 
   const rows = yield* reads.list({ limit: 20 });
   const dashRows = yield* Effect.forEach(rows, (row) =>

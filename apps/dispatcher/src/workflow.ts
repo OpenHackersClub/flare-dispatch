@@ -332,6 +332,12 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
       publicOrigin !== undefined && logToken !== undefined
         ? buildLogsUrl(publicOrigin, payload.executionId, logToken)
         : undefined;
+    // The check-run's "Details" link: prefer the in-product log viewer
+    // (`<PUBLIC_ORIGIN>/logs/<id>?t=…`) over the operator-only Cloudflare
+    // dashboard, so a PR reviewer lands on the readable surface they can reach
+    // rather than a CF account page they have no access to. Falls back to the
+    // dashboard URL when there is no public origin / log-link secret.
+    const checkDetailsUrl = logsBaseUrl ?? detailsUrl;
     // The product-demo viewer (`/demos/:execution`) — only meaningful for a
     // `product-demo` run, and only once it succeeds (a failed run persists no
     // `summary_json` for the page to render). Appended to the check-run success
@@ -492,7 +498,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         repo: payload.github.repo,
         sha: payload.github.sha,
         name: checkRunName,
-        ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+        ...(checkDetailsUrl !== undefined ? { detailsUrl: checkDetailsUrl } : {}),
         output: {
           title: checkRunName,
           summary:
@@ -626,7 +632,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
                 .progress({
                   repo: payload.github.repo,
                   checkRunId,
-                  ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+                  ...(checkDetailsUrl !== undefined ? { detailsUrl: checkDetailsUrl } : {}),
                   output: {
                     title: checkRunName,
                     summary: queuedSummary(
@@ -916,7 +922,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         repo: payload.github.repo,
         checkRunId,
         conclusion: status,
-        ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+        ...(checkDetailsUrl !== undefined ? { detailsUrl: checkDetailsUrl } : {}),
         output: {
           title: checkRunName,
           summary: Exit.match(exit, {
@@ -947,7 +953,7 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
           executionId: payload.executionId,
           repo: payload.github.repo,
           sha: payload.github.sha,
-          ...(detailsUrl !== undefined ? { detailsUrl } : {}),
+          ...(checkDetailsUrl !== undefined ? { detailsUrl: checkDetailsUrl } : {}),
           // The product-demo viewer page — same link the check-run summary
           // carries, surfaced as the email's watch-the-demo CTA. `undefined`
           // for non-product-demo runs and on failure (no summary_json to view).
