@@ -102,7 +102,9 @@ vi.mock("@cloudflare/sandbox", () => ({
 }));
 
 // Imported AFTER the mock is registered so the Layer binds the mocked SDK.
-const { makeSandboxCloudflareLive } = await import("./sandbox-cf");
+const { makeSandboxCloudflareLive, isWorkingDirFailure } = await import(
+  "./sandbox-cf"
+);
 
 /** A minimal R2 stub that records `put` calls. */
 const makeBucket = () => {
@@ -365,6 +367,53 @@ describe("makeSandboxCloudflareLive — exec result folding (D)", () => {
       expect(err?._tag).toBe("ExecFailed");
     }),
   );
+
+  it.effect(
+    "a missing working dir (checkout reaped between steps) fails as ExecFailed, not a phantom non-zero result",
+    () =>
+      Effect.gen(function* () {
+        currentBox = makeFakeBox({ proc: null });
+        // The shell could not `cd` into the (gone) checkout dir: non-zero exit,
+        // no stdout, the directory-change error on stderr. Folding this into a
+        // result would let `oxlint` / `offload-test` render a never-ran command
+        // as a red lint/test verdict — so it must surface as ExecFailed.
+        currentBox.exec = vi.fn(async () => ({
+          exitCode: 1,
+          duration: 0,
+          stdout: "",
+          stderr: "Failed to change directory to '/workspace/repo'",
+        }));
+        const exit = yield* Effect.flatMap(SandboxTag, (s) =>
+          s.exec({
+            command: "npx --yes oxlint@1",
+            cwd: "/workspace/repo",
+            env: {},
+          }),
+        ).pipe(Effect.provide(execLayer()), Effect.exit);
+        const err = failureOf<{ _tag: string }>(exit);
+        expect(err?._tag).toBe("ExecFailed");
+      }),
+  );
+
+  it("isWorkingDirFailure — fires only on a cwd-set, non-zero, no-stdout, cd-error result", () => {
+    const cd = (over: Record<string, unknown> = {}) => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "Failed to change directory to '/w'",
+      ...over,
+    });
+    expect(isWorkingDirFailure(cd(), "/w")).toBe(true);
+    // a real failing command (has stdout) is NEVER misread as an infra failure
+    expect(isWorkingDirFailure(cd({ stdout: "boom" }), "/w")).toBe(false);
+    // a clean exit is never an infra failure
+    expect(isWorkingDirFailure(cd({ exitCode: 0 }), "/w")).toBe(false);
+    // no cwd requested → not applicable
+    expect(isWorkingDirFailure(cd(), undefined)).toBe(false);
+    // unrelated stderr (a genuine lint finding) is left alone
+    expect(
+      isWorkingDirFailure({ exitCode: 1, stdout: "", stderr: "1 error" }, "/w"),
+    ).toBe(false);
+  });
 
   it.effect("inlines only a bounded stdout tail; full log streams to R2", () =>
     Effect.gen(function* () {

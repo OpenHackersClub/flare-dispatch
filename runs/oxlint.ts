@@ -148,12 +148,21 @@ export const oxlint = defineRun({
 
       // fail-on-nonzero — a lint finding (non-zero exit) turns the check red,
       // carrying the log link, the same way `offload-test` renders a failure.
+      //
+      // The one infra failure that used to masquerade as a finding here — the
+      // checkout dir reaped between steps, so `npx` could not even `cd` into it —
+      // no longer reaches this point: `sandbox.exec` reclassifies it as a
+      // retryable `ExecFailed` (see sandbox-cf.ts `isWorkingDirFailure`),
+      // surfaced as a generic "execution failed", not a lint verdict. OTHER ways
+      // `npx oxlint` can exit non-zero without a genuine finding (an unfetchable
+      // version, a malformed `.oxlintrc.json`) still land here, so the wording
+      // points at the log rather than asserting violations outright.
       if (input.failOnNonZeroExit && result.exitCode !== 0) {
         return yield* Effect.fail(
           new AcceptanceFailed({
             exitCode: result.exitCode,
             summaryMd: [
-              `\`${command}\` exited \`${result.exitCode}\` — oxlint found lint violations.`,
+              `\`${command}\` exited \`${result.exitCode}\` — oxlint reported lint problems (or failed to run; see the log).`,
               "",
               `[View full oxlint log ↗](${logUri})`,
             ].join("\n"),
