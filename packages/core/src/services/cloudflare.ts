@@ -37,6 +37,41 @@ export type DeploymentRef = {
   readonly createdAt: number;
 };
 
+/** Per-Worker-script invocation usage over a window — a cost driver. */
+export type WorkerUsage = {
+  /** The Worker script name (e.g. `flare-dispatch-v0`). */
+  readonly script: string;
+  /** Total invocations in the window. */
+  readonly requests: number;
+  /** Invocations that errored (uncaught exception / 5xx) — retry/waste signal. */
+  readonly errors: number;
+};
+
+/** Per-model AI-inference usage over a window (Workers AI or AI Gateway). */
+export type AiModelUsage = {
+  /** The model id (e.g. `@cf/meta/llama-3.1-8b` or `glm-4.7-flash`). */
+  readonly model: string;
+  /** The provider (`workers-ai`, `anthropic`, `deepseek`, …). `workers-ai`
+   * spend is billed in Neurons; others bill their own tokens. */
+  readonly provider: string;
+  /** Total inference requests in the window. */
+  readonly requests: number;
+  /** Requests served from the AI Gateway cache (free — a savings lever: low
+   * `cached/requests` on a hot model means caching is leaving money on the
+   * table). */
+  readonly cached: number;
+};
+
+/** A read-only usage snapshot for FinOps analysis — the cost picture of the
+ * account's Workers + AI inference over `windowHours`. */
+export type CloudflareUsage = {
+  readonly windowHours: number;
+  /** Worker invocations by script, descending by requests. */
+  readonly workers: readonly WorkerUsage[];
+  /** AI inference by model, descending by requests. */
+  readonly ai: readonly AiModelUsage[];
+};
+
 /** The service contract a runtime Layer implements. */
 export interface CloudflareService {
   /**
@@ -51,6 +86,16 @@ export interface CloudflareService {
     status?: string;
     createdWithinHours?: number;
   }) => Effect.Effect<readonly DeploymentRef[], CloudflareApiError>;
+
+  /**
+   * Account usage over the trailing `windowHours` (default 168 = 7 days) — the
+   * cost picture a FinOps run analyses: Worker invocations + errors by script,
+   * and AI inference requests + cache hits by model. Read via the GraphQL
+   * Analytics API. Absent creds → the deferred Layer returns an empty snapshot.
+   */
+  readonly usage: (opts?: {
+    windowHours?: number;
+  }) => Effect.Effect<CloudflareUsage, CloudflareApiError>;
 }
 
 /** Context.Tag — the dependency a run carries until a Layer provides it. */
@@ -73,4 +118,6 @@ export const cloudflare = {
       createdWithinHours?: number;
     } = {},
   ) => Effect.flatMap(Cloudflare, (c) => c.deployments(opts)),
+  usage: (opts: { windowHours?: number } = {}) =>
+    Effect.flatMap(Cloudflare, (c) => c.usage(opts)),
 } as const;

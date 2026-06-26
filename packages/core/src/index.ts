@@ -177,6 +177,9 @@ export {
   Cloudflare,
   type CloudflareService,
   type DeploymentRef,
+  type CloudflareUsage,
+  type WorkerUsage,
+  type AiModelUsage,
 } from "./services/cloudflare";
 export {
   oidc,
