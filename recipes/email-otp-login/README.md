@@ -33,27 +33,28 @@ Why event-driven, not polling: `io.sleep` isn't replay-safe in a CF Workflow;
 
 ## One-time operator setup
 
-> **Automated:** steps 2–3 (enable Email Routing + the catch-all rule) are an
-> idempotent script — `CLOUDFLARE_API_TOKEN=… scripts/setup-inbox-routing.sh
-> --apply` (dry-run without `--apply`). It needs a token scoped **Email Routing
-> Rules/Addresses : Edit + DNS : Edit** on the zone (the *deploy* token is not
-> enough). Step 4 is a `wrangler.jsonc` edit. The manual breakdown:
-
-1. **Pick a dedicated inbox host** — e.g. `inbox.openhackers.club`. Do **not**
-   use a zone apex that carries real mail: a catch-all routes *everything* on the
-   host to the Worker (the handler rejects non-`demo-` RCPTs, but a dedicated host
-   keeps the blast radius small).
-2. **Enable Email Routing** on that host and add a **catch-all rule → the
-   dispatcher Worker** (dashboard → Email → Routing Rules → Catch-all → *Send to a
-   Worker*, or `wrangler email routing`). Inbound has **no verified-destination
-   constraint** — that only gates the outbound `send_email`/`forward` — so any
-   `demo-*` local-part is received with no per-address setup.
-3. **Set `INBOX_DOMAIN`** in `wrangler.jsonc` `vars` to that host and redeploy.
+**On a shared zone (recommended — no disruption to existing mail), via
+sub-addressing:**
+1. **Add a custom-address rule** `flare-dispatch-inbox@<zone>` → **Send to a
+   Worker** → the dispatcher (`dashboard → Email → Routing Rules → Custom
+   addresses`, or `POST …/email/routing/rules`). It's a *specific* address, so it
+   does not touch the catch-all.
+2. **Enable sub-addressing** (`dashboard → Email → Settings → Subaddressing`).
+   Then `flare-dispatch-inbox+demo-<rand>@<zone>` routes to that rule (the `+tag`
+   is preserved in `message.to`) while every other address still hits the
+   existing catch-all. Inbound has **no verified-destination constraint** — that
+   only gates outbound `send_email`/`forward`.
+3. **Set `INBOX_DOMAIN`** to `flare-dispatch-inbox@<zone>` in `wrangler.jsonc`
+   `vars` and redeploy.
 4. *(Recommended)* set `INBOX_ALLOWED_SENDERS` to the provider's sending domains
    (`auth0.com,clerk.com,…`) so the handler only stores mail from expected
    senders.
 5. *(Optional)* set a dedicated `MAILBOX_LINK_SECRET` to rotate the read-route
    token independently of `HMAC_SECRET`.
+
+**On a dedicated zone (alternative):** enable Email Routing and point its whole
+**catch-all → the Worker**, then set `INBOX_DOMAIN` to the bare domain (mints
+`demo-<rand>@<domain>`).
 
 The migration `infra/migrations/0004_inbox.sql` (applied on deploy) adds the
 `inbox_allocations` + `inbox_messages` tables.

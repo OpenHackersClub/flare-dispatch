@@ -131,18 +131,17 @@
     // "EMAIL_FROM": "flare-dispatch@<your-zone>",
     // "EMAIL_FROM_NAME": "FlareDispatch"
 
-    // INBOX_DOMAIN — the Email Routing catch-all domain disposable test inboxes
-    //   are minted on (the `mailbox` capability + the inbound `email()`
-    //   handler). The `email-otp-login` run provisions `demo-<rand>@<INBOX_DOMAIN>`
-    //   and the handler stores mail addressed to it. Set a DEDICATED host (e.g.
-    //   `inbox.openhackers.club`) — NOT the zone apex — with an Email Routing
-    //   catch-all rule → THIS worker, so the catch-all can't swallow real mail.
-    //   Inbound has no verified-destination constraint (that only gates the
-    //   outbound `send_email`/`forward`), so any `demo-*` local-part is received.
-    //   Absent → the `mailbox` capability is the dying stub (an `email-otp-login`
-    //   run fails loudly). See recipes/email-otp-login/README.md for the
-    //   one-time Email Routing setup.
-    // "INBOX_DOMAIN": "inbox.openhackers.club",
+    // INBOX_DOMAIN — where the `mailbox` capability mints disposable test
+    //   inboxes. RECOMMENDED on a shared zone: the SUB-ADDRESSING form
+    //   `base@domain` (mints `base+demo-<rand>@domain`). A single Email Routing
+    //   custom-address rule for `base@domain` → this worker matches every
+    //   `base+…@domain` (RFC 5233 sub-addressing, enable it in Email → Settings),
+    //   so the zone's existing catch-all stays untouched — zero disruption to
+    //   other mail. Alternatively a bare `domain` uses that zone's whole
+    //   catch-all → this worker (only on a DEDICATED zone). Absent → the
+    //   `mailbox` capability is the dying stub. See
+    //   recipes/email-otp-login/README.md for the one-time setup.
+    // "INBOX_DOMAIN": "flare-dispatch-inbox@openhackers.club",
     // INBOX_ALLOWED_SENDERS — optional comma-separated envelope-From DOMAIN
     //   allowlist for the inbound handler (e.g. "auth0.com,clerk.com"). When set,
     //   mail from any other sender domain is rejected before storage —
@@ -180,11 +179,13 @@
   // INBOUND email — the worker also exports an `email()` handler
   // (apps/dispatcher/src/routes/email-handler.ts) backing the `mailbox`
   // capability's receive side. Inbound needs NO wrangler binding: a routing
-  // RULE wires addresses → this worker. To enable, set INBOX_DOMAIN above and
-  // create an Email Routing catch-all rule sending to this worker on that host
-  // (`wrangler email routing rule catch-all` or the dashboard). The handler
-  // `setReject`s any RCPT that is not a minted `demo-…` address, so a catch-all
-  // is safe even on a shared zone.
+  // RULE wires addresses → this worker. RECOMMENDED on a shared zone: a single
+  // Email Routing CUSTOM-ADDRESS rule for `flare-dispatch-inbox@<zone>` → this
+  // worker, plus sub-addressing ON (Email → Settings), so `…+demo-<rand>@<zone>`
+  // routes here while the existing catch-all is untouched. (A dedicated zone can
+  // instead point its whole catch-all here.) The handler `setReject`s any RCPT
+  // whose `+tag` is not a minted `demo-…` local-part. See
+  // recipes/email-otp-login/README.md.
 
 
 

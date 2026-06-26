@@ -281,14 +281,20 @@ export interface Env {
   readonly EMAIL_ALLOWED_RECIPIENTS?: string;
 
   /**
-   * The Email Routing catch-all domain disposable test inboxes are minted on —
-   * e.g. `inbox.openhackers.club`. A var, not a secret (a public domain). The
-   * `mailbox` capability mints `demo-<rand>@<INBOX_DOMAIN>` and the inbound
-   * `email()` handler stores mail addressed to it. Absent → the `mailbox`
-   * capability is the dying stub (an `email-otp-login` run fails loudly); the
-   * inbound handler still runs but every RCPT it sees would be `setReject`ed by
-   * the prefix guard. Requires an Email Routing catch-all rule → this Worker on
-   * that domain (`wrangler email routing` / dashboard). specs/03-dsl.md § mailbox.
+   * Where the `mailbox` capability mints disposable test inboxes. Two forms:
+   *
+   *   - **Sub-addressing** `base@domain` (e.g. `flare-dispatch-inbox@openhackers.club`):
+   *     mints `base+demo-<rand>@domain`. ONE Email Routing custom-address rule for
+   *     `base@domain` → this Worker matches every `base+…@domain` (RFC 5233
+   *     sub-addressing must be ON in Email Routing settings), so the zone's
+   *     existing catch-all is untouched — the way to reuse a shared zone with NO
+   *     disruption to other mail.
+   *   - **Catch-all** bare `domain` (e.g. `inbox.example.com`): mints
+   *     `demo-<rand>@domain`, for a dedicated zone whose catch-all → this Worker.
+   *
+   * A var, not a secret (a public domain). Absent → the `mailbox` capability is
+   * the dying stub (an `email-otp-login` run fails loudly). See
+   * recipes/email-otp-login/README.md for the one-time Email Routing setup.
    */
   readonly INBOX_DOMAIN?: string;
 
