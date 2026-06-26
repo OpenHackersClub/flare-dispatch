@@ -317,9 +317,12 @@ describe("reviewDomain", () => {
     expect(result).toEqual([finding]);
   });
 
-  it("json mode — fails StructuredOutputInvalid on schema mismatch", async () => {
-    const { layer } = withGateway([
-      // `level` is not in the allowed set → schema mismatch after parse.
+  it("json mode — a persistent schema mismatch still fails after the one repair", async () => {
+    const { layer, calls } = withGateway([
+      // `level` is not in the allowed set → schema mismatch after parse. The
+      // fake repeats this last response, so the targeted repair retry hits the
+      // SAME bad shape — proving the repair is bounded to ONE attempt (no loop)
+      // and a model that can't be corrected still surfaces the typed failure.
       textResult(
         '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
       ),
@@ -330,12 +333,65 @@ describe("reviewDomain", () => {
         agent: "security",
         diff: "x",
         tier: "lite",
-        model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        model: "@cf/zai-org/glm-4.7-flash",
+        backend: "opencode",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
     expect(exit._tag).toBe("Failure");
+    // The schema-mismatch IS repaired (unlike empty/not-json before): one
+    // original attempt + exactly one targeted repair retry, then it gives up.
+    expect(calls()).toBe(2);
+  });
+
+  it("json mode — repairs a schema mismatch with a targeted correction", async () => {
+    // A weak catalog model (GLM/Kimi flash) in json mode emits well-formed JSON
+    // in the WRONG shape — here an out-of-set `level` ("critical"). Pre-fix this
+    // landed as `schema-mismatch`, which was NEVER repaired, so a deterministic
+    // mismatch sank every reviewer → the whole review failed
+    // `StructuredOutputInvalid`. Now the engine re-asks ONCE with the decoder's
+    // complaint + the contract; the corrected reply decodes.
+    const { layer, calls } = withGateway([
+      textResult(
+        '{"findings":[{"path":"a.ts","startLine":1,"endLine":1,"level":"critical","title":"t","message":"m"}]}',
+      ),
+      textResult(JSON.stringify({ findings: [finding] })),
+    ]);
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/zai-org/glm-4.7-flash",
+        backend: "opencode",
+        mode: "json",
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual([finding]);
+    expect(calls()).toBe(2); // first (mismatch) + one targeted repair
+  });
+
+  it("json mode — coerces a bare findings array (dropped wrapper) in one shot", async () => {
+    // A model that ignores the `{ findings: … }` wrapper and returns the array
+    // directly. `coerceDomainOutput` wraps it before decode, so this recovers
+    // WITHOUT a repair call.
+    const { layer, calls } = withGateway([
+      textResult(JSON.stringify([finding])),
+    ]);
+    const result = await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "lite",
+        model: "@cf/zai-org/glm-4.7-flash",
+        backend: "opencode",
+        mode: "json",
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(result).toEqual([finding]);
+    expect(calls()).toBe(1); // no repair needed — coercion fixed it
   });
 
   it("json mode — fails StructuredOutputInvalid (not throw) on a non-string `text`", async () => {
@@ -444,17 +500,19 @@ describe("reviewDomain", () => {
     expect(fake.state.requests).toHaveLength(2);
   });
 
-  it("json mode — does NOT repair a schema-mismatch (the model emitted JSON, just the wrong shape)", async () => {
-    // A valid JSON object with a bad `level` → schema-mismatch. A blind repair
-    // retry won't fix structure, so the engine fails on the first call (no retry).
+  it("json mode — repairs a schema-mismatch with a TARGETED (non-blind) correction", async () => {
+    // A valid JSON object with a bad `level` → schema-mismatch. Unlike a blind
+    // retry, the repair feeds the model the decoder's exact complaint + the
+    // contract, so it can fix that one problem. Here the repaired reply is valid.
     const fake = makeModelGatewayFake({
       responses: [
         textResult(
           '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
         ),
+        textResult(JSON.stringify({ findings: [] })),
       ],
     });
-    const exit = await Effect.runPromiseExit(
+    const result = await Effect.runPromise(
       reviewDomain({
         ...conn,
         agent: "security",
@@ -465,8 +523,13 @@ describe("reviewDomain", () => {
         mode: "json",
       }).pipe(Effect.provide(fake.layer)),
     );
-    expect(exit._tag).toBe("Failure");
-    expect(fake.state.requests).toHaveLength(1);
+    expect(result).toEqual([]);
+    expect(fake.state.requests).toHaveLength(2);
+    // The repair is TARGETED, not blunt: the second prompt quotes the decode
+    // failure and restates the required shape so the model fixes the named issue.
+    const repairPrompt = fake.state.requests[1]?.user ?? "";
+    expect(repairPrompt).toContain("did not match the required shape");
+    expect(repairPrompt).toContain("MUST match this exact shape");
   });
 
   it("tools mode — empty tool calls, then a no-JSON fallback, gets one repair", async () => {

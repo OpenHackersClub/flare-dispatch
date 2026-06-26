@@ -548,16 +548,19 @@ describe("pr-review", () => {
   ].join("\n");
 
   it.effect(
-    "one reviewer's unparseable output is tolerated — the review still completes",
+    "one reviewer's model call failing is tolerated — the review still completes",
     () => {
-      // json mode so each domain makes exactly one model call. The first response
-      // is a schema-mismatch (valid JSON, bad `level`) → that ONE domain fails;
-      // the other three return an empty findings object and succeed. Whichever
-      // domain grabs the bad response, exactly one errors and the review ships.
-      const schemaMismatch = {
-        toolCalls: [],
-        text: '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
-      } as const;
+      // json mode so each domain makes one model call. The first response is an
+      // UNREPAIRABLE backend failure (a 429 — a `ModelCallFailed`, NOT a
+      // structured-output failure, so the json repair retry does not fire) →
+      // that ONE domain fails; the other three return an empty findings object
+      // and succeed. Whichever domain grabs the bad response, exactly one errors
+      // and the review still ships — the fault-isolation guarantee.
+      const rateLimited = new ModelGatewayError({
+        model: "@cf/test/model",
+        reason: "rate-limited",
+        message: "Workers AI run failed: 429 too many requests",
+      });
       const emptyJsonReport = { toolCalls: [], text: '{"findings":[]}' } as const;
 
       const { layer, handles } = makeCFRuntimeTest({
@@ -566,7 +569,7 @@ describe("pr-review", () => {
         sandboxFiles: { [DIFF_FILE]: liteDiff },
         modelGateway: {
           responses: [
-            schemaMismatch,
+            rateLimited,
             emptyJsonReport,
             emptyJsonReport,
             emptyJsonReport,
@@ -583,8 +586,48 @@ describe("pr-review", () => {
         expect(body).not.toContain("could not complete");
         // Exactly one domain errored — its engagement entry shows `⚠️`.
         expect(body).toMatch(/Reviewers:.*⚠️/);
-        // Four domains, one model call each (no schema-mismatch repair retry).
+        // Four domains, one model call each — a `ModelCallFailed` is not repaired.
         expect(handles.modelGateway.requests).toHaveLength(4);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "a reviewer's schema-mismatch is repaired at the run level — review ships clean",
+    () => {
+      // `agents: "single"` → ONE generalist reviewer, so the call sequence is
+      // deterministic (no concurrent fan-out racing for queue slots). Its first
+      // json response is well-formed JSON in the wrong shape (bad `level`) →
+      // schema-mismatch. Pre-fix this errored the reviewer and sank the whole
+      // review; now it re-asks ONCE with the targeted correction and the second
+      // response decodes, so the review ships with NO errored reviewers.
+      const schemaMismatch = {
+        toolCalls: [],
+        text: '{"findings":[{"path":"a","startLine":1,"endLine":1,"level":"oops","title":"t","message":"m"}]}',
+      } as const;
+      const repairedEmpty = { toolCalls: [], text: '{"findings":[]}' } as const;
+
+      const { layer, handles } = makeCFRuntimeTest({
+        config: { ...backendConfig, "pr-review.opencode.mode": "json" },
+        sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
+        sandboxFiles: { [DIFF_FILE]: liteDiff },
+        modelGateway: { responses: [schemaMismatch, repairedEmpty] },
+      });
+
+      return Effect.gen(function* () {
+        yield* Effect.exit(prReview.run({ ...baseInput, agents: "single" }));
+
+        const body = handles.github.pullReviewCalls[0]!.body;
+        expect(body).toContain("### AI code review");
+        expect(body).not.toContain("could not complete");
+        // The reviewer did NOT error — its schema-mismatch was repaired.
+        expect(body).not.toMatch(/Reviewers:.*⚠️/);
+        // One original call + exactly one targeted repair retry.
+        expect(handles.modelGateway.requests).toHaveLength(2);
+        // The repair prompt is targeted — it quotes the required shape.
+        expect(handles.modelGateway.requests[1]!.user).toContain(
+          "MUST match this exact shape",
+        );
       }).pipe(Effect.provide(layer));
     },
   );

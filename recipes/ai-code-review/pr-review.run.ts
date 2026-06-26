@@ -43,9 +43,12 @@
 //
 // No API key: the Workers AI binding is the auth. A "tools"-mode backend that
 // returns no tool calls auto-retries once in "json" mode, so a model that
-// silently drops tool-calling still produces a review. A json-mode answer that
-// carries no parseable JSON (prose, or a value truncated inside a reasoning
-// block) gets ONE blunt "JSON only" repair retry before it counts as failed.
+// silently drops tool-calling still produces a review. A failed json-mode answer
+// gets ONE repair retry, targeted to HOW it failed: no parseable JSON (prose, or
+// a value truncated inside a reasoning block) → a blunt "JSON only" re-ask;
+// well-formed JSON in the WRONG shape (a weak model renames a field or invents a
+// `level`) → a correction quoting the decoder's complaint + the required shape.
+// The wrong-shape case is the one that otherwise sinks every reviewer identically.
 //
 // The per-domain fan-out is fault-ISOLATED: one reviewer whose model call fails
 // (unparseable output, a transient 429) is dropped to zero findings and flagged
