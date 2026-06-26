@@ -79,6 +79,40 @@ const excerpt = (text: string): string => text.slice(0, EXCERPT_LEN);
 const JSON_REPAIR_SUFFIX =
   'Your previous response did not contain a valid JSON object. Reply with ONLY the JSON object — no reasoning, no explanation, no <think> block, no markdown code fences. Begin your reply with "{" and end it with "}".';
 
+/** Max chars of the decoder's validation message we feed back on a schema repair. */
+const SCHEMA_REPAIR_DETAIL_LEN = 600;
+
+/**
+ * Repair instruction for the SINGLE json-mode retry, picked by the failure
+ * reason of the first attempt:
+ *
+ *   - `empty` / `not-json` — the response carried NO parseable JSON (prose only,
+ *     or a value truncated inside a reasoning block). {@link JSON_REPAIR_SUFFIX}
+ *     tells the model to drop the prose and emit only the object.
+ *   - `schema-mismatch` — the model DID emit JSON, just the wrong shape (a weak
+ *     model renames a field, invents a `level` value, or stringifies a number).
+ *     A BLIND retry rarely fixes structure, so the correction is TARGETED: it
+ *     quotes the decoder's exact complaint AND restates the required shape, so
+ *     the model can fix that one problem rather than guess again. This is the
+ *     failure mode that otherwise survives every parse-side fallback — a
+ *     deterministic mismatch fails identically on every reviewer, sinking the
+ *     whole review with `StructuredOutputInvalid`.
+ */
+const repairInstruction = (
+  e: StructuredOutputInvalid,
+  jsonContract: string | undefined,
+): string =>
+  e.reason === "schema-mismatch"
+    ? [
+        "Your previous response was valid JSON but did not match the required shape.",
+        `The decoder reported: ${e.message.slice(0, SCHEMA_REPAIR_DETAIL_LEN)}`,
+        ...(jsonContract !== undefined
+          ? [`The JSON object MUST match this exact shape: ${jsonContract}`]
+          : []),
+        'Fix exactly that problem and reply with ONLY the corrected JSON object — no prose, no reasoning, no <think> block, no markdown code fences. Begin your reply with "{" and end it with "}".',
+      ].join("\n")
+    : JSON_REPAIR_SUFFIX;
+
 /** A JSON Schema (draft-07) for a tool's `function.parameters`. */
 const toolParametersSchema = (schema: Schema.Schema<any, any>): unknown => {
   const js = JSONSchema.make(schema) as unknown as Record<string, unknown>;
@@ -289,18 +323,25 @@ const DomainOutput = Schema.Struct({
 });
 
 /**
- * Coerce a double-encoded `findings` field back to an array before decoding.
+ * Coerce two common shape deviations back to `{ findings: Finding[] }` before
+ * decoding — mechanical fixes that need no extra model call:
  *
- * Some providers (notably Workers AI tool-calling) emit a nested array field as
- * a JSON STRING — `{ "findings": "[{…}]" }` instead of `{ "findings": [{…}] }`
- * — which fails the `Schema.Array(Finding)` decode with a schema-mismatch on
- * `["findings"]`. When `findings` is a string, `JSON.parse` it and let the
- * Schema validate the result. This mirrors how `parseToolArguments` already
- * tolerates the whole tool `arguments` arriving as a string vs an object. A
- * parse failure (or a non-string `findings`) falls through unchanged so the
- * Schema decode still surfaces a precise `StructuredOutputInvalid`.
+ *  1. A model that DROPS the `{ findings: … }` wrapper and returns the array
+ *     directly — `[{…}]` instead of `{ "findings": [{…}] }`. Weak catalog models
+ *     (GLM / Kimi flash variants) in json mode do this often: the prompt asks for
+ *     findings, and they emit the bare array. Wrap it so the object Schema decodes.
+ *  2. A double-encoded `findings` field — `{ "findings": "[{…}]" }` (the nested
+ *     array emitted as a JSON STRING). Notably Workers AI tool-calling. `JSON.parse`
+ *     it and let the Schema validate the result.
+ *
+ * Both mirror how `parseToolArguments` already tolerates the whole tool
+ * `arguments` arriving as a string vs an object. A parse failure (or a shape
+ * neither helper recognises) falls through unchanged so the Schema decode still
+ * surfaces a precise `StructuredOutputInvalid` — which the json-mode repair retry
+ * then feeds back to the model for a targeted correction.
  */
 const coerceDomainOutput = (value: unknown): unknown => {
+  if (Array.isArray(value)) return { findings: value };
   if (
     typeof value !== "object" ||
     value === null ||
@@ -552,21 +593,24 @@ export const completeStructured = <A>(
     REVIEW_MAX_TOKENS,
   );
 
-  // The json-mode attempt WITH a single repair retry. A model asked for strict
-  // JSON sometimes answers in prose, or truncates inside a reasoning block —
-  // leaving NO parseable JSON (`empty`) or a half-emitted value (`not-json`).
-  // Re-ask ONCE with a blunt correction (and the repair budget above) before
-  // giving up: one extra call that turns a hard `StructuredOutputInvalid` into a
-  // real answer far more often than not. A `schema-mismatch` is NOT repaired —
-  // the model DID emit JSON, just the wrong shape; `parseStructured` already kept
-  // the most specific error and a blind retry rarely fixes structure. Bounded to
-  // ONE retry (the repair attempt's own failure propagates), so there is no loop.
+  // The json-mode attempt WITH a single repair retry. The first response can
+  // fail three ways — NO parseable JSON (`empty`), a half-emitted value
+  // (`not-json`), or well-formed JSON in the wrong SHAPE (`schema-mismatch`).
+  // Re-ask ONCE with a correction TARGETED to the reason (see `repairInstruction`)
+  // and the repair budget above: a `not-json`/`empty` retry tells the model to
+  // drop its prose, a `schema-mismatch` retry quotes the decoder's exact
+  // complaint + restates the contract. One extra call turns a hard
+  // `StructuredOutputInvalid` into a real answer far more often than not — and the
+  // schema-mismatch case is the one that otherwise survives every parse-side
+  // fallback (a deterministic mismatch fails identically on every reviewer).
+  // Bounded to ONE retry (the repair attempt's own failure propagates), no loop.
   const jsonUser = framedUser("json");
   const jsonAttempt = runJson(jsonUser).pipe(
     Effect.catchTag("StructuredOutputInvalid", (e) =>
-      e.reason === "empty" || e.reason === "not-json"
-        ? runJson(`${jsonUser}\n\n${JSON_REPAIR_SUFFIX}`, repairMaxTokens)
-        : Effect.fail(e),
+      runJson(
+        `${jsonUser}\n\n${repairInstruction(e, input.jsonContract)}`,
+        repairMaxTokens,
+      ),
     ),
   );
 
