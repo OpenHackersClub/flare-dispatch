@@ -55,6 +55,34 @@ export const accessHosts = (
 };
 
 /**
+ * The URL to run the service-token exchange against for a given host. Cloudflare
+ * Access only issues the `CF_Authorization` cookie on a request that hits a path
+ * the Access app actually covers — and an app can be PATH-SCOPED (e.g. the
+ * FlareDispatch viewer app fronts `/logs`, `/demos`, `/replay`, `/v1/executions`
+ * but NOT `/`, which must stay un-gated so CI/webhooks reach the Worker). So
+ * exchanging against the bare host root would yield NO cookie for such an app.
+ *
+ * When the host is the app-under-test's own host, exchange against the full
+ * `appUrl` (the `--url` the run drives) — that path is gated by construction, so
+ * the cookie is always issued. For any OTHER host (a `CF_ACCESS_HOSTS` extra),
+ * the gated path is unknown, so fall back to the root and rely on apps that
+ * cover `/*`.
+ */
+export const exchangeUrlForHost = (
+  host: string,
+  appUrl: string | undefined,
+): string => {
+  if (appUrl !== undefined) {
+    try {
+      if (new URL(appUrl).host === host) return appUrl;
+    } catch {
+      // unparseable appUrl — fall back to the host root below.
+    }
+  }
+  return `https://${host}/`;
+};
+
+/**
  * Extract the `CF_Authorization` value from `Set-Cookie` header lines.
  * Returns `null` when absent (e.g. the target is not Access-gated — fine,
  * nothing to set).
