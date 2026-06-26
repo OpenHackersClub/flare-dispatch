@@ -110,9 +110,29 @@ export type OtpExtraction = {
   readonly link?: string;
 };
 
-/** Build a full address from a minted local-part and the inbox domain. */
-export const buildInboxAddress = (localPart: string, inboxDomain: string): string =>
-  `${localPart}@${inboxDomain.replace(/^@/, "")}`;
+/**
+ * Build a full disposable address from a minted local-part and the configured
+ * inbox target. Two forms, decided by whether the target carries an `@`:
+ *
+ *   - **Sub-addressing** (`base@domain`, e.g. `flare-dispatch-inbox@openhackers.club`):
+ *     returns `base+<localPart>@domain`. ONE Email Routing custom rule for
+ *     `base@domain` → the Worker then matches every `base+…@domain` (Cloudflare
+ *     supports RFC 5233 sub-addressing), so the zone's existing catch-all stays
+ *     untouched — no disruption to other mail. This is the form used on a shared
+ *     zone like `openhackers.club`.
+ *   - **Catch-all** (bare `domain`): returns `<localPart>@domain`, for a
+ *     dedicated zone/subdomain whose whole catch-all routes to the Worker.
+ */
+export const buildInboxAddress = (localPart: string, inboxDomain: string): string => {
+  const target = inboxDomain.replace(/^@/, "");
+  const at = target.indexOf("@");
+  if (at !== -1) {
+    const base = target.slice(0, at);
+    const domain = target.slice(at + 1);
+    return `${base}+${localPart}@${domain}`;
+  }
+  return `${localPart}@${target}`;
+};
 
 /** Mint a local-part from a random token (e.g. a dash-stripped `io.uuid`).
  * Lowercases and strips non-alphanumerics so the result always satisfies
@@ -130,14 +150,19 @@ export const isInboxLocalPart = (localPart: string): boolean =>
 
 /**
  * Extract + validate the minted local-part from an *envelope* recipient
- * address (`message.to`). Lowercases, takes the part before the first `@`, and
- * returns it only if it matches `INBOX_LOCAL_PART_RE`; otherwise `null` — the
- * `email()` handler `setReject`s on `null` before reading the body. Never parse
- * the `To:` header for this (it is forgeable / multi-valued) — only the
- * envelope RCPT.
+ * address (`message.to`). Takes the part before the first `@`; under
+ * sub-addressing the minted local-part is the `+tag` AFTER the base address
+ * (`flare-dispatch-inbox+demo-xxx@… → demo-xxx`), so the segment after the last
+ * `+` is taken — a bare `demo-xxx@…` (catch-all form) has no `+`, so it is
+ * returned unchanged. Returns the local-part only if it matches
+ * `INBOX_LOCAL_PART_RE`; otherwise `null` — the `email()` handler `setReject`s
+ * on `null` before reading the body. Never parse the `To:` header for this (it
+ * is forgeable / multi-valued) — only the envelope RCPT.
  */
 export const parseInboxLocalPart = (recipient: string): string | null => {
   const at = recipient.indexOf("@");
-  const local = (at === -1 ? recipient : recipient.slice(0, at)).trim().toLowerCase();
+  let local = (at === -1 ? recipient : recipient.slice(0, at)).trim().toLowerCase();
+  const plus = local.lastIndexOf("+");
+  if (plus !== -1) local = local.slice(plus + 1);
   return isInboxLocalPart(local) ? local : null;
 };
