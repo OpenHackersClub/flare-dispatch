@@ -20,6 +20,11 @@
 #                 (point it at a retained execution — e.g. a recent pr-review
 #                 run — so the viewer always has a real timeline + logs to show).
 # Unset ⇒ the job logs a clear "skipped" notice instead of failing.
+#
+# NB the log viewer is behind Cloudflare Access, so the demo agent's browser
+# needs a service token to get past the wall (it stays closed to humans). Create
+# the token + a Service Auth policy on the viewer Access app, then wire the creds
+# (CONFIG_KV staging/CF_ACCESS_*) + this var with scripts/setup-viewer-demo.sh.
 
 name: product-demo (log viewer)
 

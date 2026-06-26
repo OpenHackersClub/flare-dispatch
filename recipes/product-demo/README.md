@@ -146,14 +146,21 @@ The structural advantages over the plain-GHA baseline ([`baseline.yml`](baseline
 
    # CONFIG_KV model ids — resolved per-execution by the run via `config.get`,
    # so you can repoint models in seconds (no redeploy). REQUIRED — there is no
-   # provider-neutral default (a `gpt-4o` default would only work on an OpenAI
-   # gateway; a `claude-opus-4-7` default only on Anthropic). Pick the model
-   # id that matches the upstream behind your AI Gateway.
-   wrangler kv key put --binding=CONFIG_KV product-demo.model.play     gpt-4o-mini          # or claude-haiku-4-5-20251001 / @cf/meta/llama-3.1-70b-instruct / ...
-   wrangler kv key put --binding=CONFIG_KV product-demo.model.summary  gpt-4o               # or claude-opus-4-7 / @cf/meta/llama-3.1-405b-instruct / ...
+   # provider-neutral default. The id flows VERBATIM as the OpenAI `model` field
+   # to the gateway's `/compat` endpoint, which requires the `{provider}/{model}`
+   # form: `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`,
+   # `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`. A bare `@cf/…` (no
+   # `workers-ai/` prefix) is rejected with "Invalid provider". The `play` model
+   # MUST support forced tool-calling (`tool_choice:required`) — not all do.
+   # For Workers AI via /compat, set MODEL_API_KEY to a CF token with Workers AI
+   # Run (it is the `Authorization: Bearer`); under provider BYOK leave it unset.
+   wrangler kv key put --binding=CONFIG_KV product-demo.model.play     workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast   # or openai/gpt-4o-mini / anthropic/claude-haiku-4-5-20251001 / ...
+   wrangler kv key put --binding=CONFIG_KV product-demo.model.summary  workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast   # or openai/gpt-4o / anthropic/claude-opus-4-7 / ...
    ```
 
    Verify with [`scripts/check-product-demo-secrets.sh`](../../scripts/check-product-demo-secrets.sh).
+
+   **When the demo TARGET is behind Cloudflare Access** (e.g. FlareDispatch demoing its own gated `/logs` viewer), the agent's headless browser is 302'd to the SSO login unless it carries an Access identity. `demo-agent` authenticates with an Access **service token**: given `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` it exchanges them for a host-scoped `CF_Authorization` cookie ([`access-scope.ts`](../../packages/demo-agent/src/access-scope.ts)), keeping the wall closed to humans. One-time: create a service token in Zero Trust and attach a **Service Auth** policy to the target's Access app (a plain Allow policy won't accept a service token). Then wire the creds + a tokened demo URL with [`scripts/setup-viewer-demo.sh`](../../scripts/setup-viewer-demo.sh) — it writes `staging/CF_ACCESS_CLIENT_ID` / `staging/CF_ACCESS_CLIENT_SECRET` to CONFIG_KV (the `staging/` prefix `runs/product-demo.ts` loads from) and sets `LOG_VIEWER_DEMO_URL`.
 7. **(Optional) Wire Bedrock through the same gateway.** AWS Bedrock isn't reachable on the gateway's `/compat` endpoint ([CF docs](https://developers.cloudflare.com/ai-gateway/usage/providers/bedrock/) — Bedrock is `provider endpoint only`), so a `bedrock/<modelId>` model id takes a separate path: SigV4-signed POST to `/v1/<acct>/<gw>/aws-bedrock/...`. The trust path is the same OIDC-federated AssumeRole that `pr-review`'s `bedrock` backend uses; share the role and widen its trust policy `sub` to also accept `product-demo:*`. To enable:
    - In `ci.yml` (or your `workflow_dispatch` payload), pass `bedrockRoleArn` and optionally `bedrockRegion` (defaults to `us-east-1`) on the dispatch input. The run will mint short-lived STS creds via `awsAssumeRole` and thread them into the agent through `agentEnv`.
    - Set `product-demo.model.play` to a `bedrock/<modelId>` id — e.g. `bedrock/us.anthropic.claude-opus-4-7-v1`. The agent's model client routes that prefix through the Bedrock forwarder; everything without the prefix keeps using the OpenAI-compat path.

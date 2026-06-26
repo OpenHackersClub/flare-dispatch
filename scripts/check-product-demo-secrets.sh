@@ -97,6 +97,13 @@ require_kv_key product-demo.model.play
 require_kv_key product-demo.model.summary
 
 echo
+echo "CONFIG_KV — CF Access service token (staging/, only when the demo TARGET is Access-gated)"
+optional_kv_key staging/CF_ACCESS_CLIENT_ID \
+  "set only to demo an Access-gated target (e.g. our own /logs viewer); see scripts/setup-viewer-demo.sh"
+optional_kv_key staging/CF_ACCESS_CLIENT_SECRET \
+  "pairs with staging/CF_ACCESS_CLIENT_ID; demo-agent exchanges both for a CF_Authorization cookie"
+
+echo
 if [[ $missing -eq 0 ]]; then
   green "All required product-demo secrets present."
 else

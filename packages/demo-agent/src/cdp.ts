@@ -17,6 +17,7 @@ import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import {
   accessHosts,
   cfAuthorizationFromSetCookie,
+  exchangeUrlForHost,
 } from "./access-scope.js";
 import { CdpAttachFailed, CdpCommandFailed } from "./errors.js";
 import { VIEWPORTS, type ViewportPreset } from "./schemas.js";
@@ -216,10 +217,15 @@ export const attachCdp = (
             return;
           }
           for (const host of hosts) {
+            // Exchange against a GATED path — a path-scoped Access app (our
+            // viewer app fronts `/logs` etc., NOT `/`) issues no cookie on the
+            // bare root, so use the target `appUrl` for its own host.
+            const exchangeUrl = exchangeUrlForHost(host, appUrl);
             // `redirect: "manual"` — Access sets the cookie on the FIRST
             // authenticated response; following a redirect would drop its
-            // Set-Cookie header on the floor.
-            const res = await fetch(`https://${host}/`, {
+            // Set-Cookie header on the floor. (The cookie rides even a 403 from
+            // a downstream capability-token gate, so a `?t=` in appUrl is fine.)
+            const res = await fetch(exchangeUrl, {
               headers: accessHeaders,
               redirect: "manual",
             });
@@ -232,7 +238,7 @@ export const attachCdp = (
             const token = cfAuthorizationFromSetCookie(setCookies);
             if (token === null) {
               console.error(
-                `cf-access: no CF_Authorization cookie from https://${host}/ (status ${res.status}) — host may not be Access-gated`,
+                `cf-access: no CF_Authorization cookie from ${exchangeUrl} (status ${res.status}) — path may not be Access-gated`,
               );
               continue;
             }
