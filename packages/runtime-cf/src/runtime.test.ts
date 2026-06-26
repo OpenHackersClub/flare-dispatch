@@ -71,6 +71,8 @@ const fakeWorkflowStep = {
         : (maybeCallback as () => Promise<T>);
     return callback();
   },
+  // Durable sleep — no Workflows engine in Miniflare, so resume instantly.
+  sleep: (_name: string, _ms: number): Promise<void> => Promise.resolve(),
 };
 
 /**

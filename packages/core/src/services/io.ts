@@ -33,6 +33,20 @@ export interface IOService {
   readonly executionId: Effect.Effect<string>;
   readonly env: (key: string) => Effect.Effect<string | undefined>;
   readonly sleep: (d: Duration.Duration | string) => Effect.Effect<void>;
+  /**
+   * A DURABLE sleep — the instance hibernates for free and resumes after `d`,
+   * surviving Worker eviction. Backed by Cloudflare Workflows' `step.sleep`
+   * (NOT the in-memory `sleep` above), so it is the only safe way to wait
+   * minutes-to-days inside a run (e.g. the `pr-review-trail` coalescer sleeping
+   * out a rate-cap window). `name` is the durable step label: it must be stable
+   * across replays and unique within the run, exactly like a `step(name, …)`
+   * checkpoint. On a runtime without a Workflow step (bare/test IO) it degrades
+   * to an instant resume so unit tests don't actually block.
+   */
+  readonly sleepDurable: (
+    name: string,
+    d: Duration.Duration | string,
+  ) => Effect.Effect<void>;
   readonly log: (
     level: LogLevel,
     msg: string,
@@ -65,6 +79,8 @@ export const io = {
   executionId: Effect.flatMap(IO, (s) => s.executionId),
   env: (key: string) => Effect.flatMap(IO, (s) => s.env(key)),
   sleep: (d: Duration.Duration | string) => Effect.flatMap(IO, (s) => s.sleep(d)),
+  sleepDurable: (name: string, d: Duration.Duration | string) =>
+    Effect.flatMap(IO, (s) => s.sleepDurable(name, d)),
   log: (level: LogLevel, msg: string, attrs?: Record<string, unknown>) =>
     Effect.flatMap(IO, (s) => s.log(level, msg, attrs)),
   priorExecution: <O, I>(opts: {

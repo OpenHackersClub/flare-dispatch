@@ -24,9 +24,24 @@ import { IO, type IOService } from "@flare-dispatch/core";
  * for tests and local dev. Supplying `{db, currentExecutionId}` enables the
  * live `priorExecution` D1 query.
  */
+/**
+ * The slice of the CF Workflow `step` the live IO layer needs — just the
+ * durable `sleep`. Typed locally (not imported from `runtime.ts`) so io-live
+ * stays free of the `runtime.ts → makeIOLive` import cycle.
+ */
+type DurableSleepStep = {
+  readonly sleep: (name: string, ms: number) => Promise<void>;
+};
+
 export type IOLiveOptions = {
   /** D1 binding (`env.RUNS_METADATA`) — required for live `priorExecution`. */
   readonly db?: D1Database;
+  /**
+   * The CF Workflow step — backs `io.sleepDurable` with the platform's durable
+   * `step.sleep`. Absent on a bare stand-alone IO layer (tests/local dev), where
+   * `sleepDurable` degrades to a non-durable in-memory sleep.
+   */
+  readonly workflowStep?: DurableSleepStep;
   /**
    * The current execution's instanceId — excluded from `priorExecution`
    * results so a run never sees itself as its own prior.
@@ -70,6 +85,19 @@ export const makeIOLive = (opts: IOLiveOptions = {}): Layer.Layer<IO> =>
     // is the narrower `` `${number} ${unit}` `` template — the cast asserts
     // the documented contract (a duration-shaped string).
     sleep: (d) => Effect.sleep(Duration.decode(d as Duration.DurationInput)),
+
+    // Durable sleep — CF Workflows `step.sleep` de-schedules the instance and
+    // resumes it later (free hibernation), so a run can wait minutes-to-days
+    // without holding a Worker invocation or dying on eviction. Falls back to a
+    // non-durable in-memory sleep on a bare IO layer (no Workflow step wired).
+    sleepDurable: (name, d) => {
+      const ms = Duration.toMillis(
+        Duration.decode(d as Duration.DurationInput),
+      );
+      return opts.workflowStep === undefined
+        ? Effect.sleep(Duration.millis(ms))
+        : Effect.promise(() => opts.workflowStep!.sleep(name, ms));
+    },
 
     log: (level, msg, attrs) =>
       Effect.sync(() => {

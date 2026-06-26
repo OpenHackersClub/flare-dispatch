@@ -17,6 +17,7 @@ export {
   type RunSpec,
   type RunLimits,
   type CooldownSpec,
+  type CoalesceSpec,
   type SandboxImage,
   type TriggerSpec,
   type ScheduleSpec,

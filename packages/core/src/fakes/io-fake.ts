@@ -77,6 +77,9 @@ export const makeIOFake = (
     env: () => Effect.succeed(undefined),
     viewerUrl: Effect.succeed(Option.fromNullable(opts.viewerUrl)),
     sleep: () => Effect.void,
+    // Durable sleep resolves instantly in tests — the trailing-coalesce window
+    // is exercised without actually blocking; assert on the spawn that follows.
+    sleepDurable: () => Effect.void,
     log: (level, msg, attrs) =>
       Effect.sync(() => {
         state.logs.push({ level, msg, attrs });
