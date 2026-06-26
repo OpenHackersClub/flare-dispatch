@@ -28,8 +28,11 @@
 # This is the canonical integration the `recipes/product-demo/Dockerfile.example`
 # documents, folded into the real image so product-demo works out-of-the-box for
 # every consumer of this Dockerfile. `FD_REF` pins the flare-dispatch ref the
-# agent bundle is built from (default `main`); bump alongside the SDK tag.
-ARG FD_REF=main
+# agent bundle is built from. Pin to a SHA/tag (NOT `main`) so a deploy actually
+# rebuilds the bundle: a moving `main` build-arg is cache-stable, so the
+# `git fetch origin main` layer serves a stale clone and agent fixes never ship.
+# Bump this on each agent change.
+ARG FD_REF=4e4d7c05337389ab43ee307fce9536bae6865cd1  # #200 — cdp.ts gated-path Access exchange fix
 FROM node:22-bookworm-slim AS demo-agent-builder
 ARG FD_REF
 ENV PNPM_HOME=/pnpm
