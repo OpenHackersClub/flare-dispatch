@@ -24,7 +24,7 @@ The dominant variable cost is **Containers** — that's where test commands actu
 
 **Model inference.** The `pr-review` run calls a model through the `modelGateway` capability ([`packages/core/src/services/model-gateway.ts`](../packages/core/src/services/model-gateway.ts)), backed by the Cloudflare Workers AI binding (`env.AI`) routed through an AI Gateway. The selectable backend ([`packages/review-agent/src/backend.ts`](../packages/review-agent/src/backend.ts)) decides what those calls cost:
 
-- **`opencode` / `reasonix`** — Workers AI catalog models (`@cf/...`). The binding is the auth (account-billed, no API key) — these bill as **Workers AI Neurons** on your Cloudflare account, not a third party.
+- **`workers-ai`** — Workers AI catalog models (`@cf/...`) or `deepseek/` reasoners (BYOK). The binding is the auth (account-billed, no API key for `@cf/...`) — catalog calls bill as **Workers AI Neurons** on your Cloudflare account, not a third party.
 - **`anthropic`** — Claude via the AI Gateway universal endpoint (BYOK). Billed at **Anthropic's** rate against your key stored in the gateway; the gateway itself adds no per-call fee.
 - **`bedrock`** — AWS Bedrock `InvokeModel` via the AI Gateway forwarder (OIDC → STS → SigV4, no long-lived AWS key). Adds **AWS Bedrock per-token cost + the AI Gateway hop** on top — the only backend that bills outside your Cloudflare account *and* incurs an AWS line item.
 
@@ -56,7 +56,7 @@ pie showData
 
 `pr-review` breaks the ~95%-container rule because the review runs **in the Worker, not in a container CLI** ([`runs/pr-review.ts`](../runs/pr-review.ts) header). The single container image (`infra/Dockerfile.sandbox`: Node + git + curl) is used only for `git` — checkout + `git diff` — a few seconds of vCPU; every model call happens in the Worker against the `modelGateway` backend. So the marginal-cost stack shifts:
 
-- **Model inference** — the dominant line. For a Workers-AI backend (`opencode`/`reasonix`) it's account-billed Neurons; for `anthropic` it's BYOK token cost at Anthropic's rate; for `bedrock` it's AWS Bedrock token cost + the AI Gateway hop. In `multi` mode `pr-review` multiplies this by its reviewer count when it fans out one reviewer per domain (each embeds the whole diff); in `single` mode it's one model call.
+- **Model inference** — the dominant line. For the `workers-ai` backend it's account-billed Neurons (or BYOK token cost for a `deepseek/` reasoner); for `anthropic` it's BYOK token cost at Anthropic's rate; for `bedrock` it's AWS Bedrock token cost + the AI Gateway hop. In `multi` mode `pr-review` multiplies this by its reviewer count when it fans out one reviewer per domain (each embeds the whole diff); in `single` mode it's one model call.
 - **Container vCPU-seconds** — now a *small* line: a short-lived lean container just long enough to clone the repo and produce the diff. No test suite runs in it.
 - **Worker / Workflow CPU** — the diff is capped to the model's context window and the model round-trips are I/O-bound waits; still negligible against the 30M CPU-ms quota.
 - **R2 / D1** — unchanged: kilobytes of metadata, free tier.

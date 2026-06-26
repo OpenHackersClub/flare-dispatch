@@ -47,10 +47,9 @@
 //   CONFIG_KV  security-posture.report-repo    repo to open the audit PR on (required) — usually your flare-dispatch fork
 //   CONFIG_KV  security-posture.base           base branch for the audit PR (default "main")
 //   CONFIG_KV  security-posture.min-severity   only open a PR when a finding is at/above this (default "info" — always)
-//   CONFIG_KV  security-posture.backend         "opencode" | "reasonix"  (default opencode) — the narrative model
+//   CONFIG_KV  security-posture.backend         "workers-ai" | "anthropic" | "bedrock"  (default workers-ai) — the narrative model
 //   CONFIG_KV  security-posture.prompt          (optional) override the auditor system prompt
-//   CONFIG_KV  security-posture.opencode.model  bare Workers AI model id   (+ .opencode.mode)
-//   CONFIG_KV  security-posture.reasonix.model  bare Workers AI model id   (+ .reasonix.mode)
+//   CONFIG_KV  security-posture.workers-ai.model  model id — catalog id or `deepseek/` reasoner (+ .workers-ai.mode "tools"|"json", default "tools")
 //
 // Mode: Schedule mode — specs/04-gha-integration.md § Schedule mode. The cron
 // MUST also be in wrangler.jsonc `triggers.crons`.

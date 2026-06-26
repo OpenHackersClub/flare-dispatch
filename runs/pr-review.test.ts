@@ -43,7 +43,7 @@ const DIFF_FILE = "/tmp/pr-review.diff";
 
 /** Backend config so the run survives `resolve-backend` (now the first step). */
 const backendConfig = {
-  "pr-review.opencode.model": "@cf/test/model",
+  "pr-review.workers-ai.model": "@cf/test/model",
 } as const;
 
 /** A scripted `report` tool call answering every domain reviewer with no findings. */
@@ -214,7 +214,7 @@ describe("pr-review", () => {
         expect(handles.github.pullReviewCalls).toHaveLength(1);
         const body = handles.github.pullReviewCalls[0]!.body;
         expect(body).toContain("misconfigured");
-        expect(body).toContain("pr-review.opencode.model");
+        expect(body).toContain("pr-review.workers-ai.model");
       }).pipe(Effect.provide(layer));
     },
   );
@@ -561,7 +561,7 @@ describe("pr-review", () => {
       const emptyJsonReport = { toolCalls: [], text: '{"findings":[]}' } as const;
 
       const { layer, handles } = makeCFRuntimeTest({
-        config: { ...backendConfig, "pr-review.opencode.mode": "json" },
+        config: { ...backendConfig, "pr-review.workers-ai.mode": "json" },
         sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
         sandboxFiles: { [DIFF_FILE]: liteDiff },
         modelGateway: {
@@ -680,7 +680,7 @@ describe("pr-review", () => {
 
   it.effect("modelId input overrides the resolved backend's model", () => {
     const { layer, handles } = makeCFRuntimeTest({
-      config: backendConfig, // opencode.model = "@cf/test/model"
+      config: backendConfig, // workers-ai.model = "@cf/test/model"
       sandboxProgram: { "git diff": { exitCode: 0, stdout: "" } },
       sandboxFiles: { [DIFF_FILE]: "diff --git a/x.ts b/x.ts\n+++ b/x.ts\n+x\n" },
       modelGateway: { responses: Array(7).fill(emptyReport) },
@@ -697,7 +697,7 @@ describe("pr-review", () => {
 
   it.effect("backend input overrides the CONFIG_KV backend selection", () => {
     const { layer, handles } = makeCFRuntimeTest({
-      // Default backend is opencode; seed an anthropic model too so the
+      // Default backend is workers-ai; seed an anthropic model too so the
       // override resolves. The input must select anthropic.
       config: {
         ...backendConfig,

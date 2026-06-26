@@ -19,7 +19,7 @@ minutes.
 ## Reuse: the same review infra as `ai-code-review`
 
 The triage model call goes through `@flare-dispatch/review-agent`'s reusable
-**`completeStructured`** engine — the `opencode` / `reasonix` backend machinery
+**`completeStructured`** engine — the `workers-ai` backend machinery
 [`pr-review`](../ai-code-review/) uses, resolved from `CONFIG_KV` under this run's
 `ci-triage.*` namespace. **No model API key** — the Workers AI binding is the
 auth.
@@ -53,10 +53,10 @@ flowchart LR
 | `ci-triage.report-repo` | repo to open the triage PR on (default: first of `ci-triage.repos`) |
 | `ci-triage.base` | base branch for the triage PR (default `main`) |
 | `ci-triage.window-hours` | only failures newer than this (default `24`) |
-| `ci-triage.backend` | `opencode` (default) or `reasonix` |
+| `ci-triage.backend` | `workers-ai` (default), `anthropic`, or `bedrock` |
 | `ci-triage.prompt` | *(optional)* override the triage system prompt |
-| `ci-triage.opencode.model` / `.mode` | model id + `tools`/`json` for `opencode` |
-| `ci-triage.reasonix.model` / `.mode` | model id + `tools`/`json` for `reasonix` |
+| `ci-triage.workers-ai.model` | bare Workers AI catalog id (e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, account-billed, no key) **or** a `deepseek/`-prefixed hosted reasoner (e.g. `deepseek/deepseek-reasoner`, BYOK via AI Gateway) |
+| `ci-triage.workers-ai.mode` | `tools` (default) or `json` — pin `json` for reasoning models (DeepSeek-class models ignore tool-calls) |
 
 A green day (no failures in the window) opens no PR and never calls the model.
 Repoint the model or rewrite the prompt entirely from `CONFIG_KV`, no redeploy.

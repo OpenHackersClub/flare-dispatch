@@ -185,7 +185,7 @@ describe("reviewDomain", () => {
         agent: "security",
         diff: "diff --git a/src/a.ts b/src/a.ts",
         tier: "full",
-        backend: "opencode",
+        backend: "workers-ai",
         mode: "tools",
       }).pipe(Effect.provide(layer)),
     );
@@ -202,7 +202,7 @@ describe("reviewDomain", () => {
         agent: "security",
         diff: "x",
         tier: "full",
-        backend: "opencode",
+        backend: "workers-ai",
         mode: "tools",
       }).pipe(Effect.provide(layer)),
     );
@@ -222,7 +222,7 @@ describe("reviewDomain", () => {
         agent: "security",
         diff: "x",
         tier: "full",
-        backend: "opencode",
+        backend: "workers-ai",
         mode: "tools",
       }).pipe(Effect.provide(layer)),
     );
@@ -242,7 +242,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -267,7 +267,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -283,7 +283,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "trivial",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -310,7 +310,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/zai-org/glm-5.2",
-        backend: "opencode",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -331,7 +331,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -356,7 +356,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-        backend: "opencode",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -384,7 +384,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "tools",
       }).pipe(Effect.provide(layer)),
     );
@@ -410,7 +410,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(fake.layer)),
     );
@@ -436,7 +436,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(fake.layer)),
     );
@@ -461,7 +461,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(fake.layer)),
     );
@@ -487,7 +487,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-        backend: "reasonix",
+        backend: "workers-ai",
         mode: "tools",
       }).pipe(Effect.provide(fake.layer)),
     );
@@ -510,7 +510,7 @@ describe("reviewDomain", () => {
         diff: "x",
         tier: "lite",
         model: "m",
-        backend: "opencode",
+        backend: "workers-ai",
         mode: "json",
       }).pipe(Effect.provide(layer)),
     );
@@ -527,7 +527,7 @@ describe("completeStructured (the reusable structured-output engine)", () => {
   });
 
   const input = {
-    backend: "opencode",
+    backend: "workers-ai",
     model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     system: "triage",
     renderUser: (mode: "tools" | "json") => `mode=${mode}`,

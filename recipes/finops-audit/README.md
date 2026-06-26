@@ -45,8 +45,8 @@ spikes Neuron usage.
 | `finops.base` | `main` | base branch |
 | `finops.window-hours` | `168` | usage window (7 days) |
 | `finops.projects` | — | optional Pages projects to flag failed deploys (wasted build minutes) |
-| `finops.backend` | `opencode` | review engine backend (`opencode` \| `reasonix`) |
-| `finops.opencode.model` | — | bare Workers AI model id (+ `.opencode.mode`) |
+| `finops.backend` | `workers-ai` | review engine backend (`workers-ai` \| `anthropic` \| `bedrock`) |
+| `finops.workers-ai.model` | — | model id — catalog `@cf/...` or `deepseek/` reasoner (+ `.workers-ai.mode`, default `tools`) |
 | `finops.prompt` | built-in | override the analysis system prompt |
 
 Reuses the `ai-code-review` engine (`@flare-dispatch/review-agent`), so the

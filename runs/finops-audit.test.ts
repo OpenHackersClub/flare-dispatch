@@ -44,7 +44,7 @@ const finopsResponse = (): ModelCompletionResult => ({
 
 const config = {
   "finops.report-repo": "owner/name",
-  "finops.opencode.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "finops.workers-ai.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 };
 
 describe("finops-audit", () => {

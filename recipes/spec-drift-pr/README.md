@@ -19,7 +19,7 @@ No workflow file, zero GHA minutes.
 ## Reuse: the same review infra as `ai-code-review`
 
 The detection model call goes through `@flare-dispatch/review-agent`'s reusable
-**`completeStructured`** engine — the very `opencode` / `reasonix` backend
+**`completeStructured`** engine — the very `workers-ai` backend
 machinery [`pr-review`](../ai-code-review/) uses (tools/json output coaxing +
 auto-fallback + Schema-validated result), resolved from `CONFIG_KV`. **No model
 API key** — the Workers AI binding is the auth. The detection runs **in the
@@ -51,12 +51,10 @@ sections are left alone (see the prompt).
 |---|---|
 | `spec-drift.repos` | **required** — comma/space-separated `owner/name` list to scan |
 | `spec-drift.base` | base branch to scan + open PRs against (default `main`) |
-| `spec-drift.backend` | `opencode` (default) or `reasonix` |
+| `spec-drift.backend` | `workers-ai` (default), `anthropic`, or `bedrock` |
 | `spec-drift.prompt` | *(optional)* override the drift-detection system prompt |
-| `spec-drift.opencode.model` | bare Workers AI model id for the `opencode` backend |
-| `spec-drift.opencode.mode` | `tools` (default) or `json` |
-| `spec-drift.reasonix.model` | bare Workers AI model id for the `reasonix` backend |
-| `spec-drift.reasonix.mode` | `tools` or `json` (default `json`) |
+| `spec-drift.workers-ai.model` | bare Workers AI catalog id (e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, account-billed, no key) **or** a `deepseek/`-prefixed hosted reasoner (e.g. `deepseek/deepseek-reasoner`, BYOK via AI Gateway) |
+| `spec-drift.workers-ai.mode` | `tools` (default) or `json` — pin `json` for reasoning models (DeepSeek-class models ignore tool-calls) |
 
 An empty/unset `spec-drift.repos` is a no-op — the run is a backstop, not an
 installation-wide crawler. A misconfigured backend (no model) fails the run

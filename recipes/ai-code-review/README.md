@@ -57,13 +57,11 @@ The engine selects a model backend from config — repoint it in seconds, no red
 
 | Key (CONFIG_KV) | Meaning |
 |---|---|
-| `pr-review.backend` | `opencode` (default), `reasonix`, `anthropic`, or `bedrock` |
+| `pr-review.backend` | `workers-ai` (default), `anthropic`, or `bedrock` |
 | `pr-review.prompt` | *(optional)* REPLACE the generic per-domain reviewer system prompt |
 | `pr-review.guidelines` | *(optional)* ADDITIVE house rules appended on top of the reviewer prompt — a suppression rubric ("what NOT to flag"), project conventions, or severity calibration. Layers onto the maintained default instead of replacing it. |
-| `pr-review.opencode.model` | bare Workers AI model id for the **opencode** backend, e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
-| `pr-review.opencode.mode` | `tools` (default) or `json` — how structured output is coaxed (see below) |
-| `pr-review.reasonix.model` | reasoning-model id for the **reasonix** backend. Either a bare Workers AI distill (`@cf/deepseek-ai/deepseek-r1-distill-qwen-32b`, account-billed, no key) **or** a `deepseek/`-prefixed hosted reasoner (`deepseek/deepseek-reasoner`, the real model — routes via the AI Gateway universal endpoint with a BYOK DeepSeek key stored in the gateway; requires `AI_GATEWAY_ID`) |
-| `pr-review.reasonix.mode` | `tools` or `json` (**default `json`** — DeepSeek-class reasoning models ignore tool-calls) |
+| `pr-review.workers-ai.model` | bare Workers AI catalog id (e.g. `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, account-billed, no key) **or** a `deepseek/`-prefixed hosted reasoner (e.g. `deepseek/deepseek-reasoner`, BYOK via AI Gateway; routes via the AI Gateway universal endpoint with a BYOK DeepSeek key stored in the gateway; requires `AI_GATEWAY_ID`) |
+| `pr-review.workers-ai.mode` | `tools` (default) or `json` — pin `json` for reasoning models (DeepSeek-class models ignore tool-calls) |
 | `pr-review.anthropic.model` | `anthropic/`-prefixed model id, e.g. `anthropic/claude-sonnet-4-6`. Routes via the AI Gateway universal endpoint (BYOK Anthropic key stored in the gateway). Requires `AI_GATEWAY_ID`. |
 | `pr-review.anthropic.mode` | `tools` (default) or `json` |
 | `pr-review.bedrock.model` | `bedrock/`-prefixed model id, e.g. `bedrock/us.anthropic.claude-opus-4-6-v1`. Routes via the AI Gateway Bedrock forwarder; SigV4-signed with short-lived STS creds (BYOC trust path). Requires `AI_GATEWAY_ID` + `CLOUDFLARE_ACCOUNT_ID` + `OIDC_SIGNING_JWK` + `OIDC_ISSUER_URL`. |

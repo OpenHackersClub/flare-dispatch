@@ -83,10 +83,9 @@ risk the operator carries.
 | `security-posture.report-repo` | **required** — repo to open the audit PR on (usually your `flare-dispatch` fork) |
 | `security-posture.base` | base branch for the audit PR (default `main`) |
 | `security-posture.min-severity` | only open a PR when a finding is at/above this — `info` (default, always) \| `low` \| `medium` \| `high` \| `critical` |
-| `security-posture.backend` | `opencode` (default) or `reasonix` — the narrative model |
+| `security-posture.backend` | `workers-ai` (default), `anthropic`, or `bedrock` — the narrative model |
 | `security-posture.prompt` | *(optional)* override the auditor system prompt |
-| `security-posture.opencode.model` / `.mode` | model id + `tools`/`json` for `opencode` |
-| `security-posture.reasonix.model` / `.mode` | model id + `tools`/`json` for `reasonix` |
+| `security-posture.workers-ai.model` / `.mode` | model id (catalog `@cf/...` or `deepseek/` reasoner) + `tools`/`json` (default `tools`; pin `json` for reasoning models) |
 
 Reuses the same configurable model machinery as
 [`ai-code-review`](../ai-code-review/) (`@flare-dispatch/review-agent`'s
@@ -147,7 +146,7 @@ entirely.
   `github.openDraftPullRequest` can file the report. With no installation
   reachable from the cron tick, the live plane degrades to empty and the audit
   leans on the declared scope (noted in the report).
-- **A model backend** — set `security-posture.opencode.model` (or `.reasonix.*`)
+- **A model backend** — set `security-posture.workers-ai.model`
   for the narrative. Absent, the audit files the deterministic rule findings only.
 
 ## Install
