@@ -141,7 +141,7 @@
     //   catch-all → this worker (only on a DEDICATED zone). Absent → the
     //   `mailbox` capability is the dying stub. See
     //   recipes/email-otp-login/README.md for the one-time setup.
-    // "INBOX_DOMAIN": "flare-dispatch-inbox@openhackers.club",
+    "INBOX_DOMAIN": "flare-dispatch-inbox@openhackers.club",
     // INBOX_ALLOWED_SENDERS — optional comma-separated envelope-From DOMAIN
     //   allowlist for the inbound handler (e.g. "auth0.com,clerk.com"). When set,
     //   mail from any other sender domain is rejected before storage —
