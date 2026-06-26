@@ -150,6 +150,10 @@ export const CloudflareDeferred: Layer.Layer<Cloudflare> = Layer.succeed(
       Effect.logInfo(
         "cloudflare.deployments skipped (no CLOUDFLARE_API_TOKEN) — empty",
       ).pipe(Effect.as([])),
+    usage: ({ windowHours } = {}) =>
+      Effect.logInfo(
+        "cloudflare.usage skipped (no CLOUDFLARE_API_TOKEN) — empty snapshot",
+      ).pipe(Effect.as({ windowHours: windowHours ?? 168, workers: [], ai: [] })),
   }))(),
 );
 
