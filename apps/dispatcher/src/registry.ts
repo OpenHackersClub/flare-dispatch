@@ -25,6 +25,7 @@ import {
   productDemo,
   refreshFixtures,
   releaseNotes,
+  selfHealPr,
   specDriftPr,
   vitestShard,
 } from "@flare-dispatch/runs";
@@ -41,6 +42,11 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [prReview.name]: prReview as Run<unknown, unknown>,
   [specDriftPr.name]: specDriftPr as Run<unknown, unknown>,
   [ciTriagePr.name]: ciTriagePr as Run<unknown, unknown>,
+  // The fix stage `ci-triage-pr`'s diagnosis (and `product-demo`'s confirmed
+  // demo failures) escalate into. Demo-class auto-dispatch is gated OFF unless
+  // `self-heal.demo.enabled=true`; the run itself is also Action-mode
+  // dispatchable (`POST /v1/dispatch/self-heal-pr`). specs/08-self-healing.md.
+  [selfHealPr.name]: selfHealPr as Run<unknown, unknown>,
   [refreshFixtures.name]: refreshFixtures as Run<unknown, unknown>,
   [releaseNotes.name]: releaseNotes as Run<unknown, unknown>,
   [oxlint.name]: oxlint as Run<unknown, unknown>,

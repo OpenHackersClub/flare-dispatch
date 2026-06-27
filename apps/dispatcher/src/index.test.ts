@@ -126,6 +126,7 @@ describe("GET /health", () => {
         "product-demo",
         "refresh-fixtures",
         "release-notes",
+        "self-heal-pr",
         "spec-drift-pr",
         "vitest-shard",
       ],
