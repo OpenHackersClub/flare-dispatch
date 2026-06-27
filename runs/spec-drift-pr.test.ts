@@ -25,7 +25,7 @@ const proposal = (edits: unknown[]): ModelCompletionResult => ({
 
 const backendConfig = {
   "spec-drift.repos": "owner/name",
-  "spec-drift.opencode.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "spec-drift.workers-ai.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 };
 
 // Sandbox program: specs present, a file tree, a git log.
@@ -89,7 +89,7 @@ describe("spec-drift-pr", () => {
   });
 
   it.effect("fails when the backend model is unconfigured", () => {
-    // repos set, but no `spec-drift.opencode.model` → BackendUnconfigured.
+    // repos set, but no `spec-drift.workers-ai.model` → BackendUnconfigured.
     const { layer } = makeCFRuntimeTest({
       config: { "spec-drift.repos": "owner/name" },
     });

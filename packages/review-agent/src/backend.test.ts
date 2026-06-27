@@ -3,6 +3,11 @@
 // `resolveBackend` reads a `config.get`-shaped accessor; here we back it with a
 // plain in-memory map so the selection logic is tested without the DSL. No API
 // key is read — the Workers AI binding (the `modelGateway` backend) is the auth.
+//
+// Backends name a model ROUTE, not an agentic tool: `workers-ai` | `anthropic` |
+// `bedrock`. The former `opencode` / `reasonix` labels were misnomers (nothing
+// spawned those tools) and are GONE — a reasoning model is just `workers-ai`
+// with `mode: "json"`. The legacy-name regression guard below pins that.
 
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
@@ -28,13 +33,19 @@ const getter =
 
 describe("parseBackend", () => {
   it("passes through known backends", () => {
-    expect(parseBackend("opencode")).toBe("opencode");
-    expect(parseBackend("reasonix")).toBe("reasonix");
+    expect(parseBackend("workers-ai")).toBe("workers-ai");
     expect(parseBackend("anthropic")).toBe("anthropic");
+    expect(parseBackend("bedrock")).toBe("bedrock");
   });
   it("falls back to the default for unknown / unset", () => {
     expect(parseBackend(undefined)).toBe(DEFAULT_BACKEND);
     expect(parseBackend("openai")).toBe(DEFAULT_BACKEND);
+  });
+  it("does NOT recognize the retired opencode/reasonix labels (hard rename)", () => {
+    // These were never agentic tools — only model-route misnomers. Post-rename
+    // they are unknown values and fall back to the default; they do not alias.
+    expect(parseBackend("opencode")).toBe(DEFAULT_BACKEND);
+    expect(parseBackend("reasonix")).toBe(DEFAULT_BACKEND);
   });
 });
 
@@ -83,15 +94,15 @@ describe("parseMaxTokens", () => {
 });
 
 describe("resolveBackend", () => {
-  it("resolves the default backend (opencode) from config — no API key", async () => {
+  it("resolves the default backend (workers-ai) from config — no API key", async () => {
     const store = {
-      [BACKEND_KEYS.opencode.modelKey]:
+      [BACKEND_KEYS["workers-ai"].modelKey]:
         "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
-    expect(resolved.backend).toBe("opencode");
+    expect(resolved.backend).toBe("workers-ai");
     expect(resolved.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
-    // opencode defaults to the tool-calling path.
+    // workers-ai defaults to the tool-calling path.
     expect(resolved.mode).toBe("tools");
     // Catalog models get a catalog-context-sized diff cap.
     expect(resolved.maxDiffChars).toBe(60_000);
@@ -99,54 +110,55 @@ describe("resolveBackend", () => {
 
   it("honours a CONFIG_KV maxDiffChars override (big-context catalog model)", async () => {
     const store = {
-      [BACKEND_KEYS.opencode.modelKey]: "@cf/zai-org/glm-5.2",
-      [BACKEND_KEYS.opencode.maxDiffCharsKey]: "100000",
+      [BACKEND_KEYS["workers-ai"].modelKey]: "@cf/zai-org/glm-5.2",
+      [BACKEND_KEYS["workers-ai"].maxDiffCharsKey]: "100000",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.maxDiffChars).toBe(100_000);
   });
 
   it("resolves the default token budget and honours a maxTokens override", async () => {
-    const base = { [BACKEND_KEYS.opencode.modelKey]: "@cf/zai-org/glm-5.2" };
+    const base = {
+      [BACKEND_KEYS["workers-ai"].modelKey]: "@cf/zai-org/glm-5.2",
+    };
     const def = await Effect.runPromise(resolveBackend(getter(base)));
-    // Catalog/opencode default — reasoning headroom.
+    // workers-ai default — reasoning headroom.
     expect(def.maxTokens).toBe(8_192);
 
     const overridden = await Effect.runPromise(
       resolveBackend(
-        getter({ ...base, [BACKEND_KEYS.opencode.maxTokensKey]: "16000" }),
+        getter({ ...base, [BACKEND_KEYS["workers-ai"].maxTokensKey]: "16000" }),
       ),
     );
     expect(overridden.maxTokens).toBe(16_000);
   });
 
-  it("resolves the reasonix backend", async () => {
+  it("resolves a reasoning model (workers-ai + mode=json, @cf distill)", async () => {
     const store = {
-      "pr-review.backend": "reasonix",
-      [BACKEND_KEYS.reasonix.modelKey]:
+      [BACKEND_KEYS["workers-ai"].modelKey]:
         "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+      [BACKEND_KEYS["workers-ai"].modeKey]: "json",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
-    expect(resolved.backend).toBe("reasonix");
+    expect(resolved.backend).toBe("workers-ai");
     expect(resolved.model).toBe(
       "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
     );
-    // reasonix defaults to json mode (DeepSeek doesn't honour tool-calls).
+    // Pinned json — DeepSeek-class models honour no tool-calls.
     expect(resolved.mode).toBe("json");
   });
 
-  it("resolves the reasonix backend pointed at the real hosted DeepSeek reasoner", async () => {
+  it("resolves the real hosted DeepSeek reasoner (workers-ai + deepseek/ prefix)", async () => {
     // The model id is opaque to the backend resolver — it travels to the
     // modelGateway, where the `deepseek/` prefix selects the universal-endpoint
     // route to the real hosted reasoner (vs the weaker `@cf/...` distill).
     const store = {
-      "pr-review.backend": "reasonix",
-      [BACKEND_KEYS.reasonix.modelKey]: "deepseek/deepseek-reasoner",
+      [BACKEND_KEYS["workers-ai"].modelKey]: "deepseek/deepseek-reasoner",
+      [BACKEND_KEYS["workers-ai"].modeKey]: "json",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
-    expect(resolved.backend).toBe("reasonix");
+    expect(resolved.backend).toBe("workers-ai");
     expect(resolved.model).toBe("deepseek/deepseek-reasoner");
-    // Still json mode — the reasoner emits no tool calls.
     expect(resolved.mode).toBe("json");
   });
 
@@ -166,19 +178,17 @@ describe("resolveBackend", () => {
 
   it("honours an explicit per-backend mode override", async () => {
     const store = {
-      "pr-review.backend": "reasonix",
-      [BACKEND_KEYS.reasonix.modelKey]: "m",
-      [BACKEND_KEYS.reasonix.modeKey]: "tools",
+      [BACKEND_KEYS["workers-ai"].modelKey]: "m",
+      [BACKEND_KEYS["workers-ai"].modeKey]: "json",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
-    expect(resolved.mode).toBe("tools");
+    expect(resolved.mode).toBe("json");
   });
 
   it("falls back to the backend default for an unrecognized mode value", async () => {
     const store = {
-      "pr-review.backend": "opencode",
-      [BACKEND_KEYS.opencode.modelKey]: "m",
-      [BACKEND_KEYS.opencode.modeKey]: "structured",
+      [BACKEND_KEYS["workers-ai"].modelKey]: "m",
+      [BACKEND_KEYS["workers-ai"].modeKey]: "structured",
     };
     const resolved = await Effect.runPromise(resolveBackend(getter(store)));
     expect(resolved.mode).toBe("tools");
@@ -236,24 +246,28 @@ describe("namespaced config (downstream recipe reuse)", () => {
     expect(namespacedKey("spec-drift")("repos")).toBe("spec-drift.repos");
     expect(backendConfigKey("spec-drift")).toBe("spec-drift.backend");
     expect(promptKey("spec-drift")).toBe("spec-drift.prompt");
-    expect(namespacedKeys("ci-triage").opencode.modelKey).toBe(
-      "ci-triage.opencode.model",
+    expect(namespacedKeys("ci-triage")["workers-ai"].modelKey).toBe(
+      "ci-triage.workers-ai.model",
     );
     // The default namespace's keys are unchanged (pr-review compatibility).
-    expect(BACKEND_KEYS.opencode.modelKey).toBe("pr-review.opencode.model");
+    expect(BACKEND_KEYS["workers-ai"].modelKey).toBe(
+      "pr-review.workers-ai.model",
+    );
   });
 
   it("resolveBackend reads the given namespace's keys", async () => {
     const store = {
-      "spec-drift.backend": "reasonix",
-      "spec-drift.reasonix.model": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+      "spec-drift.backend": "workers-ai",
+      "spec-drift.workers-ai.model":
+        "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+      "spec-drift.workers-ai.mode": "json",
       // A pr-review key must NOT leak into the spec-drift resolution.
-      "pr-review.opencode.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "pr-review.workers-ai.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     };
     const resolved = await Effect.runPromise(
       resolveBackend(getter(store), { namespace: "spec-drift" }),
     );
-    expect(resolved.backend).toBe("reasonix");
+    expect(resolved.backend).toBe("workers-ai");
     expect(resolved.model).toBe(
       "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
     );

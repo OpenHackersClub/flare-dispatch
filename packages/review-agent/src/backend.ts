@@ -20,27 +20,36 @@
 // `<namespace>.backend`, `<namespace>.<backend>.model|mode`, `<namespace>.prompt`.
 //
 // The active backend is `config.get("<namespace>.backend")` →
-//   "opencode" | "reasonix" | "anthropic" | "bedrock"   (default "opencode").
+//   "workers-ai" | "anthropic" | "bedrock"   (default "workers-ai").
+//
+// NAMING — these are MODEL-ROUTE labels: each names how a model call is authed
+// and routed, NOT an agentic CLI. There is deliberately NO `opencode` /
+// `reasonix` backend — nothing in this path spawns a coding-agent tool. The
+// review runs IN-WORKER as one structured model call per domain (see engine.ts)
+// with the diff carried in the prompt. The names `opencode` / `reasonix` are
+// reserved for the agent tier, where such a binary is actually spawned in a
+// sandbox (specs/08-self-healing.md, specs/09-agentic-review.md). Calling a
+// model-route "opencode" was a misnomer; this is the rename that fixes it.
 //
 // Each backend is a profile of (model id, output mode), for namespace `pr-review`:
 //
-//   backend "opencode"  (a tool-calling-capable Workers AI model)
-//     CONFIG_KV  pr-review.opencode.model   bare Workers AI model id
-//                                            e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast
-//     CONFIG_KV  pr-review.opencode.mode    "tools" | "json"  (default "tools")
-//
-//   backend "reasonix"  (a reasoning model that doesn't honour tool-calls)
-//     CONFIG_KV  pr-review.reasonix.model   model id — either:
-//                  • a bare Workers AI distill (account-billed, no key):
-//                        @cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+//   backend "workers-ai"  (the Workers AI binding / AI Gateway route — no key)
+//     CONFIG_KV  pr-review.workers-ai.model   model id — either:
+//                  • a bare Workers AI catalog id (account-billed, no key):
+//                        @cf/meta/llama-3.3-70b-instruct-fp8-fast      (tool-calling)
+//                        @cf/deepseek-ai/deepseek-r1-distill-qwen-32b  (reasoning)
 //                  • a `deepseek/`-prefixed hosted reasoner (BYOK via AI
 //                    Gateway — the real, far stronger model):
 //                        deepseek/deepseek-reasoner
-//     CONFIG_KV  pr-review.reasonix.mode    "tools" | "json"  (default "json")
-//     A `deepseek/` model routes via the AI Gateway universal endpoint (like
-//     `anthropic/`): requires AI_GATEWAY_ID on the deploy + a DeepSeek key
-//     stored in that gateway (BYOK). Still no key in config — the gateway
-//     injects it. A bare `@cf/...` model needs neither.
+//     CONFIG_KV  pr-review.workers-ai.mode    "tools" | "json"  (default "tools")
+//       Reasoning models (DeepSeek-R1 distills, `deepseek/…`) honour NO
+//       tool-calls and emit `<think>…</think>` prose — pin `mode: "json"` for
+//       those. A `"tools"`-mode call that returns zero tool calls auto-falls-
+//       back to one json-mode retry, so a mis-set reasoning model still answers.
+//       A `deepseek/` model routes via the AI Gateway universal endpoint (like
+//       `anthropic/`): requires AI_GATEWAY_ID on the deploy + a DeepSeek key
+//       stored in that gateway (BYOK). Still no key in config — the gateway
+//       injects it. A bare `@cf/...` model needs neither.
 //
 //   backend "anthropic" (Claude via the AI Gateway universal endpoint — BYOK)
 //     CONFIG_KV  pr-review.anthropic.model  `anthropic/`-prefixed model id
@@ -74,7 +83,7 @@
 // distills) return NO tool calls and instead emit `<think>…</think>` prose. For
 // those, `mode: "json"` skips tools and asks the model for a strict JSON object
 // the engine parses + Schema-decodes (stripping `<think>` blocks and code fences
-// first). `mode: "tools"` (the default for opencode) sends the `report` tool; if
+// first). `mode: "tools"` (the default for workers-ai) sends the `report` tool; if
 // it comes back with zero tool calls, the engine auto-falls-back to a single
 // json-mode retry.
 //
@@ -84,16 +93,16 @@
 import { Effect, Match } from "effect";
 import { BackendUnconfigured } from "./errors.js";
 
-/** The selectable backends. Default is the first. */
-export const BACKENDS = [
-  "opencode",
-  "reasonix",
-  "anthropic",
-  "bedrock",
-] as const;
+/**
+ * The selectable backends. Default is the first. Each names a model ROUTE, not
+ * an agentic tool — see the CONFIG CONTRACT header on why `opencode`/`reasonix`
+ * are deliberately absent (those names belong to the agent tier that spawns the
+ * real binaries; specs/09-agentic-review.md).
+ */
+export const BACKENDS = ["workers-ai", "anthropic", "bedrock"] as const;
 export type Backend = (typeof BACKENDS)[number];
 
-export const DEFAULT_BACKEND: Backend = "opencode";
+export const DEFAULT_BACKEND: Backend = "workers-ai";
 
 /**
  * How the engine coaxes structured output from the model:
@@ -178,8 +187,8 @@ const ANTHROPIC_MAX_DIFF_CHARS = 240_000;
 const BEDROCK_MAX_DIFF_CHARS = 240_000;
 
 /**
- * Default output-token budgets. Catalog/reasonix get reasoning headroom (these
- * route to Workers AI models that may `<think>` before answering); anthropic /
+ * Default output-token budgets. `workers-ai` gets reasoning headroom (it routes
+ * to Workers AI / DeepSeek models that may `<think>` before answering); anthropic /
  * bedrock answer directly and need less. All are ceilings — overridable per
  * backend via `pr-review.<backend>.maxTokens`.
  */
@@ -198,24 +207,18 @@ const BEDROCK_DEFAULT_REGION = "us-east-1";
 export const namespacedKeys = (
   namespace: string,
 ): Readonly<Record<Backend, BackendKeyDescriptor>> => ({
-  opencode: {
-    modelKey: `${namespace}.opencode.model`,
-    modeKey: `${namespace}.opencode.mode`,
-    maxDiffCharsKey: `${namespace}.opencode.maxDiffChars`,
-    maxTokensKey: `${namespace}.opencode.maxTokens`,
+  "workers-ai": {
+    modelKey: `${namespace}.workers-ai.model`,
+    modeKey: `${namespace}.workers-ai.mode`,
+    maxDiffCharsKey: `${namespace}.workers-ai.maxDiffChars`,
+    maxTokensKey: `${namespace}.workers-ai.maxTokens`,
     defaultMaxTokens: CATALOG_MAX_TOKENS,
+    // Default to tool-calling — the common catalog case. Reasoning models
+    // (DeepSeek-R1 distills, `deepseek/…`) honour no tool-calls; pin
+    // `mode: "json"` for those. A tools-mode call returning zero tool calls
+    // also auto-falls-back to one json retry (see engine.ts), so a mis-set
+    // reasoning model still answers.
     defaultMode: "tools",
-    defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
-  },
-  reasonix: {
-    modelKey: `${namespace}.reasonix.model`,
-    modeKey: `${namespace}.reasonix.mode`,
-    maxDiffCharsKey: `${namespace}.reasonix.maxDiffChars`,
-    maxTokensKey: `${namespace}.reasonix.maxTokens`,
-    defaultMaxTokens: CATALOG_MAX_TOKENS,
-    // DeepSeek-class reasoning models don't honour tool-calls — default them
-    // to json mode (validated against the live Workers AI binding).
-    defaultMode: "json",
     defaultMaxDiffChars: CATALOG_MAX_DIFF_CHARS,
   },
   anthropic: {

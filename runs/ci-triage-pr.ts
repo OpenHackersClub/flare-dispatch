@@ -11,7 +11,7 @@
 // --- Reuse: the SAME review infra as ai-code-review --------------------------
 //
 // The triage model call goes through `@flare-dispatch/review-agent`'s reusable
-// `completeStructured` engine — the `opencode` / `reasonix` backend machinery
+// `completeStructured` engine — the `workers-ai` backend machinery
 // `pr-review` uses, resolved from CONFIG_KV under this run's `ci-triage.*`
 // namespace. No model API key (the Workers AI binding is the auth). Reading the
 // failures uses the `github.actionRuns` + `cloudflare.deployments` read
@@ -24,10 +24,9 @@
 //   CONFIG_KV  ci-triage.report-repo    repo to open the triage PR on (default: first of ci-triage.repos)
 //   CONFIG_KV  ci-triage.base           base branch for the triage PR (default "main")
 //   CONFIG_KV  ci-triage.window-hours   only failures newer than this (default 24)
-//   CONFIG_KV  ci-triage.backend        "opencode" | "reasonix"  (default opencode)
+//   CONFIG_KV  ci-triage.backend        "workers-ai" | "anthropic" | "bedrock"  (default workers-ai)
 //   CONFIG_KV  ci-triage.prompt         (optional) override the triage system prompt
-//   CONFIG_KV  ci-triage.opencode.model bare Workers AI model id   (+ .opencode.mode)
-//   CONFIG_KV  ci-triage.reasonix.model bare Workers AI model id   (+ .reasonix.mode)
+//   CONFIG_KV  ci-triage.workers-ai.model  model id — catalog id or `deepseek/` reasoner (+ .workers-ai.mode "tools"|"json", default "tools")
 //
 // Mode: Schedule mode — specs/04-gha-integration.md § Schedule mode. The cron
 // MUST also be in wrangler.jsonc `triggers.crons`.

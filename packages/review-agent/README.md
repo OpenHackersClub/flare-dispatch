@@ -61,8 +61,8 @@ env.AI.run(model, { messages: [{role:"system",…},{role:"user",…}], tools? },
 
 Reasoning models (e.g. DeepSeek-R1 distills) return **no** tool calls and emit `<think>…</think>` prose, so tool-calling fails for them. Each backend resolves a `mode`:
 
-- **`tools`** (opencode default) — sends the `report` tool, Schema-validates its args. If it returns zero tool calls, the engine **auto-retries once in `json` mode**.
-- **`json`** (reasonix default) — no tools; the model returns a strict JSON object that the engine strips/parses/Schema-decodes. A parse/decode failure raises `StructuredOutputInvalid`.
+- **`tools`** (the `workers-ai` default) — sends the `report` tool, Schema-validates its args. If it returns zero tool calls, the engine **auto-retries once in `json` mode**.
+- **`json`** (pin this for reasoning models) — no tools; the model returns a strict JSON object that the engine strips/parses/Schema-decodes. A parse/decode failure raises `StructuredOutputInvalid`.
 
 The mode applies to **`completeStructured`** (and so to `reviewDomain` and the recipes built on it). Coordination is deterministic code — `coordinate` makes no model call, so it has no mode and can never raise `StructuredOutputInvalid`.
 
@@ -72,14 +72,13 @@ The config contract is **namespaced** so each consumer owns its keys: `pr-review
 is the default namespace; the `spec-drift-pr` / `ci-triage-pr` runs resolve the
 same machinery under `spec-drift.*` / `ci-triage.*` via
 `resolveBackend(get, { namespace })`. For a namespace `<ns>`, the active backend
-is `config.get("<ns>.backend")` → `opencode` (default) or `reasonix`. Each is a
-profile resolved from CONFIG_KV — **no API key, the Workers AI binding is the
-auth** (shown here for `pr-review`):
+is `config.get("<ns>.backend")` → `workers-ai` (default), `anthropic`, or
+`bedrock`. Each names a model ROUTE (not an agentic tool) resolved from CONFIG_KV
+— **no API key, the Workers AI binding is the auth** (shown here for `pr-review`):
 
 | Backend | CONFIG_KV keys |
 |---|---|
-| `opencode` (a tool-calling-capable Workers AI model) | `pr-review.opencode.model` (bare `@cf/...`), `pr-review.opencode.mode` (default `tools`) |
-| `reasonix` (a reasoning model that ignores tool-calls) | `pr-review.reasonix.model` (bare `@cf/...` distill, **or** a `deepseek/`-prefixed hosted reasoner like `deepseek/deepseek-reasoner` — BYOK via AI Gateway), `pr-review.reasonix.mode` (default `json`) |
+| `workers-ai` (the Workers AI binding / AI Gateway route) | `pr-review.workers-ai.model` (a bare `@cf/...` catalog id, **or** a `deepseek/`-prefixed hosted reasoner like `deepseek/deepseek-reasoner` — BYOK via AI Gateway), `pr-review.workers-ai.mode` (default `tools`; pin `json` for reasoning models) |
 
 `pr-review.prompt` optionally REPLACES the per-domain reviewer system prompt;
 otherwise the engine's generic default is used (no project-specific rubric is

@@ -71,7 +71,7 @@ const triage = (): ModelCompletionResult => ({
 const config = {
   "ci-triage.repos": "owner/name",
   "ci-triage.projects": "site",
-  "ci-triage.opencode.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "ci-triage.workers-ai.model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 };
 
 describe("ci-triage-pr", () => {

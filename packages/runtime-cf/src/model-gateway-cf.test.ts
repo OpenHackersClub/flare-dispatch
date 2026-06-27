@@ -330,7 +330,7 @@ describe("makeModelGatewayLive — deepseek universal route", () => {
       maxTokens: 1024,
     });
 
-    // json-mode (reasonix default): answer comes back as `text`, no tool calls.
+    // json-mode (reasoning models): answer comes back as `text`, no tool calls.
     expect(result.text).toBe('{"findings":[]}');
     expect(result.toolCalls).toEqual([]);
     // usage maps onto the token fields.

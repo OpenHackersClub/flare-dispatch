@@ -13,8 +13,8 @@
 // --- Reuse: the SAME review infra as ai-code-review --------------------------
 //
 // The model call goes through `@flare-dispatch/review-agent`'s reusable
-// `completeStructured` engine — the very `opencode` / `reasonix` backend
-// machinery `pr-review` uses (tools/json + auto-fallback + Schema-validated
+// `completeStructured` engine — the very `workers-ai` backend machinery
+// `pr-review` uses (tools/json + auto-fallback + Schema-validated
 // output), resolved from CONFIG_KV. No model API key: the Workers AI binding is
 // the auth. The detection runs IN THE WORKER; the ONE container image is used
 // only for `git` (checkout + reading specs/tree).
@@ -23,12 +23,10 @@
 //
 //   CONFIG_KV  spec-drift.repos           comma/space-separated `owner/name` list to scan (required)
 //   CONFIG_KV  spec-drift.base            base branch to scan + open PRs against (default "main")
-//   CONFIG_KV  spec-drift.backend         "opencode" | "reasonix"  (default opencode)
+//   CONFIG_KV  spec-drift.backend         "workers-ai" | "anthropic" | "bedrock"  (default workers-ai)
 //   CONFIG_KV  spec-drift.prompt          (optional) override the drift-detection system prompt
-//   CONFIG_KV  spec-drift.opencode.model  bare Workers AI model id
-//   CONFIG_KV  spec-drift.opencode.mode   "tools" | "json"  (default "tools")
-//   CONFIG_KV  spec-drift.reasonix.model  bare Workers AI model id
-//   CONFIG_KV  spec-drift.reasonix.mode   "tools" | "json"  (default "json")
+//   CONFIG_KV  spec-drift.workers-ai.model  model id — bare Workers AI catalog id, or a `deepseek/` reasoner (BYOK via AI Gateway)
+//   CONFIG_KV  spec-drift.workers-ai.mode   "tools" | "json"  (default "tools"; pin "json" for reasoning models)
 //
 // Mode: Schedule mode — specs/04-gha-integration.md § Schedule mode. The cron
 // MUST also be in wrangler.jsonc `triggers.crons`.

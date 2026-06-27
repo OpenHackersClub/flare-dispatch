@@ -31,10 +31,9 @@
 //   CONFIG_KV  finops.base            base branch (default "main")
 //   CONFIG_KV  finops.window-hours    usage window (default 168 = 7 days)
 //   CONFIG_KV  finops.projects        (optional) Pages projects to flag failed deploys on
-//   CONFIG_KV  finops.backend         "opencode" | "reasonix"  (default opencode)
+//   CONFIG_KV  finops.backend         "workers-ai" | "anthropic" | "bedrock"  (default workers-ai)
 //   CONFIG_KV  finops.prompt          (optional) override the analysis system prompt
-//   CONFIG_KV  finops.opencode.model  bare Workers AI model id   (+ .opencode.mode)
-//   CONFIG_KV  finops.reasonix.model  bare Workers AI model id   (+ .reasonix.mode)
+//   CONFIG_KV  finops.workers-ai.model  model id — catalog id or `deepseek/` reasoner (+ .workers-ai.mode "tools"|"json", default "tools")
 //
 // Mode: Schedule mode — the cron MUST also be in wrangler.jsonc `triggers.crons`.
 

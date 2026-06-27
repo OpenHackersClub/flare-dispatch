@@ -19,9 +19,10 @@
 // preserved: the gateway holds the provider key (BYOK / stored keys) and
 // injects it upstream; the Worker authenticates by being in-account. DeepSeek
 // is the home of the strongest open reasoning models (DeepSeek-R1 /
-// `deepseek-reasoner`); routing it here lets the `reasonix` backend target the
-// real hosted reasoner — `deepseek/deepseek-reasoner` — instead of the weaker
-// Workers AI catalog distill (`@cf/deepseek-ai/...`), same no-secret property.
+// `deepseek-reasoner`); routing it here lets a `workers-ai` backend (json mode)
+// target the real hosted reasoner — `deepseek/deepseek-reasoner` — instead of
+// the weaker Workers AI catalog distill (`@cf/deepseek-ai/...`), same no-secret
+// property.
 //
 // The Bedrock route is different: AWS InvokeModel requires a SigV4-signed
 // request, and Workers AI doesn't currently expose a `bedrock` provider on the
@@ -68,9 +69,9 @@
 // string vs an object). `deepseek-reasoner` emits its chain-of-thought on a
 // separate `reasoning_content` field — NOT inside `content` — so the engine's
 // json-mode `text` is already the clean answer; the `<think>` stripper is a
-// harmless backstop. The `reasonix` backend defaults to json mode (no tools),
-// matching the reasoner's "no function calling" reality; the tool-call mapping
-// is there so a future `deepseek-chat` tools-mode call works.
+// harmless backstop. Reasoning models run as `workers-ai` in json mode (no
+// tools), matching the reasoner's "no function calling" reality; the tool-call
+// mapping is there so a future `deepseek-chat` tools-mode call works.
 //
 // --- Locally-typed binding surface -------------------------------------------
 //
@@ -490,8 +491,8 @@ const deepseekBody = (
           },
         })),
         // Forced tool use — the OpenAI-shape equivalent of Anthropic's
-        // `tool_choice: {type:"any"}`. (deepseek-reasoner ignores tools; the
-        // `reasonix` backend uses json mode so this branch is dormant there.)
+        // `tool_choice: {type:"any"}`. (deepseek-reasoner ignores tools; a
+        // json-mode `workers-ai` review never reaches this branch.)
         tool_choice: "required",
       }
     : {}),

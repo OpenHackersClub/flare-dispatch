@@ -308,7 +308,7 @@ const baseRecipes: RecipeBase[] = [
       "Daily spec/implementation drift detection — files the reconciling spec edits as a draft PR",
     mode: "Schedule",
     blurb:
-      "A daily Cron Trigger scans each configured repo for drift between specs/ and the implementation, asks the same configurable opencode/reasonix backend ai-code-review uses (under its own spec-drift.* CONFIG_KV namespace), and commits the proposed spec edits via the GitHub Git Data API — straight from the Worker, no container git push — as a draft PR a human reviews.",
+      "A daily Cron Trigger scans each configured repo for drift between specs/ and the implementation, asks the same configurable workers-ai backend ai-code-review uses (under its own spec-drift.* CONFIG_KV namespace), and commits the proposed spec edits via the GitHub Git Data API — straight from the Worker, no container git push — as a draft PR a human reviews.",
     files: [{ name: "spec-drift-pr.run.ts", lang: "ts" }],
     hasReadme: true,
   },

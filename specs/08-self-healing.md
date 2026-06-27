@@ -956,7 +956,7 @@ flag + a webhook URL. The dispatcher never learns the vendor's API.
 
 ```
 self-heal.repos              repos eligible for self-heal (allowlist; required)
-self-heal.backend            opencode | reasonix | anthropic | bedrock
+self-heal.backend            workers-ai | anthropic | bedrock
 self-heal.<backend>.model    model id (+ .mode)               (resolveBackend)
 self-heal.max-iterations     agent loop cap                   (default 4)
 self-heal.token-budget       hard token cap per heal          (default 200k; see note)
@@ -1016,8 +1016,10 @@ untrusted-input hardening (#5). Numbers reference [§ 10.1](#101-adversarial-tel
 
 ### Open questions
 
-1. **Agent runtime default.** opencode (already a backend name), Claude Code, or a
-   bespoke Effect CLI like `demo-agent`? The `agent/v1` contract makes it
+1. **Agent runtime default.** opencode, Claude Code, or a
+   bespoke Effect CLI like `demo-agent`? (`opencode`/`reasonix` are no longer
+   model-route backend names — those collapsed to `workers-ai` — so the name is
+   free to mean the actual coding-agent CLI here.) The `agent/v1` contract makes it
    swappable, but V0 needs one default. *Recommendation: a thin Effect CLI driving
    the model-proxy, so the loop/iteration/budget controls live in our code, not the
    agent's.*
