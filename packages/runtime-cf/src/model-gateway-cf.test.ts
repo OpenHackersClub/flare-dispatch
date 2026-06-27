@@ -16,7 +16,22 @@ import { type AiBinding, makeModelGatewayLive } from "./model-gateway-cf";
 
 /** A recording `Ai` stub returning a fixed output. */
 const stubAi = (
-  output: { response?: string; tool_calls?: Array<{ name: string; arguments: unknown }> },
+  output: {
+    response?: string;
+    tool_calls?: Array<{ name: string; arguments: unknown }>;
+    // The chat-completion shape some catalog models (glm-*) return INSTEAD of a
+    // top-level `response` — `choices[0].message.{content, tool_calls}`.
+    choices?: Array<{
+      message?: {
+        content?: string | null;
+        tool_calls?: Array<{
+          name?: string;
+          arguments?: unknown;
+          function?: { name?: string; arguments?: unknown };
+        }>;
+      };
+    }>;
+  },
 ): {
   ai: AiBinding;
   seen: { model?: string; inputs?: unknown; options?: unknown };
@@ -172,6 +187,63 @@ describe("makeModelGatewayLive", () => {
       user: "u",
     });
     expect(result.text).toBe("");
+  });
+
+  it("reads the chat-completion `choices[].message.content` when there is no top-level `response` (the glm shape)", async () => {
+    // glm-4.7-flash returns ONLY the chat-completion shape — `choices[0].message
+    // .content` with NO top-level `response`. Reading `response` alone dropped
+    // its answer to "" → `StructuredOutputInvalid: empty` on every reviewer.
+    // Confirmed against the live Workers AI API: glm has no `response` field,
+    // llama has both. The route must read `content` as the fallback.
+    const { ai } = stubAi({
+      choices: [{ message: { content: '{"findings":[]}' } }],
+    });
+    const result = await run(ai, undefined, {
+      model: "@cf/zai-org/glm-4.7-flash",
+      system: "s",
+      user: "u",
+    });
+    expect(result.text).toBe('{"findings":[]}');
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it("reads chat-completion tool calls (OpenAI `function`-nested) from `choices`", async () => {
+    const { ai } = stubAi({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              { function: { name: "report", arguments: '{"findings":[]}' } },
+            ],
+          },
+        },
+      ],
+    });
+    const result = await run(ai, undefined, {
+      model: "@cf/zai-org/glm-4.7-flash",
+      system: "s",
+      user: "u",
+      tools: [{ name: "report", description: "d", parameters: { type: "object" } }],
+    });
+    expect(result.toolCalls).toEqual([
+      { name: "report", arguments: '{"findings":[]}' },
+    ]);
+  });
+
+  it("prefers the legacy top-level `response` when both shapes are present (llama)", async () => {
+    // llama-3.3 returns BOTH `response` and `choices`; the legacy field wins so
+    // existing behaviour is byte-identical.
+    const { ai } = stubAi({
+      response: "legacy text",
+      choices: [{ message: { content: "choices text" } }],
+    });
+    const result = await run(ai, undefined, {
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      system: "s",
+      user: "u",
+    });
+    expect(result.text).toBe("legacy text");
   });
 });
 
