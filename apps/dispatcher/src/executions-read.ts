@@ -24,6 +24,15 @@ export type ExecutionRow = {
   readonly input_json: string;
   readonly summary_json: string | null;
   readonly check_run_id: number | null;
+  // --- Cost rollup (infra/migrations/0005; written at finishExecution) --------
+  // All nullable: pre-0005 rows, still-running executions, and deploys without
+  // the cost path leave these NULL.
+  readonly cost_micro_usd: number | null;
+  readonly cost_basis: string | null;
+  readonly input_tokens: number | null;
+  readonly output_tokens: number | null;
+  readonly vcpu_seconds: number | null;
+  readonly model: string | null;
 };
 
 /** One row of the `steps` table. */
@@ -115,4 +124,142 @@ export const getSteps = async (
     .bind(executionId)
     .all<StepRow>();
   return results ?? [];
+};
+
+// ---------------------------------------------------------------------------
+// Analytics — per-recipe speed + cost aggregate (the `/v1/analytics.json` feed).
+// ---------------------------------------------------------------------------
+
+/** The minimal finished-execution shape the aggregate needs. */
+export type AnalyticsInputRow = {
+  readonly run: string;
+  readonly status: string;
+  readonly started_at: number | null;
+  readonly completed_at: number | null;
+  readonly cost_micro_usd: number | null;
+  readonly cost_basis: string | null;
+};
+
+/** One recipe's MEASURED rollup over recent finished executions. */
+export type RunAnalytics = {
+  readonly run: string;
+  /** Finished executions sampled. */
+  readonly count: number;
+  /** Fraction in [0,1] that ended `success`. */
+  readonly successRate: number;
+  /** Median wall-time, ms (null if no timed samples). */
+  readonly p50DurationMs: number | null;
+  /** 95th-percentile wall-time, ms (null if no timed samples). */
+  readonly p95DurationMs: number | null;
+  /** Mean cost over executions that carry a cost rollup, µ$ (null if none). */
+  readonly avgCostMicroUsd: number | null;
+  /** Summed cost over executions that carry a rollup, µ$. */
+  readonly totalCostMicroUsd: number;
+  /** How many sampled executions carry a cost rollup. */
+  readonly costSamples: number;
+  /** Dominant `cost_basis` across the cost samples (metered|mixed|modeled|…). */
+  readonly basis: string | null;
+};
+
+/** Nearest-rank percentile over a numeric sample (p in [0,1]). */
+const percentile = (sortedAsc: readonly number[], p: number): number | null => {
+  if (sortedAsc.length === 0) return null;
+  const rank = Math.ceil(p * sortedAsc.length);
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, rank - 1));
+  return sortedAsc[idx]!;
+};
+
+/**
+ * Pure per-run aggregation — kept separate from the D1 read so it is unit-
+ * testable. Groups finished executions by `run`, computes success rate, p50/p95
+ * wall-time, and average/total cost (over rows that carry a rollup), and picks
+ * the dominant cost basis so the surface can label metered vs modeled honestly.
+ */
+export const summarizeRuns = (
+  rows: readonly AnalyticsInputRow[],
+): RunAnalytics[] => {
+  type Acc = {
+    durations: number[];
+    count: number;
+    successes: number;
+    costTotal: number;
+    costSamples: number;
+    basisCounts: Map<string, number>;
+  };
+  const byRun = new Map<string, Acc>();
+  for (const r of rows) {
+    let a = byRun.get(r.run);
+    if (a === undefined) {
+      a = {
+        durations: [],
+        count: 0,
+        successes: 0,
+        costTotal: 0,
+        costSamples: 0,
+        basisCounts: new Map(),
+      };
+      byRun.set(r.run, a);
+    }
+    a.count += 1;
+    if (r.status === "success") a.successes += 1;
+    if (r.started_at !== null && r.completed_at !== null && r.completed_at > r.started_at) {
+      a.durations.push(r.completed_at - r.started_at);
+    }
+    if (r.cost_micro_usd !== null) {
+      a.costTotal += r.cost_micro_usd;
+      a.costSamples += 1;
+      const b = r.cost_basis ?? "modeled";
+      a.basisCounts.set(b, (a.basisCounts.get(b) ?? 0) + 1);
+    }
+  }
+
+  const out: RunAnalytics[] = [];
+  for (const [run, a] of byRun) {
+    const sorted = [...a.durations].sort((x, y) => x - y);
+    let basis: string | null = null;
+    let best = -1;
+    for (const [b, n] of a.basisCounts) {
+      if (n > best) {
+        best = n;
+        basis = b;
+      }
+    }
+    out.push({
+      run,
+      count: a.count,
+      successRate: a.count > 0 ? a.successes / a.count : 0,
+      p50DurationMs: percentile(sorted, 0.5),
+      p95DurationMs: percentile(sorted, 0.95),
+      avgCostMicroUsd:
+        a.costSamples > 0 ? Math.round(a.costTotal / a.costSamples) : null,
+      totalCostMicroUsd: a.costTotal,
+      costSamples: a.costSamples,
+      basis,
+    });
+  }
+  // Busiest recipes first.
+  out.sort((x, y) => y.count - x.count);
+  return out;
+};
+
+/**
+ * MEASURED per-recipe analytics over the most recent `limit` finished
+ * executions. Bounded by `limit` (newest-first) so the aggregate is a cheap
+ * single scan, not an unbounded table sweep.
+ */
+export const aggregateByRun = async (
+  db: D1Database,
+  limit: number,
+): Promise<RunAnalytics[]> => {
+  const { results } = await db
+    .prepare(
+      `SELECT run, status, started_at, completed_at, cost_micro_usd, cost_basis
+         FROM executions
+        WHERE completed_at IS NOT NULL
+        ORDER BY started_at DESC
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<AnalyticsInputRow>();
+  return summarizeRuns(results ?? []);
 };

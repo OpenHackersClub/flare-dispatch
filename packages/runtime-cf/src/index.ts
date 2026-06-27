@@ -80,7 +80,12 @@ export {
 export {
   makeModelGatewayLive,
   type AiBinding,
+  type ModelUsageSink,
 } from "./model-gateway-cf";
+export {
+  recordExecutionCost,
+  instanceForSandboxImage,
+} from "./execution-cost";
 export {
   BrowserDeferred,
   ChildRunsDeferred,

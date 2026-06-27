@@ -65,12 +65,14 @@ import {
   type ChecksGithubConfig,
   describeOutcome,
   type EmailCloudflareConfig,
+  instanceForSandboxImage,
   LEASE_HEARTBEAT_EVERY_MS,
   makeCFRuntimeLive,
   makeContainerLeaseD1,
   makeRunAdmissionD1,
   makeWritebackTokenMinter,
   previewSafeSandboxId,
+  recordExecutionCost,
   resolveAdmissionCap,
   runWriteback,
   type WritebackOutcome,
@@ -838,6 +840,17 @@ export class RunWorkflow extends WorkflowEntrypoint<Env> {
         completedAt,
         status,
         ...(summaryJson !== undefined ? { summaryJson } : {}),
+      });
+
+      // Per-execution cost rollup — METERED model tokens (summed from
+      // `execution_model_usage`, written by the modelGateway wrapper) + MODELED
+      // container compute (instance × wall-time). Runs AFTER finishExecution so
+      // the wall-time it reads is complete. Best-effort: a cost failure logs and
+      // never flips the verdict (recordExecutionCost absorbs its own errors).
+      yield* recordExecutionCost({
+        db,
+        executionId: payload.executionId,
+        instance: instanceForSandboxImage(run.sandboxImage),
       });
 
       // --- Post-run writeback (the Worker proposes the diff as a PR) --------

@@ -97,6 +97,35 @@ tr:hover td {
   margin-right: 0.75rem;
 }
 
+/* Cost cell — monospace figure + a small metered/modeled basis chip. */
+.cost {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.cost .basis {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: #232a37;
+  color: #8a93a5;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Section header with an inline sub-navigation link (Executions ↔ Analytics). */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.subnav {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 /* Clickable row → execution detail. The run cell's link carries a stretched
    ::after that turns the whole <tr> into the hit target; the explicit View
    links sit above it. */

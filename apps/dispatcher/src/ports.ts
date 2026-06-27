@@ -24,11 +24,13 @@ import { Context, Effect, Layer, Option } from "effect";
 import { gateViewerAccess } from "./access-auth";
 import type { Env } from "./env";
 import {
+  aggregateByRun,
   getExecution,
   getSteps,
   listExecutions,
   type ExecutionRow,
   type ListFilters,
+  type RunAnalytics,
   type StepRow,
 } from "./executions-read";
 import {
@@ -88,6 +90,11 @@ export interface ExecutionsReadService {
   ) => Effect.Effect<ReadonlyArray<ExecutionRow>>;
   readonly get: (id: string) => Effect.Effect<Option.Option<ExecutionRow>>;
   readonly steps: (id: string) => Effect.Effect<ReadonlyArray<StepRow>>;
+  /** MEASURED per-recipe speed+cost aggregate over the last `limit` finished
+   *  executions (the `/v1/analytics.json` feed). */
+  readonly aggregate: (
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<RunAnalytics>>;
 }
 
 export class ExecutionsRead extends Context.Tag("dispatcher/ExecutionsRead")<
@@ -107,6 +114,7 @@ export const ExecutionsReadLive = Layer.effect(
           Effect.map(Option.fromNullable),
         ),
       steps: (id) => Effect.promise(() => getSteps(db, id)),
+      aggregate: (limit) => Effect.promise(() => aggregateByRun(db, limit)),
     });
   }),
 );

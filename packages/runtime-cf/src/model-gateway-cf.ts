@@ -771,21 +771,76 @@ const completeBedrock = (
  *                             an authenticated gateway must allow first-party
  *                             Workers AI binding traffic.
  */
+/**
+ * Where the gateway records per-call token usage for cost attribution — the D1
+ * binding + this execution's id (see infra/migrations/0005_execution_cost.sql).
+ * `undefined` (a deploy with no D1, or a non-execution caller) disables metering;
+ * the model call is otherwise identical.
+ */
+export type ModelUsageSink = {
+  readonly db: D1Database;
+  readonly executionId: string;
+};
+
+/**
+ * Best-effort write of one model call's token usage to `execution_model_usage`.
+ * Upsert-SUM on the deterministic PK `${executionId}:${model}` so a fan-out's
+ * many same-model calls accumulate and a Workflow resume (memoized step → body
+ * not re-run) doesn't double-count. `metered = 1` only when the backend returned
+ * a usage block (Anthropic/Bedrock/DeepSeek); Workers AI catalog leaves tokens 0
+ * and metered 0. NEVER fails the model call — a metering error is swallowed.
+ */
+const recordModelUsage = (
+  sink: ModelUsageSink,
+  model: string,
+  result: ModelCompletionResult,
+): Effect.Effect<void> =>
+  Effect.tryPromise(() => {
+    const inTok = result.inputTokens ?? 0;
+    const outTok = result.outputTokens ?? 0;
+    const metered =
+      result.inputTokens !== undefined || result.outputTokens !== undefined ? 1 : 0;
+    return sink.db
+      .prepare(
+        `INSERT INTO execution_model_usage
+           (id, execution_id, model, input_tokens, output_tokens, calls, metered, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           input_tokens  = input_tokens  + excluded.input_tokens,
+           output_tokens = output_tokens + excluded.output_tokens,
+           calls         = calls + 1,
+           metered       = MAX(metered, excluded.metered),
+           updated_at    = excluded.updated_at`,
+      )
+      .bind(`${sink.executionId}:${model}`, sink.executionId, model, inTok, outTok, metered, Date.now())
+      .run();
+  }).pipe(Effect.ignore);
+
 export const makeModelGatewayLive = (
   ai: AiBinding,
   gatewayId: string | undefined,
   cloudflareAccountId?: string,
   gatewayAuthToken?: string,
+  usageSink?: ModelUsageSink,
 ): Layer.Layer<ModelGateway> => {
+  const route = (req: ModelCompletionRequest) =>
+    req.model.startsWith(BEDROCK_PREFIX)
+      ? completeBedrock(cloudflareAccountId, gatewayId, gatewayAuthToken, req)
+      : req.model.startsWith(ANTHROPIC_PREFIX)
+        ? completeAnthropic(ai, gatewayId, gatewayAuthToken, req)
+        : req.model.startsWith(DEEPSEEK_PREFIX)
+          ? completeDeepSeek(ai, gatewayId, gatewayAuthToken, req)
+          : completeWorkersAi(ai, gatewayId, req);
+
   const service: ModelGatewayService = {
     complete: (req) =>
-      req.model.startsWith(BEDROCK_PREFIX)
-        ? completeBedrock(cloudflareAccountId, gatewayId, gatewayAuthToken, req)
-        : req.model.startsWith(ANTHROPIC_PREFIX)
-          ? completeAnthropic(ai, gatewayId, gatewayAuthToken, req)
-          : req.model.startsWith(DEEPSEEK_PREFIX)
-            ? completeDeepSeek(ai, gatewayId, gatewayAuthToken, req)
-            : completeWorkersAi(ai, gatewayId, req),
+      usageSink === undefined
+        ? route(req)
+        : route(req).pipe(
+            // Record usage on success only; the write is best-effort and must
+            // never delay or fail the review (Effect.ignore inside recordModelUsage).
+            Effect.tap((result) => recordModelUsage(usageSink, req.model, result)),
+          ),
   };
 
   return Layer.succeed(ModelGateway, service);
