@@ -22,3 +22,23 @@ export const workflowDashboardUrl = (
   accountId !== undefined && accountId.length > 0
     ? `https://dash.cloudflare.com/${accountId}/workers/workflows/${WORKFLOWS_DASHBOARD_NAME}/instance/${encodeURIComponent(executionId)}`
     : undefined;
+
+/**
+ * Deep-link to this deploy's AI Gateway analytics in the Cloudflare dashboard —
+ * the detailed per-request token / cost / cache / latency view, by model and
+ * provider, that complements our coarse per-recipe aggregate. The model-calling
+ * runs route through this gateway (`AI_GATEWAY_ID`), so its analytics ARE the
+ * detailed cost picture. `undefined` when the account id or gateway id is not
+ * configured (no gateway → no link). Account-scoped path, matching the documented
+ * `/:account/ai/ai-gateway` dashboard route.
+ */
+export const aiGatewayAnalyticsUrl = (
+  accountId: string | undefined,
+  gatewayId: string | undefined,
+): string | undefined =>
+  accountId !== undefined &&
+  accountId.length > 0 &&
+  gatewayId !== undefined &&
+  gatewayId.length > 0
+    ? `https://dash.cloudflare.com/${accountId}/ai/ai-gateway/${encodeURIComponent(gatewayId)}`
+    : undefined;

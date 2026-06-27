@@ -32,6 +32,7 @@ import {
 import { Context, Effect, Option } from "effect";
 
 import { CurrentEnv, ExecutionsRead, LogToken, portsLayer, Access } from "./ports";
+import { aiGatewayAnalyticsUrl } from "./dashboard-url";
 import { renderDashboard, type DashboardRow } from "./dashboard";
 import type { Env } from "./env";
 import { handleAdminEvent } from "./routes/admin-events";
@@ -339,8 +340,13 @@ const analyticsJsonRoute = Effect.gen(function* () {
 
   const reads = yield* ExecutionsRead;
   const runs = yield* reads.aggregate(ANALYTICS_SAMPLE);
+  // Deep-link to this deploy's AI Gateway analytics — the detailed per-request
+  // token/cost/latency view that backs our coarse per-recipe aggregate.
+  const env = yield* CurrentEnv;
+  const aiGatewayUrl =
+    aiGatewayAnalyticsUrl(env.CLOUDFLARE_ACCOUNT_ID, env.AI_GATEWAY_ID) ?? null;
   return HttpServerResponse.raw(
-    JSON.stringify({ repoSlug: REPO_SLUG, sampled: ANALYTICS_SAMPLE, runs }),
+    JSON.stringify({ repoSlug: REPO_SLUG, sampled: ANALYTICS_SAMPLE, runs, aiGatewayUrl }),
     { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
   );
 });

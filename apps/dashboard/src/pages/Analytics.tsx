@@ -44,7 +44,7 @@ export function Analytics() {
     );
   }
 
-  const { runs, sampled } = state.feed;
+  const { runs, sampled, aiGatewayUrl } = state.feed;
 
   return (
     <>
@@ -60,6 +60,16 @@ export function Analytics() {
         <strong>modeled</strong> (instance × wall-time) for container compute — hover a
         cost for its basis.
       </p>
+      {aiGatewayUrl !== null && (
+        <p className="muted">
+          For the detailed per-request token, cost, cache, and latency breakdown by
+          model and provider, see{" "}
+          <a href={aiGatewayUrl} target="_blank" rel="noreferrer noopener">
+            this deploy&rsquo;s Cloudflare AI Gateway analytics ↗
+          </a>
+          .
+        </p>
+      )}
       {runs.length === 0 ? (
         <p className="empty">No finished executions to analyse yet.</p>
       ) : (

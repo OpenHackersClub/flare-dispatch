@@ -49,6 +49,9 @@ export interface AnalyticsFeed {
   /** How many recent finished executions the aggregate sampled. */
   readonly sampled: number;
   readonly runs: readonly RunAnalytics[];
+  /** Deep-link to this deploy's Cloudflare AI Gateway analytics (the detailed
+   *  per-request token/cost/latency view), or `null` if no gateway is configured. */
+  readonly aiGatewayUrl: string | null;
 }
 
 /**
