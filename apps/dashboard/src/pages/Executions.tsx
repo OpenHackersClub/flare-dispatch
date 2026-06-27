@@ -50,6 +50,15 @@ export function Executions({ feed }: { readonly feed: DashboardFeed }) {
               </td>
               <td className="run">
                 <Link to={`/executions/${encodeURIComponent(row.id)}`}>{row.run}</Link>
+                {row.selfHealPrUrl !== null && (
+                  <a
+                    className="badge selfheal"
+                    href={row.selfHealPrUrl}
+                    title="View flare-dispatch self-heal fix PRs"
+                  >
+                    🩹 self-heal
+                  </a>
+                )}
               </td>
               <td>
                 <span className="repo">{row.repo}</span>{" "}

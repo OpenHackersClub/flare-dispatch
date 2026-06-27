@@ -26,6 +26,7 @@ const baseRow = (over: Partial<DashboardRow>): DashboardRow => ({
   costBasis: null,
   logsUrl: null,
   demosUrl: null,
+  selfHealPrUrl: null,
   ...over,
 });
 
@@ -77,6 +78,28 @@ describe("renderDashboard", () => {
     const html = renderDashboard(data([baseRow({ run: "offload-test", logsUrl: null })]));
     expect(html).not.toContain('class="rowlink"');
     expect(html).toContain("offload-test");
+  });
+
+  it("renders the self-heal tag linking to the fix PRs when set", () => {
+    const html = renderDashboard(
+      data([
+        baseRow({
+          run: "self-heal-pr",
+          selfHealPrUrl: "https://github.com/owner/repo/pulls?q=is%3Apr%20label%3Aself-heal",
+        }),
+      ]),
+    );
+    expect(html).toContain("🩹 self-heal");
+    expect(html).toContain('class="badge selfheal"');
+    expect(html).toContain('href="https://github.com/owner/repo/pulls?q=is%3Apr%20label%3Aself-heal"');
+  });
+
+  it("omits the self-heal tag when no fix PR was opened", () => {
+    // The run NAME is "self-heal-pr" (so "self-heal" is present); assert the
+    // tag pill itself is absent.
+    const html = renderDashboard(data([baseRow({ run: "self-heal-pr", selfHealPrUrl: null })]));
+    expect(html).not.toContain("🩹");
+    expect(html).not.toContain("badge selfheal");
   });
 
   it("escapes HTML in execution fields", () => {
@@ -218,12 +241,49 @@ describe("GET /v1/dashboard.json — SPA feed", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
     const body = (await res.json()) as {
       repoSlug: string;
-      rows: { id: string; run: string; logsUrl: string | null }[];
+      rows: { id: string; run: string; logsUrl: string | null; selfHealPrUrl: string | null }[];
     };
     expect(body.repoSlug).toBe("OpenHackersClub/flare-dispatch");
     expect(body.rows).toHaveLength(1);
     expect(body.rows[0]?.id).toBe("a:b:c");
     expect(body.rows[0]?.logsUrl).toContain("/logs/a%3Ab%3Ac?t=");
+    // A plain offload-test run drove no fix PR — no self-heal tag.
+    expect(body.rows[0]?.selfHealPrUrl).toBeNull();
+  });
+
+  it("sets selfHealPrUrl for a self-heal-pr run that opened a fix PR (prStaged)", async () => {
+    const { env } = fixture([
+      execRow({
+        id: "heal1",
+        run: "self-heal-pr",
+        repo: "owner/repo",
+        summary_json: JSON.stringify({ incidentId: "ci:owner/repo:abc", prStaged: true }),
+      }),
+    ]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/v1/dashboard.json"),
+      env,
+    );
+    const body = (await res.json()) as { rows: { selfHealPrUrl: string | null }[] };
+    expect(body.rows[0]?.selfHealPrUrl).toBe(
+      "https://github.com/owner/repo/pulls?q=is%3Apr%20label%3Aself-heal",
+    );
+  });
+
+  it("leaves selfHealPrUrl null for a self-heal-pr run that opened no PR (no-fix)", async () => {
+    const { env } = fixture([
+      execRow({
+        id: "heal2",
+        run: "self-heal-pr",
+        summary_json: JSON.stringify({ outcome: "no-fix", prStaged: false }),
+      }),
+    ]);
+    const res = await handleRequest(
+      new Request("https://flare-dispatch-app.openhackers.club/v1/dashboard.json"),
+      env,
+    );
+    const body = (await res.json()) as { rows: { selfHealPrUrl: string | null }[] };
+    expect(body.rows[0]?.selfHealPrUrl).toBeNull();
   });
 
   it("405s a non-GET method", async () => {

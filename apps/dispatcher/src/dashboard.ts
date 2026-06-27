@@ -31,6 +31,13 @@ export interface DashboardRow {
   readonly logsUrl: string | null;
   /** Tokened `/demos` URL — only set for `product-demo` runs. */
   readonly demosUrl: string | null;
+  /**
+   * GitHub PR-search URL for this repo's self-heal fix PRs, set ONLY when this
+   * execution is a `self-heal-pr` run that opened a verified fix PR (its
+   * `summary_json.prStaged === true`). Drives the "self-heal" tag in the viewer
+   * — a non-null value means flare-dispatch drove a PR to fix a bug here.
+   */
+  readonly selfHealPrUrl: string | null;
 }
 
 export interface DashboardData {
@@ -122,6 +129,10 @@ const STYLE = `
   .badge.live { color: #8fc2ff; background: #102036; border-color: #234a78; }
   .badge.muted { color: #9aa3b2; background: #1a1e29; border-color: #2b313f; }
   .badge.pending { color: #e4c779; background: #2a2412; border-color: #59491c; }
+  /* The self-heal tag: a clickable pill (lifted above the row stretch) that
+     deep-links to the repo's flare-dispatch fix PRs. */
+  .badge.selfheal { color: #c9b3ff; background: #1d1730; border-color: #3b2d63; position: relative; z-index: 1; margin-left: .45rem; }
+  .badge.selfheal:hover { text-decoration: none; border-color: #5a47a0; }
   .empty { color: #9aa3b2; padding: 1.5rem .5rem; border: 1px dashed #2b313f; border-radius: .5rem; text-align: center; }
   footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #171b27; color: #8a93a5; font-size: 13px; }
   footer a { margin-right: 1rem; }
@@ -143,9 +154,15 @@ const renderRow = (row: DashboardRow, nowMs: number): string => {
   const runCell = clickable
     ? `<a href="${esc(row.logsUrl as string)}" title="View logs">${esc(row.run)}</a>`
     : esc(row.run);
+  // Self-heal tag — a pill linking to the repo's fix PRs, shown only when this
+  // execution actually drove a PR to fix a bug.
+  const selfHealPill =
+    row.selfHealPrUrl !== null
+      ? ` <a class="badge selfheal" href="${esc(row.selfHealPrUrl)}" title="View flare-dispatch self-heal fix PRs">🩹 self-heal</a>`
+      : "";
   return `<tr${clickable ? ' class="rowlink"' : ""}>
     <td><span class="badge ${badgeClass(row.status)}">${esc(row.status)}</span></td>
-    <td class="run">${runCell}</td>
+    <td class="run">${runCell}${selfHealPill}</td>
     <td><span class="repo">${esc(row.repo)}</span> <span class="sha">${esc(shortSha(row.sha))}</span></td>
     <td class="when">${esc(relativeTime(row.startedAt, nowMs))}</td>
     <td class="links">${linkCell}</td>

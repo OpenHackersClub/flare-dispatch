@@ -22,6 +22,12 @@ export interface DashboardRow {
   readonly logsUrl: string | null;
   /** Tokened `/demos` URL — only set for `product-demo` runs. */
   readonly demosUrl: string | null;
+  /**
+   * GitHub PR-search URL for this repo's self-heal fix PRs, set ONLY when this
+   * execution is a `self-heal-pr` run that opened a verified fix PR — i.e.
+   * flare-dispatch drove a PR to fix a bug here. Drives the "self-heal" tag.
+   */
+  readonly selfHealPrUrl: string | null;
 }
 
 export interface DashboardFeed {

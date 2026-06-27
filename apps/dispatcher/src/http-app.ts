@@ -209,6 +209,23 @@ const routeEffect = (
 // Bespoke routes
 // ---------------------------------------------------------------------------
 
+/** Best-effort read of `prStaged` from a stored `summary_json` (the
+ * `self-heal-pr` run's output) — true only when the run opened a verified fix
+ * PR. A null/malformed summary just hides the tag. */
+const parsePrStaged = (summaryJson: string | null): boolean => {
+  if (summaryJson === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(summaryJson);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { prStaged?: unknown }).prStaged === true
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Resolve the latest executions into `DashboardRow`s with their tokened viewer
  * links. Shared by the SSR `GET /` page and the `GET /v1/dashboard.json` feed
@@ -236,6 +253,15 @@ const dashboardData = Effect.gen(function* () {
         row.run === "product-demo"
           ? yield* logTokens.demosUrl(origin, row.id)
           : Option.none<string>();
+      // Self-heal tag — a `self-heal-pr` run that opened a verified fix PR
+      // (`summary_json.prStaged === true`) drove a PR to fix a bug. Point the
+      // tag at the repo's `self-heal`-labelled PRs (the writeback labels every
+      // fix PR `self-heal`). No URL is persisted per-PR, so the label search is
+      // the faithful deep-link; a non-self-heal run or a no-fix attempt → null.
+      const selfHealPrUrl =
+        row.run === "self-heal-pr" && parsePrStaged(row.summary_json)
+          ? `https://github.com/${row.repo}/pulls?q=${encodeURIComponent("is:pr label:self-heal")}`
+          : null;
       return {
         id: row.id,
         run: row.run,
@@ -255,6 +281,7 @@ const dashboardData = Effect.gen(function* () {
         costBasis: row.cost_basis,
         logsUrl: Option.getOrNull(logsUrl),
         demosUrl: Option.getOrNull(demosUrl),
+        selfHealPrUrl,
       } satisfies DashboardRow;
     }),
   );

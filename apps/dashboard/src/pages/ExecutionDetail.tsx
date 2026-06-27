@@ -29,6 +29,11 @@ export function ExecutionDetail({ feed }: { readonly feed: DashboardFeed }) {
       </p>
       <h2>
         {row.run} <span className={`badge ${badgeClass(row.status)}`}>{row.status}</span>
+        {row.selfHealPrUrl !== null && (
+          <a className="badge selfheal" href={row.selfHealPrUrl} title="View flare-dispatch self-heal fix PRs">
+            🩹 self-heal
+          </a>
+        )}
       </h2>
 
       <dl className="meta">
