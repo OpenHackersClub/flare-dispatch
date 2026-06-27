@@ -448,6 +448,62 @@ describe("offload-test", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  // --- CI self-heal auto-dispatch (gated, specs/08-self-healing.md § 4) --------
+
+  it.effect(
+    "dispatches a ci-class self-heal-pr on a non-zero exit when self-heal.ci.enabled=true",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: {
+          "pnpm test": { exitCode: 1, stdout: "FAIL: expected 2, got 3" },
+        },
+        config: { "self-heal.ci.enabled": "true" },
+      });
+      return Effect.gen(function* () {
+        // failOnNonZeroExit defaults off ⇒ the Effect succeeds; the dispatch
+        // happens before that gate, so it fires regardless of the check colour.
+        yield* Effect.exit(offloadTest.run(baseInput));
+        expect(handles.childRuns.spawned).toHaveLength(1);
+        const spawn = handles.childRuns.spawned[0]!;
+        expect(spawn.run).toBe("self-heal-pr");
+        expect(spawn.instanceId).toContain("self-heal:ci:");
+        const incident = (
+          spawn.input as {
+            incident: {
+              class: string;
+              repo: string;
+              repro?: { command?: string };
+            };
+          }
+        ).incident;
+        expect(incident.class).toBe("ci");
+        expect(incident.repo).toBe("owner/name");
+        expect(incident.repro?.command).toBe("pnpm test");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("does NOT dispatch self-heal when the gate is unset", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      sandboxProgram: { "pnpm test": { exitCode: 1 } },
+    });
+    return Effect.gen(function* () {
+      yield* Effect.exit(offloadTest.run(baseInput));
+      expect(handles.childRuns.spawned).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does NOT dispatch self-heal on a green run even when enabled", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      sandboxProgram: { "pnpm test": { exitCode: 0 } },
+      config: { "self-heal.ci.enabled": "true" },
+    });
+    return Effect.gen(function* () {
+      yield* offloadTest.run(baseInput);
+      expect(handles.childRuns.spawned).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
 });
 
 // --- Source guard: no direct Date.now() / crypto.randomUUID() in the run -----
