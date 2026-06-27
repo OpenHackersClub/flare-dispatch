@@ -181,6 +181,20 @@ tr.rowlink {
   background: #2a2412;
   border-color: #59491c;
 }
+/* The self-heal tag — a clickable pill linking to the repo's flare-dispatch
+   fix PRs. Shown only on executions that actually drove a PR to fix a bug. */
+.badge.selfheal {
+  color: #c9b3ff;
+  background: #1d1730;
+  border-color: #3b2d63;
+  margin-left: 0.45rem;
+  position: relative;
+  z-index: 1;
+}
+.badge.selfheal:hover {
+  text-decoration: none;
+  border-color: #5a47a0;
+}
 
 .empty {
   color: #9aa3b2;
