@@ -784,7 +784,16 @@ const describeError = (err: unknown): string =>
     Match.tag(
       "StructuredOutputInvalid",
       (e) =>
-        `model returned unparseable ${e.surface} output (${e.reason}); the backend may need \`mode: "json"\` or a different model`,
+        `model returned unparseable ${e.surface} output (${e.reason}); the backend may need \`mode: "json"\` or a different model` +
+        // Surface a short, SANITIZED excerpt of the RAW model text. It is
+        // captured on the error but was previously dropped here, so the only
+        // record of what the model actually returned lived in the (auth-gated)
+        // step logs — which is exactly why an `empty` (the model's answer
+        // silently dropped at the binding boundary) took so long to diagnose.
+        // `sanitizeModelText` defangs it; the verdict never derives from it.
+        (e.excerpt.trim() !== ""
+          ? ` — model returned: "${sanitizeModelText(e.excerpt)}"`
+          : ""),
     ),
     Match.tag(
       "ExecNonZero",

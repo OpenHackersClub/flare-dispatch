@@ -134,10 +134,71 @@ const jsonResponseFormat = (
     ? { response_format: { type: "json_schema", json_schema: jsonSchema } }
     : {};
 
-/** The slice of `AiTextGenerationOutput` this Layer reads. */
+/**
+ * The slice of a Workers AI text-generation result this Layer reads. Two shapes
+ * coexist in the `@cf/*` catalog and the binding passes through whichever the
+ * model emits:
+ *
+ *   - **legacy** — a top-level `{ response: string, tool_calls: [...] }`. Older
+ *     text-gen models (e.g. llama-3.3) return this (alongside `choices`).
+ *   - **chat-completion** — only `{ choices: [{ message: { content, tool_calls,
+ *     reasoning } }] }`, with NO top-level `response`. Newer / reasoning models
+ *     (notably `@cf/zai-org/glm-*`) return ONLY this. `reasoning` carries the
+ *     chain-of-thought on a SEPARATE field, so `content` is already the clean
+ *     answer — no `<think>` to strip.
+ *
+ * Reading only `response` silently dropped glm's answer (`response` undefined →
+ * empty text → `StructuredOutputInvalid: empty` on every reviewer), even though
+ * the JSON sat right there in `choices[0].message.content`. `readText` /
+ * `readToolCalls` below fall back to the chat-completion shape.
+ */
+type AiChatToolCall = {
+  readonly name?: string;
+  readonly arguments?: unknown;
+  readonly function?: { readonly name?: string; readonly arguments?: unknown };
+};
 type AiTextOutput = {
   readonly response?: string;
   readonly tool_calls?: ReadonlyArray<{ name: string; arguments: unknown }>;
+  readonly choices?: ReadonlyArray<{
+    readonly message?: {
+      readonly content?: string | null;
+      readonly tool_calls?: ReadonlyArray<AiChatToolCall>;
+    };
+  }>;
+};
+
+/**
+ * The model's answer text — the legacy top-level `response`, else the
+ * chat-completion `choices[0].message.content`. A non-string (some models emit a
+ * parsed object) is JSON-stringified so the engine has something to parse rather
+ * than dying on a non-string; absent/null → `""`.
+ */
+const readText = (output: AiTextOutput): string => {
+  const raw =
+    output.response !== undefined && output.response !== null
+      ? output.response
+      : output.choices?.[0]?.message?.content;
+  if (typeof raw === "string") return raw;
+  return raw === undefined || raw === null ? "" : JSON.stringify(raw);
+};
+
+/**
+ * The model's tool calls — the legacy top-level `tool_calls`, else the
+ * chat-completion `choices[0].message.tool_calls` (OpenAI nests name/args under
+ * `function`). Either source is normalized to `{ name, arguments }`.
+ */
+const readToolCalls = (output: AiTextOutput): ReadonlyArray<ModelToolCall> => {
+  if (output.tool_calls !== undefined && output.tool_calls.length > 0) {
+    return output.tool_calls.map((c) => ({ name: c.name, arguments: c.arguments }));
+  }
+  const fromChoice = output.choices?.[0]?.message?.tool_calls ?? [];
+  return fromChoice
+    .map((c) => ({
+      name: c.name ?? c.function?.name,
+      arguments: c.arguments ?? c.function?.arguments,
+    }))
+    .filter((c): c is ModelToolCall => typeof c.name === "string");
 };
 
 /** A universal-endpoint request sent through `env.AI.gateway(id).run(...)`. */
@@ -319,29 +380,13 @@ const completeWorkersAi = (
       },
     });
 
-    const toolCalls: ReadonlyArray<ModelToolCall> = (
-      output.tool_calls ?? []
-    ).map((c) => ({ name: c.name, arguments: c.arguments }));
-
-    // Some Workers AI models occasionally return `response` as a *parsed
-    // object* instead of a string (e.g. JSON-shaped completions, or some
-    // versions of llama-3.x with structured-output prompts). The downstream
-    // engine's `parseStructured` rejects non-string `text` with
-    // `StructuredOutputInvalid: got object` — but an honest non-string at
-    // this boundary should be JSON-stringified so the engine has something
-    // to parse, instead of dying with a generic "got object". This mirrors
-    // the same defensive coercion `parseToolArguments` already does for
-    // tool-call args returned as objects vs JSON strings.
-    const text =
-      typeof output.response === "string"
-        ? output.response
-        : output.response === undefined || output.response === null
-          ? ""
-          : JSON.stringify(output.response);
-
+    // Read the answer from EITHER the legacy `{response, tool_calls}` shape OR
+    // the chat-completion `{choices:[{message:{content, tool_calls}}]}` shape —
+    // see `AiTextOutput`. glm-class models return ONLY the latter, so reading
+    // `response` alone dropped their answer to empty.
     return {
-      toolCalls,
-      text,
+      toolCalls: readToolCalls(output),
+      text: readText(output),
     } satisfies ModelCompletionResult;
   });
 
