@@ -322,7 +322,10 @@ export const productDemo = defineRun({
   // appends `?recording=true` so each session captures its own rrweb stream.
   // `maxConcurrency: 1` is the RUN-level limit (one product-demo execution at a
   // time); per-story concurrency is capped inside the run.
-  limits: { maxDurationSec: 3600, maxConcurrency: 1, requiresBrowser: true },
+  // `maxDurationSec` raised 3600 → 4800 to stay ahead of the per-story budget
+  // bump (240 → 360s default): 5 sequential stories at their worst case must not
+  // make the RUN-level ceiling the new "did not finish" failure.
+  limits: { maxDurationSec: 4800, maxConcurrency: 1, requiresBrowser: true },
 
   // Schedule-mode binding — 14:00 UTC daily. The cron expression MUST also
   // appear in wrangler.jsonc `triggers.crons`. See specs/04-gha-integration.md
@@ -360,13 +363,20 @@ export const productDemo = defineRun({
       // bounded reads → explicit step `timeoutSec`) so its worst case stays
       // under control; an unclamped operator value would silently push the
       // play step past its budget arithmetic.
-      // Ceiling raised 300 → 720s: with the per-story action budget at 80 (see
-      // demo-agent MAX_ACTIONS_DEFAULT), a rich chapter spending ~4s/action can
-      // run ~320s, so a 300s clamp would make TIME the new ceiling and re-fail
-      // the heaviest chapters. 720s leaves headroom; the step arithmetic below
-      // (killAfterSec / pollBudgetSec / timeoutSec) all derive from this, so it
-      // stays internally consistent.
-      const perStorySec = Math.min(input.maxDurationSecPerStory ?? 240, 720);
+      // Per-story wall-clock budget = `--max-sec` for the agent + the play
+      // step's killAfter/poll/timeout (lines below all derive from it).
+      //
+      // DEFAULT raised 240 → 360s. The per-story action budget is 80 (see
+      // demo-agent MAX_ACTIONS_DEFAULT) and a rich chapter spends ~4s/action, so
+      // it needs ~320s to actually REACH 80 actions. At the old 240s default the
+      // agent was time-cut at ~60 actions — the heaviest chapters returned "did
+      // not signal done after 80 actions / 240s budget" because TIME (not
+      // actions) was the binding constraint. A prior fix raised the CLAMP ceiling
+      // to 720 for exactly this reason but left the default at 240, so the fix
+      // never took effect (the workflow doesn't pass `maxDurationSecPerStory`).
+      // 360 aligns the time budget with the 80-action budget; the clamp stays 720
+      // for operators who want even longer chapters.
+      const perStorySec = Math.min(input.maxDurationSecPerStory ?? 360, 720);
 
       // -1. Resolve the effective story list BEFORE any browser/sandbox work,
       //     so a misconfigured payload dies cheaply (no CDP session leaked, no
