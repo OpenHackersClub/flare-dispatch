@@ -123,6 +123,35 @@ When the Action wiring lands, it will poll `GET /v1/executions/:id` every 10 s �
 
 Use **only** when a follow-up GHA step needs the result inline — e.g. a deploy gate that consumes the acceptance execution's exact output. Avoid for runs longer than ~5 minutes: polling burns GHA minutes that fire-and-forget would not.
 
+### Embedding sub-mode — a review as a durable step of another Cloudflare Workflow
+
+> **Status: Planned (V1) — the seam exists today.** The composition primitives (`childRuns.spawnChildRun` + `waitForChildren`, [03-dsl § `childRuns`](03-dsl.md#childruns)) are live; what's planned is exposing `pr-review` as a *named, awaitable* embed and documenting the contract below.
+
+Some callers don't have a GitHub Action *or* a webhook — they have their **own Cloudflare Workflow** (a deploy pipeline, a release orchestrator, an agent run) and want the code review to be a **durable step inside it**, consuming the verdict inline rather than out-of-band via a check-run. Because every run is a portable `defineRun` value — not bound to any one trigger — the review embeds directly: the parent Workflow spawns `pr-review` as a child and awaits its `ReviewOutput`.
+
+```ts
+// Inside any run on the same deploy (e.g. a customer's deploy-gate Workflow):
+const [review] = yield* step("review-gate", () =>
+  Effect.gen(function* () {
+    const handle = yield* spawnChildRun({
+      run: "pr-review",
+      input: { repo, sha, baseSha, pr, agents: "single" },
+      // The run's own semantic id → dedups against any webhook/Action review of
+      // the same head SHA, so embedding never double-spends a sandbox.
+      instanceId: `pr-review:${repo.replace(/\//g, "_")}:${sha.slice(0, 12)}`,
+    });
+    return yield* waitForChildren([handle]);   // durable: parent hibernates free
+  }),
+);
+if (review.verdict === "request-changes") return yield* haltDeploy(review);
+```
+
+Contract:
+- **Result inline, durably.** `waitForChildren` is built on the same `step.sleep` poll the admission queue uses, so the parent **hibernates for free** while the review runs — no GHA minutes, no HTTP polling, no held connection. The child's `ReviewOutput` (verdict + findings + counts) comes back as a typed value.
+- **Dedup composes.** Passing the run's semantic `pr-review:{repo_}:{sha12}` id makes the embedded review collapse onto any concurrent webhook/Action review of the same head — one sandbox, one set of check-run annotations, one PR comment — regardless of which surface dispatched first.
+- **Cooldown is the dispatcher's job, not the embed's.** The fixed-window cap + trailing coalesce (above) live at the *trigger* boundary. An embed is an explicit, caller-controlled invocation (it asked for this review now), so it bypasses the cap by design — the same way Action-mode dispatches do — while still deduping at the id layer.
+- **Non-Workflow callers** (a plain Worker, a Durable Object) embed via the HTTP **await sub-mode** instead: `POST /v1/dispatch` then poll `GET /v1/executions/:id`. The Workflow-native path above is strictly better when the caller is itself a Cloudflare Workflow.
+
 ---
 
 ## Webhook mode
@@ -508,11 +537,22 @@ All three modes share the same two-layer dedup discipline so a redelivery storm,
 1. **Receiver-level** — `IDEMPOTENCY_KV.put(deliveryId, "1", { expirationTtl: 86_400 })` with a get-set guard. The key is `X-GitHub-Delivery` for App webhooks, the caller-supplied `Idempotency-Key` for direct dispatch, or the `schedules[].idempotencyKey` value for a cron tick (Cloudflare may deliver a Cron Trigger more than once). A repeat returns `202` immediately — Workflows is never touched. `apps/dispatcher/src/routes/webhook.ts` does this today, guarded on the **optional** `IDEMPOTENCY_KV` binding: it is declared (commented-out) in `wrangler.jsonc`, so this layer is on once you bind the namespace. Absent the binding, receiver dedup falls back to the Workflow-level key below (Schedule mode passes its `idempotencyKey(ctx)` as the Workflow `instanceId`, so duplicate cron deliveries already collapse at layer 2 regardless).
 2. **Workflow-level** — the Workflow `instanceId` is the **semantic** key: `playwright-e2e:{repo}:{sha}`, `pr-review:{repo_}:{sha12}`, `release-notes:{repo}:{iso_year}-W{iso_week_2digit}`, and for a scheduling Workflow the cron-window key `pr-review-sweep:{iso_date}`. CF Workflows treats a duplicate `env.RUNS_WORKFLOW.create({ id })` as a no-op, so two distinct deliveries naming the same logical work collapse onto one execution. A scheduling Workflow's fan-out children are themselves keyed semantically, so a sweep is idempotent against both itself and the other modes.
 
-### Run cooldown (rate cap on top of dedup)
+### Run cooldown (fixed-window rate cap on top of dedup)
 
-Dedup collapses dispatches naming the **same** logical work (same sha); it does nothing against a rapid push sequence, where every push is new work. A run may additionally declare a **cooldown** — `cooldown: { seconds, scope }` on `defineRun` — capping dispatches to one per window per `{run}:{repo}:{scope}` bucket. `pr-review` ships `{ seconds: 1800, scope: pr-<number> }`: at most one review per PR per 30 minutes, across BOTH Action and Webhook mode (Schedule mode is exempt — crons self-pace).
+Dedup collapses dispatches naming the **same** logical work (same sha); it does nothing against a rapid push sequence, where every push is new work. A run may additionally declare a **cooldown** — `cooldown: { seconds, scope, coalesce? }` on `defineRun` — a **fixed-window rate cap**: at most one execution per window per `{run}:{repo}:{scope}` bucket. `pr-review` ships `{ seconds: 1800, scope: pr-<number>, coalesce: { run: "pr-review-trail" } }`: at most one review per PR per 30 minutes, across BOTH Action and Webhook mode (Schedule mode is exempt — crons self-pace).
+
+It is a fixed window, **not** a quiet-period debounce: the window opens at the first dispatch (the *leading* review fires immediately — fast feedback) and does **not** reset on later pushes inside it. The rate ceiling is one review per `seconds`, regardless of push rate.
 
 Enforcement lives in `apps/dispatcher/src/cooldown.ts`, rides the same optional `IDEMPOTENCY_KV` binding (no binding → no cap, best-effort like layer 1), and **never errors**: a dispatch landing inside the window is answered `202` with the *prior* execution's id plus `skipped: "cooldown"` and `retryAfterSec`, so a fire-and-forget CI step stays green and its `execution-id` output still points at a real execution. The webhook receiver reports the same outcome in a `skipped[]` array alongside `dispatched[]`.
+
+#### Trailing coalesce — the final state is always reviewed
+
+A bare leading-edge cap reviews the *first* commit of a burst and silently drops the rest, so a PR's **final** state can go unreviewed until someone pushes again after the window. `coalesce` closes that gap with a **trailing** review. When a dispatch lands inside the window AND the run declares `cooldown.coalesce`, the dispatcher (best-effort, alongside the `skipped[]` answer) spawns the named coalescer run **once per window**:
+
+- The coalescer's instance id is derived from the window's **prior execution id** (`coalesce:<priorExecutionId>`), which is stable for the whole window — so the first collapsed push creates it and every later collapsed push in the same window is a `create({id})` no-op. CF Workflows ids are permanently consumed (a terminated id can't be recreated), which is *why* the id is window-stamped rather than fixed per-PR.
+- The coalescer (`runs/pr-review-trail.ts`) is lightweight (no model calls): it `step.sleep`s out the remaining window (`retryAfterSec`) — a queued instance hibernates for free, the same durable-timer pattern admission control already uses — then re-reads the PR's **current** head via the `github` capability (`openPullRequests`) and spawns the heavy `pr-review` for that head through the `childRuns` capability, with the run's normal semantic id `pr-review:{repo_}:{sha12}`. If the head was already reviewed (no new commits since the leading review), that spawn is a dedup no-op; if it moved, the final state gets exactly one review.
+
+Net per window: an immediate leading review of the first commit, then at most one trailing review of wherever the PR landed — `≤ 2` reviews spanning `≥ seconds`, i.e. the one-per-window rate is preserved while the latest state is never left unreviewed. The leading review reads from the same semantic-id dedup, so a steady stream of pushes more than `seconds` apart is unaffected (each is its own leading review).
 
 ---
 

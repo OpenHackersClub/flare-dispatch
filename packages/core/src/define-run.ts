@@ -37,6 +37,29 @@ export type CooldownSpec<I> = {
   readonly seconds: number;
   /** Rate-limit bucket within `{run}:{repo}` — e.g. ``pr-${input.pr}``. */
   readonly scope: (input: I) => string;
+  /**
+   * Optional TRAILING coalesce. A bare fixed-window cap reviews the first
+   * commit of a burst and drops the rest, so a PR's FINAL state can go
+   * unreviewed until the next push. When set, a dispatch that lands inside the
+   * window spawns the named coalescer run ONCE per window (keyed off the
+   * window's prior execution id), which sleeps out the remaining window then
+   * re-dispatches the target against the latest head — so the final state is
+   * always reviewed exactly once, while the one-per-window ceiling holds.
+   *
+   * The coalescer is a normal registered run (e.g. `pr-review-trail`) reached
+   * through the dispatcher's `RUNS_WORKFLOW` binding; see
+   * specs/04-gha-integration.md § Trailing coalesce. Requires a PR-numbered
+   * dispatch (Webhook/Action) — the dispatcher skips it when no PR number is in
+   * play. Best-effort: a spawn failure never turns the `cooling` 202 into an
+   * error.
+   */
+  readonly coalesce?: CoalesceSpec;
+};
+
+/** Declares the trailing-coalescer run a cooldown spawns once per window. */
+export type CoalesceSpec = {
+  /** The coalescer run name — must be registered on the same deploy. */
+  readonly run: string;
 };
 
 /** The raw GitHub webhook delivery; a run narrows it per-event itself. */

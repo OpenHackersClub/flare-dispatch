@@ -33,6 +33,7 @@
 // container starts — lives inside the Workflow.
 
 import { checkAndArmCooldown } from "../cooldown";
+import { spawnTrailingCoalescer } from "../coalesce";
 import { verify } from "../hmac";
 import { toInstanceId } from "../instance-id";
 import { triggersByEvent } from "../registry";
@@ -266,6 +267,26 @@ export const handleGithubWebhook = async (
         reason: "cooldown",
         retryAfterSec: cooldownVerdict.retryAfterSec,
       });
+      // Trailing coalesce: ensure the window's final state still gets reviewed.
+      // Best-effort, once per window, only for a PR-numbered event.
+      const github = synthesizeGithubBlock(payload);
+      const prNumber = (payload as { pull_request?: { number?: number } })
+        .pull_request?.number;
+      if (run.cooldown?.coalesce !== undefined && prNumber !== undefined) {
+        await spawnTrailingCoalescer(env, {
+          cooledRun: run.name,
+          coalesceRun: run.cooldown.coalesce.run,
+          priorExecutionId: cooldownVerdict.priorExecutionId,
+          retryAfterSec: cooldownVerdict.retryAfterSec,
+          repo: github.repo,
+          pr: prNumber,
+          ref: github.ref,
+          sha: github.sha,
+          ...(github.installation_id !== undefined
+            ? { installationId: github.installation_id }
+            : {}),
+        });
+      }
       continue;
     }
 

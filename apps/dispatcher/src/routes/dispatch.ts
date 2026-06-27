@@ -24,6 +24,7 @@
 import { Either, ParseResult, Schema } from "effect";
 import type { ParseError } from "effect/ParseResult";
 import { checkAndArmCooldown } from "../cooldown";
+import { spawnTrailingCoalescer } from "../coalesce";
 import { workflowDashboardUrl } from "../dashboard-url";
 import type { Env } from "../env";
 import { fingerprint, SIGNATURE_HEADER, verify } from "../hmac";
@@ -296,6 +297,27 @@ export const handleDispatch = async (
     now: Date.now(),
   });
   if (cooldownVerdict.state === "cooling") {
+    // Trailing coalesce — best-effort, once per window, PR-numbered dispatch
+    // only — so the burst's final state still gets one review (see coalesce.ts).
+    if (
+      run.cooldown?.coalesce !== undefined &&
+      body.github.pr_number !== undefined
+    ) {
+      await spawnTrailingCoalescer(env, {
+        cooledRun: body.run,
+        coalesceRun: run.cooldown.coalesce.run,
+        priorExecutionId: cooldownVerdict.priorExecutionId,
+        retryAfterSec: cooldownVerdict.retryAfterSec,
+        repo: body.github.repo,
+        pr: body.github.pr_number,
+        ref: body.github.ref,
+        sha: body.github.sha,
+        origin,
+        ...(body.github.installation_id !== undefined
+          ? { installationId: body.github.installation_id }
+          : {}),
+      });
+    }
     return json(
       {
         executionId: cooldownVerdict.priorExecutionId,

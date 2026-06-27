@@ -61,9 +61,15 @@ import { makeIOLive } from "./io-live";
 import { makeSandboxCloudflareLive } from "./sandbox-cf";
 import { makeStepRunnerCloudflare } from "./step-runner-cf";
 
-/** The minimal `WorkflowStep` surface `StepRunnerCloudflare` needs. */
+/** The minimal `WorkflowStep` surface the runtime needs. */
 type WorkflowStepLike = {
   readonly do: <T>(name: string, callback: () => Promise<T>) => Promise<T>;
+  /**
+   * CF Workflows' durable sleep — de-schedules the instance and resumes it
+   * after `ms`, hibernating for free. Backs `io.sleepDurable`. CF's `step.sleep`
+   * accepts a ms number (or a duration string); the runtime passes ms.
+   */
+  readonly sleep: (name: string, ms: number) => Promise<void>;
 };
 
 /** Everything `makeCFRuntimeLive` needs to wire the per-execution runtime. */
@@ -246,6 +252,8 @@ export const makeCFRuntimeLive = (
   const io = makeIOLive({
     db: opts.db,
     currentExecutionId: opts.executionId,
+    // Back `io.sleepDurable` with the CF Workflow step's durable `sleep`.
+    workflowStep: opts.workflowStep,
     ...(opts.logsViewerBase !== undefined
       ? { logsViewerBase: opts.logsViewerBase }
       : {}),

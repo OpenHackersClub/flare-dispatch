@@ -293,7 +293,15 @@ export const prReview = defineRun({
   // prior execution's id, so CI stays green. The LAST state of a busy PR
   // still gets reviewed on its next dispatch after the window — and a review
   // can always be forced by re-running the CI job ≥30 min later.
-  cooldown: { seconds: 1800, scope: (input) => `pr-${input.pr}` },
+  // Fixed-window rate cap: at most one review per PR per 30 min (leading edge).
+  // `coalesce` adds the TRAILING review so a burst's FINAL state is never left
+  // unreviewed — `pr-review-trail` sleeps out the window then re-reviews the
+  // latest head. See specs/04-gha-integration.md § Trailing coalesce.
+  cooldown: {
+    seconds: 1800,
+    scope: (input) => `pr-${input.pr}`,
+    coalesce: { run: "pr-review-trail" },
+  },
 
   run: (input) =>
     Effect.gen(function* () {
