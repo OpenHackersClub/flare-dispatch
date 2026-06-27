@@ -1,0 +1,170 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import benchmarks from "../data/benchmarks.json";
+
+// MODELED per-recipe speed + cost — generated at build time by
+// scripts/emit-benchmarks.mjs from the rate card mirrored from
+// packages/core/src/cost.ts (the same engine that prices REAL executions on the
+// app dashboard). This page is deterministic and leaks no execution data; the
+// MEASURED twin lives behind Cloudflare Access at /v1/analytics.json.
+
+type Recipe = (typeof benchmarks.recipes)[number];
+
+const fmtUsd = (microUsd: number | null): string => {
+  if (microUsd === null) return "—";
+  const usd = microUsd / 1_000_000;
+  if (usd === 0) return "$0";
+  return usd < 1 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+};
+
+const fmtDuration = (s: number): string => {
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m${rem}s`;
+};
+
+// Model-cost cell: a metered $ figure, "neurons" for an account-billed catalog
+// backend, or "—" when the recipe makes no model call.
+const modelCell = (r: Recipe): string => {
+  if (r.modelId === null) return "—";
+  return r.modelMetered ? fmtUsd(r.modelMicroUsd) : "neurons*";
+};
+
+const recipes = benchmarks.recipes as readonly Recipe[];
+const anyUnmetered = recipes.some((r) => r.modelId !== null && !r.modelMetered);
+---
+
+<BaseLayout
+  title="Benchmarks — FlareDispatch"
+  description="Modeled per-recipe speed and cost for every FlareDispatch run — container compute by instance type and wall-time, plus model-inference cost for the model-calling runs, priced from the same rate card that meters real executions."
+>
+  <div class="docs-index">
+    <header class="docs-index__header">
+      <div>
+        <span class="section-marker">§ / Benchmarks</span>
+        <h1>Speed &amp; cost, per recipe.</h1>
+      </div>
+      <p>
+        A <strong>modeled</strong> projection of each run's wall-time and
+        marginal cost — container compute (<code>instance vCPU/mem × active
+        seconds</code>) plus model inference for the model-calling runs. Numbers
+        are generated from the same rate card that
+        <a href="/docs/06-cost">prices real executions</a>; they are planning
+        estimates, <em>not</em> a metered bill.
+      </p>
+      <div class="bench-callout">
+        <strong>Modeled, not metered.</strong> These figures come from curated
+        workload profiles priced through the rate card (re-check Cloudflare
+        pricing before budgeting — see <a href="/docs/06-cost">§06 Cost</a>). The
+        live, <em>measured</em> per-execution cost — real model tokens + modeled
+        container compute — is on the Access-gated app dashboard
+        (<code>/analytics</code>).
+      </div>
+    </header>
+
+    <section class="docs-index__section">
+      <div class="bench-wrap">
+        <table class="bench-table">
+          <thead>
+            <tr>
+              <th>Recipe</th>
+              <th>Trigger</th>
+              <th>Instance</th>
+              <th class="num">~Wall</th>
+              <th class="num">Container</th>
+              <th class="num">Model</th>
+              <th class="num">~Cost / run</th>
+            </tr>
+          </thead>
+          <tbody>
+            {
+              recipes.map((r) => (
+                <tr>
+                  <td class="bench-name" title={r.note}>
+                    <code>{r.name}</code>
+                  </td>
+                  <td class="bench-muted">
+                    {r.kind === "github-event" ? "event" : "cron"}
+                  </td>
+                  <td class="bench-muted">{r.instance}</td>
+                  <td class="num">{fmtDuration(r.wallSeconds)}</td>
+                  <td class="num">{fmtUsd(r.containerMicroUsd)}</td>
+                  <td class="num">{modelCell(r)}</td>
+                  <td class="num bench-total">{fmtUsd(r.totalMicroUsd)}</td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+      </div>
+      {
+        anyUnmetered && (
+          <p class="bench-footnote">
+            <strong>*neurons</strong> — the run's default backend is Workers AI
+            catalog, billed as account-level Neurons with no per-call token
+            usage, so no per-run USD is modeled. Switching <code>pr-review</code>
+            and the other model-calling runs to the Anthropic or Bedrock backend
+            bills per token at the model's rate (the Model column shows that
+            metered figure where applicable). Hover a recipe name for its
+            workload assumptions.
+          </p>
+        )
+      }
+    </section>
+  </div>
+</BaseLayout>
+
+<style>
+  .bench-callout {
+    margin-top: 1.25rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--accent, #d98a3d);
+    border-radius: 6px;
+    font-size: var(--fs-small);
+    line-height: 1.55;
+  }
+  .bench-wrap {
+    overflow-x: auto;
+  }
+  .bench-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--fs-small);
+  }
+  .bench-table th,
+  .bench-table td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--hairline);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .bench-table thead th {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .bench-table .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .bench-name code {
+    font-weight: 600;
+  }
+  .bench-muted {
+    color: var(--muted, #8a93a5);
+  }
+  .bench-total {
+    font-weight: 600;
+  }
+  .bench-footnote {
+    margin-top: 1rem;
+    font-size: var(--fs-small);
+    color: var(--muted, #8a93a5);
+    line-height: 1.55;
+  }
+</style>

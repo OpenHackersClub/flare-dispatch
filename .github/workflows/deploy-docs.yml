@@ -8,12 +8,14 @@ on:
       - apps/docs/**
       - specs/**
       - recipes/**
+      - scripts/emit-benchmarks.mjs
       - .github/workflows/deploy-docs.yml
   pull_request:
     paths:
       - apps/docs/**
       - specs/**
       - recipes/**
+      - scripts/emit-benchmarks.mjs
       - .github/workflows/deploy-docs.yml
 
 permissions:
@@ -56,6 +58,12 @@ jobs:
         # needs. `--ignore-workspace` is NOT used: it would also make pnpm
         # ignore that file's settings, re-triggering ERR_PNPM_IGNORED_BUILDS.
         run: pnpm install --frozen-lockfile
+
+      - name: Generate benchmarks dataset
+        # Regenerate apps/docs/src/data/benchmarks.json from the rate card so the
+        # /benchmarks page always reflects the latest profiles. Plain bare-node
+        # (no deps); the committed file is drift-guarded by cost.test.ts in CI.
+        run: node scripts/emit-benchmarks.mjs
 
       - name: Type-check
         working-directory: apps/docs

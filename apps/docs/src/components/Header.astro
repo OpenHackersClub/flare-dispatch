@@ -5,6 +5,7 @@ import { site } from "../lib/site";
 const path = Astro.url.pathname;
 const isDocs = path.startsWith("/docs");
 const isRecipes = path.startsWith("/recipes");
+const isBenchmarks = path.startsWith("/benchmarks");
 ---
 
 <header class="site-header">
@@ -20,6 +21,7 @@ const isRecipes = path.startsWith("/recipes");
       <a href="/" aria-current={path === "/" ? "page" : undefined}>Index</a>
       <a href="/docs" aria-current={isDocs ? "page" : undefined}>Specs</a>
       <a href="/recipes" aria-current={isRecipes ? "page" : undefined}>Recipes</a>
+      <a href="/benchmarks" aria-current={isBenchmarks ? "page" : undefined}>Benchmarks</a>
       <a href={site.repo} target="_blank" rel="noreferrer noopener">Repo ↗</a>
       <ThemeToggle />
     </nav>

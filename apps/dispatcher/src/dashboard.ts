@@ -21,6 +21,12 @@ export interface DashboardRow {
   readonly status: string;
   readonly startedAt: number | null;
   readonly completedAt: number | null;
+  /** Wall-time in ms (`completedAt - startedAt`), or `null` while running. */
+  readonly durationMs: number | null;
+  /** Per-execution cost rollup in integer micro-USD, or `null` if not computed. */
+  readonly costMicroUsd: number | null;
+  /** How the cost was derived — `metered | mixed | modeled | unmetered` (null if absent). */
+  readonly costBasis: string | null;
   /** Tokened `/logs` URL, or `null` when no log-link secret is configured. */
   readonly logsUrl: string | null;
   /** Tokened `/demos` URL — only set for `product-demo` runs. */

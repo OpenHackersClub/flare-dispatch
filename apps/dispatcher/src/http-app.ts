@@ -244,6 +244,14 @@ const dashboardData = Effect.gen(function* () {
         status: row.status,
         startedAt: row.started_at,
         completedAt: row.completed_at,
+        durationMs:
+          row.started_at !== null &&
+          row.completed_at !== null &&
+          row.completed_at > row.started_at
+            ? row.completed_at - row.started_at
+            : null,
+        costMicroUsd: row.cost_micro_usd,
+        costBasis: row.cost_basis,
         logsUrl: Option.getOrNull(logsUrl),
         demosUrl: Option.getOrNull(demosUrl),
       } satisfies DashboardRow;
@@ -314,6 +322,29 @@ const dashboardJsonRoute = Effect.gen(function* () {
   );
 });
 
+/** How many recent finished executions the analytics aggregate samples. */
+const ANALYTICS_SAMPLE = 1000;
+
+/**
+ * `GET /v1/analytics.json` — the MEASURED per-recipe speed+cost aggregate for the
+ * dashboard's analytics view. Access-gated exactly like `/v1/dashboard.json`
+ * (and listed in `run_worker_first` so the SPA fallback never shadows it). Real
+ * data from D1 — the public docs `/benchmarks` page carries the MODELED twin.
+ */
+const analyticsJsonRoute = Effect.gen(function* () {
+  const request = yield* currentRequest;
+  const denied = yield* accessGate(request);
+  if (Option.isSome(denied)) return fromWebResponse(denied.value);
+  if (request.method !== "GET") return methodNotAllowed;
+
+  const reads = yield* ExecutionsRead;
+  const runs = yield* reads.aggregate(ANALYTICS_SAMPLE);
+  return HttpServerResponse.raw(
+    JSON.stringify({ repoSlug: REPO_SLUG, sampled: ANALYTICS_SAMPLE, runs }),
+    { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
+  );
+});
+
 /** `POST/GET /v1/agent/:execution/inference` — no method guard (any verb). */
 const agentInferenceRoute = Effect.gen(function* () {
   const request = yield* currentRequest;
@@ -361,6 +392,7 @@ const baseRouter = HttpRouter.empty.pipe(
   // Listed in `run_worker_first` so the asset SPA-fallback can't serve them
   // ungated; hashed `/assets/*` are deliberately NOT, so they stay public.
   HttpRouter.all("/executions/*", appShellRoute),
+  HttpRouter.all("/analytics", appShellRoute),
   HttpRouter.all("/health", route("GET", () => handleHealth())),
   HttpRouter.all(
     "/replay/:sessionId",
@@ -453,6 +485,7 @@ const router = baseRouter.pipe(
     route("GET", ({ request }) => handleInstalled(request)),
   ),
   HttpRouter.all("/v1/dashboard.json", dashboardJsonRoute),
+  HttpRouter.all("/v1/analytics.json", analyticsJsonRoute),
   // Container-side OTP read — TOKEN-ONLY (no `viewer: true`): a sandbox can't
   // carry an Access JWT, so the expiring capability token + burn-after-read are
   // the gate. See routes/mailbox.ts for the posture.

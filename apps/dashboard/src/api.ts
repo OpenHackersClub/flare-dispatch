@@ -12,6 +12,12 @@ export interface DashboardRow {
   readonly status: string;
   readonly startedAt: number | null;
   readonly completedAt: number | null;
+  /** Wall-time in ms, or `null` while running. */
+  readonly durationMs: number | null;
+  /** Per-execution cost in integer micro-USD, or `null` if not computed. */
+  readonly costMicroUsd: number | null;
+  /** `metered | mixed | modeled | unmetered`, or `null` if absent. */
+  readonly costBasis: string | null;
   /** Tokened `/logs` URL, or `null` when no log-link secret is configured. */
   readonly logsUrl: string | null;
   /** Tokened `/demos` URL — only set for `product-demo` runs. */
@@ -22,6 +28,27 @@ export interface DashboardFeed {
   readonly origin: string;
   readonly repoSlug: string;
   readonly rows: readonly DashboardRow[];
+}
+
+/** One recipe's MEASURED speed+cost rollup (mirrors the dispatcher's
+ *  `RunAnalytics`, apps/dispatcher/src/executions-read.ts). */
+export interface RunAnalytics {
+  readonly run: string;
+  readonly count: number;
+  readonly successRate: number;
+  readonly p50DurationMs: number | null;
+  readonly p95DurationMs: number | null;
+  readonly avgCostMicroUsd: number | null;
+  readonly totalCostMicroUsd: number;
+  readonly costSamples: number;
+  readonly basis: string | null;
+}
+
+export interface AnalyticsFeed {
+  readonly repoSlug: string;
+  /** How many recent finished executions the aggregate sampled. */
+  readonly sampled: number;
+  readonly runs: readonly RunAnalytics[];
 }
 
 /**
@@ -40,4 +67,20 @@ export async function fetchDashboard(signal?: AbortSignal): Promise<DashboardFee
     throw new Error(`feed responded ${res.status}`);
   }
   return (await res.json()) as DashboardFeed;
+}
+
+/**
+ * Fetch the MEASURED per-recipe analytics aggregate (the `/v1/analytics.json`
+ * feed). Same Access-gated contract as `fetchDashboard`.
+ */
+export async function fetchAnalytics(signal?: AbortSignal): Promise<AnalyticsFeed> {
+  const res = await fetch("/v1/analytics.json", {
+    signal,
+    credentials: "include",
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`analytics responded ${res.status}`);
+  }
+  return (await res.json()) as AnalyticsFeed;
 }

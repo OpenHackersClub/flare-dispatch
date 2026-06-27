@@ -265,5 +265,25 @@ export {
   type IncidentInput,
 } from "./incident";
 
+// --- Cost engine -------------------------------------------------------------
+export {
+  MICRO_USD_PER_USD,
+  INSTANCE_SPECS,
+  CONTAINER_VCPU_MICRO_USD_PER_SEC,
+  CONTAINER_GIB_MICRO_USD_PER_SEC,
+  modelRate,
+  modelCost,
+  containerCostMicroUsd,
+  estimateExecutionCost,
+  microUsdToUsd,
+  formatMicroUsd,
+  type InstanceType,
+  type InstanceSpec,
+  type ModelRate,
+  type ModelCost,
+  type CostBasis,
+  type ExecutionCost,
+} from "./cost";
+
 // --- Errors ------------------------------------------------------------------
 export * from "./errors";

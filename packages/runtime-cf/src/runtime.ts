@@ -320,6 +320,9 @@ export const makeCFRuntimeLive = (
             opts.aiGatewayAuthToken.length > 0
             ? opts.aiGatewayAuthToken
             : undefined,
+          // Per-execution token metering → `execution_model_usage` (cost
+          // attribution). Same db + executionId the rest of the runtime uses.
+          { db: opts.db, executionId: opts.executionId },
         );
   // `Github` is live when App credentials are present. Prefer the dedicated
   // `githubApp` creds (Schedule-mode runs that carry no installation_id), then

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, Route, Routes } from "react-router-dom";
 
 import { fetchDashboard, type DashboardFeed } from "./api";
+import { Analytics } from "./pages/Analytics";
 import { ExecutionDetail } from "./pages/ExecutionDetail";
 import { Executions } from "./pages/Executions";
 
@@ -51,6 +52,7 @@ export function App() {
         {state.status === "ready" && (
           <Routes>
             <Route path="/" element={<Executions feed={state.feed} />} />
+            <Route path="/analytics" element={<Analytics />} />
             <Route path="/executions/:id" element={<ExecutionDetail feed={state.feed} />} />
             <Route
               path="*"

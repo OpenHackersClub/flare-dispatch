@@ -1,7 +1,14 @@
 import { Link } from "react-router-dom";
 
 import type { DashboardFeed } from "../api";
-import { badgeClass, relativeTime, shortSha } from "../format";
+import {
+  badgeClass,
+  basisTitle,
+  formatDuration,
+  formatMicroUsd,
+  relativeTime,
+  shortSha,
+} from "../format";
 
 /**
  * The executions list. Each row deep-links to its detail page (the run name is
@@ -17,7 +24,12 @@ export function Executions({ feed }: { readonly feed: DashboardFeed }) {
 
   return (
     <>
-      <h2>Latest executions</h2>
+      <div className="section-head">
+        <h2>Latest executions</h2>
+        <Link to="/analytics" className="subnav">
+          Analytics →
+        </Link>
+      </div>
       <table>
         <thead>
           <tr>
@@ -25,6 +37,8 @@ export function Executions({ feed }: { readonly feed: DashboardFeed }) {
             <th>Run</th>
             <th>Repo</th>
             <th>Started</th>
+            <th>Duration</th>
+            <th>Cost</th>
             <th>View</th>
           </tr>
         </thead>
@@ -42,6 +56,13 @@ export function Executions({ feed }: { readonly feed: DashboardFeed }) {
                 <span className="sha">{shortSha(row.sha)}</span>
               </td>
               <td className="when">{relativeTime(row.startedAt, now)}</td>
+              <td className="when">{formatDuration(row.durationMs)}</td>
+              <td className="cost" title={basisTitle(row.costBasis)}>
+                {formatMicroUsd(row.costMicroUsd)}
+                {row.costBasis !== null && row.costBasis !== "metered" && (
+                  <span className="basis">{row.costBasis}</span>
+                )}
+              </td>
               <td className="links">
                 {row.logsUrl !== null && <a href={row.logsUrl}>Logs</a>}
                 {row.demosUrl !== null && <a href={row.demosUrl}>Demo</a>}
