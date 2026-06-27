@@ -27,6 +27,7 @@
 //   CONFIG_KV  pr-review.workers-ai.mode   "tools" | "json"  (default "tools"; pin "json" for reasoning models — DeepSeek-class models ignore tool-calls)
 //   CONFIG_KV  pr-review.<backend>.maxDiffChars  (optional) override the per-backend diff cap — a positive int clamped to [1_000, 1_000_000]. Defaults: workers-ai 60_000, anthropic/bedrock 240_000. Raise it for a big-context Workers AI model (GLM / Kimi); a value above the model's context overflows invisibly.
 //   CONFIG_KV  pr-review.<backend>.maxTokens  (optional) override the per-backend output-token budget — a positive int clamped to [256, 32_768]. Defaults: workers-ai 8_192, anthropic/bedrock 4_096. A ceiling (non-reasoning models unaffected); raise it if a reasoning model truncates inside <think> before the JSON answer.
+//   CONFIG_KV  pr-review.<backend>.guidedJson  (optional) "true"/"on" to send `response_format`/guided-JSON on the json path. Default OFF — guided JSON BREAKS GLM-class reasoning models on the Workers AI binding (the grammar forbids their <think> preamble → empty); the prompt's json-contract + the engine's text extractor produce the structured output without it. Turn on only for a model known to honour guided JSON.
 //   CONFIG_KV  pr-review.anthropic.model `anthropic/`-prefixed model id (e.g. anthropic/claude-sonnet-4-6) — BYOK via AI Gateway
 //   CONFIG_KV  pr-review.anthropic.mode  "tools" | "json"  (default "tools")
 //   CONFIG_KV  pr-review.bedrock.model   `bedrock/`-prefixed model id (e.g. bedrock/us.anthropic.claude-opus-4-6-v1) — BYOC via AI Gateway
@@ -558,6 +559,7 @@ const reviewBody = (input: RunInput, viewerUrl?: string) =>
               backend: resolved.backend,
               mode: resolved.mode,
               maxTokens: resolved.maxTokens,
+              guidedJson: resolved.guidedJson,
               systemPrompt,
               ...(awsCreds !== undefined ? { aws: awsCreds } : {}),
             }).pipe(Effect.either),
@@ -784,7 +786,17 @@ const describeError = (err: unknown): string =>
     Match.tag(
       "StructuredOutputInvalid",
       (e) =>
-        `model returned unparseable ${e.surface} output (${e.reason}); the backend may need \`mode: "json"\` or a different model`,
+        `model returned unparseable ${e.surface} output (${e.reason}); the backend may need \`mode: "json"\` or a different model` +
+        // Surface a short, SANITIZED excerpt of the RAW model text. The excerpt
+        // is captured on the error but was previously dropped here, so the only
+        // record of what the model actually returned lived in the (auth-gated)
+        // step logs. Inlining it makes a structured-output failure self-diagnosing
+        // straight from the PR comment — e.g. a reasoning model's `<think>` prose,
+        // or a guided-JSON empty. `sanitizeModelText` defangs it (the model is fed
+        // the attacker-controllable diff), and the verdict never derives from it.
+        (e.excerpt.trim() !== ""
+          ? ` — model returned: "${sanitizeModelText(e.excerpt)}"`
+          : ""),
     ),
     Match.tag(
       "ExecNonZero",

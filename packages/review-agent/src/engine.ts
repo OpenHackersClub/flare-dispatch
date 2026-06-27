@@ -345,6 +345,12 @@ export type ReviewDomainInput = {
    */
   readonly maxTokens?: number;
   /**
+   * Send the schema as `response_format`/guided JSON on the json path. Default
+   * off — see {@link CompleteStructuredInput.guidedJson} (it breaks GLM-class
+   * models on the Workers AI binding).
+   */
+  readonly guidedJson?: boolean;
+  /**
    * Optional AWS creds — required only for `bedrock/*` models. Threaded through
    * to `completeStructured` → `completeRaw` → `modelGateway.complete`. Other
    * backends ignore.
@@ -475,6 +481,22 @@ export type CompleteStructuredInput<A> = {
   readonly surface?: string;
   /** Token budget for the call. */
   readonly maxTokens?: number;
+  /**
+   * Send the schema as `response_format`/guided-JSON (constrained decoding) on
+   * the json path. Default **off**. Guided JSON sounds like a free win — the
+   * provider emits a schema-valid object by construction — but on the Workers AI
+   * binding it is a FOOTGUN for reasoning models: GLM (`@cf/zai-org/glm-*`) wants
+   * to emit a `<think>` preamble first, the JSON-schema grammar forbids any
+   * non-JSON token, and the model returns nothing usable → the engine strips it
+   * to `empty`. Confirmed: glm-4.7-flash answers fine in the plain Cloudflare
+   * playground (no `response_format`) but fails `StructuredOutputInvalid: empty`
+   * through this path; glm-5.2 fails identically (so it's the constrained-decode
+   * path, not model capability). With this OFF the json path mirrors the
+   * playground — plain prompt + the `jsonContract` shape hint — and relies on the
+   * engine's `<think>`-strip + bracket extraction, which always runs anyway. Turn
+   * it ON only for a model known to honour guided JSON without a reasoning preamble.
+   */
+  readonly guidedJson?: boolean;
 };
 
 /**
@@ -530,10 +552,15 @@ export const completeStructured = <A>(
         model: input.model,
         system: input.system,
         user,
-        // Constrained decoding: providers that support guided JSON emit a
-        // schema-valid object directly; others ignore it and the text extractor
-        // still runs. The schema mirrors the `report` tool's parameters.
-        jsonSchema: toolParametersSchema(input.schema),
+        // Constrained decoding — OFF by default (see `guidedJson`). When a
+        // provider supports guided JSON it emits a schema-valid object directly;
+        // but on the Workers AI binding it breaks GLM-class reasoning models
+        // (the grammar forbids their `<think>` preamble → empty). The plain path
+        // relies on the prompt's `jsonContract` + the engine's text extractor,
+        // which runs either way. Only sent when explicitly enabled.
+        ...(input.guidedJson === true
+          ? { jsonSchema: toolParametersSchema(input.schema) }
+          : {}),
         ...(maxTokens !== undefined ? { maxTokens } : {}),
         ...(input.aws !== undefined ? { aws: input.aws } : {}),
       });
@@ -625,6 +652,7 @@ export const reviewDomain = (
     backend: input.backend,
     model: input.model,
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
+    ...(input.guidedJson !== undefined ? { guidedJson: input.guidedJson } : {}),
     ...(input.aws !== undefined ? { aws: input.aws } : {}),
     system: input.systemPrompt ?? DEFAULT_REVIEW_SYSTEM_PROMPT,
     userBody: renderDomainBody(input),

@@ -150,6 +150,16 @@ export type BackendKeyDescriptor = {
    */
   readonly maxTokensKey: string;
   /**
+   * CONFIG_KV key toggling guided-JSON / `response_format` on the json path
+   * (`"true"`/`"1"`/`"on"` → on; anything else → off). Default OFF — guided JSON
+   * breaks GLM-class reasoning models on the Workers AI binding (see the engine's
+   * `guidedJson` doc). The prompt's json-contract + the text extractor produce
+   * the structured output without it.
+   */
+  readonly guidedJsonKey: string;
+  /** Default for `guidedJsonKey` when unset — `false` for every backend. */
+  readonly defaultGuidedJson: boolean;
+  /**
    * `bedrock` backend only — CONFIG_KV key carrying the AWS region the run
    * exchanges OIDC for STS in (and signs InvokeModel against). Other backends
    * leave this undefined.
@@ -212,6 +222,8 @@ export const namespacedKeys = (
     modeKey: `${namespace}.workers-ai.mode`,
     maxDiffCharsKey: `${namespace}.workers-ai.maxDiffChars`,
     maxTokensKey: `${namespace}.workers-ai.maxTokens`,
+    guidedJsonKey: `${namespace}.workers-ai.guidedJson`,
+    defaultGuidedJson: false,
     defaultMaxTokens: CATALOG_MAX_TOKENS,
     // Default to tool-calling — the common catalog case. Reasoning models
     // (DeepSeek-R1 distills, `deepseek/…`) honour no tool-calls; pin
@@ -226,6 +238,8 @@ export const namespacedKeys = (
     modeKey: `${namespace}.anthropic.mode`,
     maxDiffCharsKey: `${namespace}.anthropic.maxDiffChars`,
     maxTokensKey: `${namespace}.anthropic.maxTokens`,
+    guidedJsonKey: `${namespace}.anthropic.guidedJson`,
+    defaultGuidedJson: false,
     defaultMaxTokens: ANTHROPIC_MAX_TOKENS,
     // Claude honours forced tool use (`tool_choice: any`) reliably; tool
     // arguments come back as a parsed object the engine already tolerates.
@@ -237,6 +251,8 @@ export const namespacedKeys = (
     modeKey: `${namespace}.bedrock.mode`,
     maxDiffCharsKey: `${namespace}.bedrock.maxDiffChars`,
     maxTokensKey: `${namespace}.bedrock.maxTokens`,
+    guidedJsonKey: `${namespace}.bedrock.guidedJson`,
+    defaultGuidedJson: false,
     defaultMaxTokens: BEDROCK_MAX_TOKENS,
     // The shared `invokeBedrockViaAiGateway` helper concatenates the response's
     // text content blocks but does NOT surface tool-use blocks — Bedrock route
@@ -298,6 +314,11 @@ export type ResolvedBackend = {
   readonly maxDiffChars: number;
   /** Output-token budget for each model call (reasoning headroom). */
   readonly maxTokens: number;
+  /**
+   * Whether to send guided-JSON / `response_format` on the json path. Default
+   * `false` — it breaks GLM-class reasoning models on the Workers AI binding.
+   */
+  readonly guidedJson: boolean;
   /**
    * `bedrock` backend only — AWS region the engine should mint STS creds in
    * (and the modelGateway Bedrock route signs against). `undefined` for other
@@ -363,6 +384,23 @@ export const parseMaxTokens = (
 };
 
 /**
+ * Narrow a CONFIG_KV guided-JSON toggle to a boolean. `"true"`/`"1"`/`"on"`/
+ * `"yes"` (case/space-insensitive) → `true`; anything else (incl. unset/blank)
+ * → `fallback`. Off by default — guided JSON breaks GLM-class models on the
+ * Workers AI binding (see the engine's `guidedJson` doc).
+ */
+export const parseGuidedJson = (
+  raw: string | undefined,
+  fallback: boolean,
+): boolean => {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const v = raw.trim().toLowerCase();
+  if (v === "true" || v === "1" || v === "on" || v === "yes") return true;
+  if (v === "false" || v === "0" || v === "off" || v === "no") return false;
+  return fallback;
+};
+
+/**
  * Resolve the active backend's profile from operator config. `getConfig` is the
  * `config.get`-shaped accessor — `(key) => Effect<string | undefined, never, R>`
  * — the run passes in (its `R` is the DSL's `Config` capability; this module
@@ -396,6 +434,10 @@ export const resolveBackend = <R>(
       yield* getConfig(keys.maxTokensKey),
       keys.defaultMaxTokens,
     );
+    const guidedJson = parseGuidedJson(
+      yield* getConfig(keys.guidedJsonKey),
+      keys.defaultGuidedJson,
+    );
 
     if (backend === "bedrock") {
       // The bedrock backend needs the AWS role to assume + region to sign in.
@@ -428,12 +470,13 @@ export const resolveBackend = <R>(
         mode,
         maxDiffChars,
         maxTokens,
+        guidedJson,
         region,
         roleArn,
       };
     }
 
-    return { backend, model, mode, maxDiffChars, maxTokens };
+    return { backend, model, mode, maxDiffChars, maxTokens, guidedJson };
   });
 
 /** Map a `Match`-classified provider error to a `ModelCallFailed.reason`. */

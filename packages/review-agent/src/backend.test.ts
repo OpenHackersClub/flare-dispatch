@@ -18,6 +18,7 @@ import {
   namespacedKey,
   namespacedKeys,
   parseBackend,
+  parseGuidedJson,
   parseMaxDiffChars,
   parseMaxTokens,
   parseMode,
@@ -93,7 +94,43 @@ describe("parseMaxTokens", () => {
   });
 });
 
+describe("parseGuidedJson", () => {
+  it("reads truthy spellings as true", () => {
+    for (const v of ["true", "1", "on", "yes", "TRUE", " On "]) {
+      expect(parseGuidedJson(v, false)).toBe(true);
+    }
+  });
+  it("reads falsy spellings as false", () => {
+    for (const v of ["false", "0", "off", "no"]) {
+      expect(parseGuidedJson(v, true)).toBe(false);
+    }
+  });
+  it("falls back on unset / blank / unrecognized", () => {
+    expect(parseGuidedJson(undefined, false)).toBe(false);
+    expect(parseGuidedJson("", false)).toBe(false);
+    expect(parseGuidedJson("maybe", false)).toBe(false);
+    expect(parseGuidedJson(undefined, true)).toBe(true);
+  });
+});
+
 describe("resolveBackend", () => {
+  it("defaults guidedJson OFF and honours an explicit toggle", async () => {
+    const base = {
+      [BACKEND_KEYS["workers-ai"].modelKey]: "@cf/zai-org/glm-4.7-flash",
+    };
+    const def = await Effect.runPromise(resolveBackend(getter(base)));
+    // OFF by default — guided JSON breaks GLM on the Workers AI binding.
+    expect(def.guidedJson).toBe(false);
+
+    const on = await Effect.runPromise(
+      resolveBackend(
+        getter({ ...base, [BACKEND_KEYS["workers-ai"].guidedJsonKey]: "true" }),
+      ),
+    );
+    expect(on.guidedJson).toBe(true);
+  });
+
+
   it("resolves the default backend (workers-ai) from config — no API key", async () => {
     const store = {
       [BACKEND_KEYS["workers-ai"].modelKey]:

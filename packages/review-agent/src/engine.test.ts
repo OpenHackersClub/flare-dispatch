@@ -290,6 +290,44 @@ describe("reviewDomain", () => {
     expect(result).toEqual([]);
   });
 
+  it("json mode — does NOT send response_format by default (the GLM footgun)", async () => {
+    // Guided JSON (`response_format`/`jsonSchema`) breaks GLM-class reasoning
+    // models on the Workers AI binding: the grammar forbids their `<think>`
+    // preamble → empty. So the json path must NOT send it unless asked. Assert
+    // the request carried no `jsonSchema`.
+    const fake = makeModelGatewayFake({ responses: [textResult('{"findings":[]}')] });
+    await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "trivial",
+        model: "@cf/zai-org/glm-4.7-flash",
+        backend: "workers-ai",
+        mode: "json",
+      }).pipe(Effect.provide(fake.layer)),
+    );
+    expect(fake.state.requests[0]!.jsonSchema).toBeUndefined();
+  });
+
+  it("json mode — sends response_format only when guidedJson is enabled", async () => {
+    const fake = makeModelGatewayFake({ responses: [textResult('{"findings":[]}')] });
+    await Effect.runPromise(
+      reviewDomain({
+        ...conn,
+        agent: "security",
+        diff: "x",
+        tier: "trivial",
+        model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        backend: "workers-ai",
+        mode: "json",
+        guidedJson: true,
+      }).pipe(Effect.provide(fake.layer)),
+    );
+    // Opt-in → the schema rides as `jsonSchema` (→ `response_format` downstream).
+    expect(fake.state.requests[0]!.jsonSchema).toBeDefined();
+  });
+
   it("json mode — skips earlier reasoning fragments and decodes the real answer last", async () => {
     // A reasoning model writes an unrelated example object + quotes code while
     // thinking, THEN emits the real findings object last. The engine must skip
