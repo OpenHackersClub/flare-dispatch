@@ -65,13 +65,16 @@
 // Spec: specs/02-runs.md § 1, specs/03-dsl.md § Top-level shape + § sandbox,
 //       specs/pm/plan.md § PR3.
 
-import { Effect, Schema } from "effect";
+import { Cause, Effect, Schema } from "effect";
 import {
   AcceptanceFailed,
   artifact,
+  commandFailureToIncident,
   config,
   defineRun,
+  io,
   sandbox,
+  spawnChildRun,
   StepFailed,
   step,
 } from "@flare-dispatch/core";
@@ -272,6 +275,54 @@ export const offloadTest = defineRun({
           signedUrlTTL: "30 days",
         }),
       );
+
+      // self-heal — (gated, OFF unless `self-heal.ci.enabled=true`) auto-dispatch
+      // a fix for a DETERMINISTIC CI failure. Unlike the LLM-driven demo verdict
+      // (which needs k-of-n confirmation), a non-zero exit IS ground truth — the
+      // command is the deterministic oracle, so one failed command escalates
+      // directly. One `ci`-class incident → one child `self-heal-pr`, deduped on
+      // `{repo, sha}` so re-runs of the same commit collapse to a single heal (a
+      // new push re-heals). Per-heal model spend is bounded by the AgentBudget DO.
+      // Best-effort throughout — a dispatch fault never changes this run's check
+      // outcome. specs/08-self-healing.md § 4 (ci class) + § 9 (dedup).
+      if (
+        result.exitCode !== 0 &&
+        (yield* config.get("self-heal.ci.enabled")) === "true"
+      ) {
+        const incident = commandFailureToIncident({
+          repo: input.repo,
+          sha: input.sha,
+          command,
+          exitCode: result.exitCode,
+          logTail: result.stdout,
+          logUri,
+        });
+        if (incident !== null) {
+          yield* step("dispatch-self-heal", () =>
+            spawnChildRun({
+              run: "self-heal-pr",
+              input: { incident },
+              instanceId: `self-heal:${incident.incidentId}:${input.sha}`.slice(
+                0,
+                200,
+              ),
+            }),
+          ).pipe(
+            Effect.flatMap((handle) =>
+              io.log(
+                "info",
+                `offload-test: dispatched self-heal-pr ${handle.executionId} for ${input.repo}@${input.sha.slice(0, 12)}${handle.created ? "" : " (deduped — already dispatched)"}`,
+              ),
+            ),
+            Effect.catchAllCause((cause) =>
+              io.log(
+                "warn",
+                `offload-test: self-heal dispatch failed (best-effort) — ${Cause.pretty(cause).slice(0, 400)}`,
+              ),
+            ),
+          );
+        }
+      }
 
       // fail-on-nonzero — webhook mode (no GHA job reads the exit code) flips a
       // non-zero exit into a red check via a typed `AcceptanceFailed` carrying

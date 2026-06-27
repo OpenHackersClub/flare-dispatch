@@ -265,6 +265,12 @@ export {
   type IncidentInput,
 } from "./incident";
 
+// --- CI→incident adapter (offload-test command failure as `incident/v1`) ------
+export {
+  commandFailureToIncident,
+  type CiIncidentContext,
+} from "./ci-incident";
+
 // --- Cost engine -------------------------------------------------------------
 export {
   MICRO_USD_PER_USD,

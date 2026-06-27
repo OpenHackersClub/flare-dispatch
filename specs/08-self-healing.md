@@ -282,6 +282,35 @@ not the live deploy; an LLM re-judging an LLM is circular). So the demo class
 exactly when it carries a command (test) repro — otherwise it is left to triage,
 like the experimental application class.
 
+### 4.2 The `ci` class — first-party `offload-test` failures (V0 auto-trigger)
+
+The simplest, strongest trigger is the run that *executes* the suite. When
+[`offload-test`](../runs/offload-test.ts) runs a repo's command and it exits
+non-zero, that **is** a deterministic CI failure — the command is the
+ground-truth oracle, so (unlike the LLM demo verdict) it needs **no k-of-n
+confirmation**. The run escalates directly:
+
+- **Gated + off by default.** Only when `self-heal.ci.enabled=true` does a
+  non-zero exit dispatch a child `self-heal-pr`; otherwise `offload-test` is
+  unchanged (just reports the red check).
+- **Repro = the exact failing command.** `commandFailureToIncident`
+  ([`packages/core/src/ci-incident.ts`](../packages/core/src/ci-incident.ts))
+  builds a `ci`-class pack carrying `repro.kind: "command"` with the command the
+  run just executed — the verify step re-runs it in the credential-free sandbox.
+- **`suspectRef` is high-confidence, not advisory** (contrast the demo class):
+  CI failed on *this* commit, so `head = sha`, `confidence: 1`.
+- **`logTail` is UNTRUSTED** (a test name / stack frame / console line is
+  attacker-influenceable) — fenced in `ciFailures[].logTail`, never the trusted
+  `diagnosis`. The fingerprint keys off `(repo, sha)` so a reworded log can't
+  mint a fresh identity; same `(repo, sha)` re-runs collapse to one heal
+  ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)), a new push re-heals.
+- **Bounded + best-effort.** One failed command → one child heal, capped by the
+  `AgentBudget` DO; a dispatch fault never changes the run's own check outcome.
+
+This is the dogfood path that produces self-heal PRs for flare-dispatch's own
+red test runs. The richer `ci-triage-pr`/webhook escalations
+([§ 11](#11-future-work)) remain the multi-repo, signal-driven future.
+
 ---
 
 ## 5. Synthesis: the `incident/v1` context pack
