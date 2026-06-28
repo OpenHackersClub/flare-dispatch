@@ -82,6 +82,14 @@ jobs:
       # Worker with no dashboard shell.
       - name: Build dashboard SPA
         run: pnpm --filter @flare-dispatch/dashboard build
+        # Browser RUM (HyperDX) config, baked into the bundle at build time. The
+        # Ingestion API Key is a public client-side key; when the secret is
+        # unset the value is empty and initTelemetry() no-ops (RUM disabled), so
+        # this never blocks a deploy. Self-hosted HyperDX additionally sets
+        # VITE_HYPERDX_URL to its OTLP collector.
+        env:
+          VITE_HYPERDX_API_KEY: ${{ secrets.HYPERDX_API_KEY }}
+          VITE_HYPERDX_SERVICE: flare-dispatch-dashboard
 
       # D1 migrations BEFORE the Worker deploy: new code that expects a new
       # table/column must never reach production ahead of its schema. Wrangler

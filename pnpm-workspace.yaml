@@ -16,5 +16,8 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: true
   msw: true
+  # Transitive dep of @hyperdx/browser's OTLP/protobuf exporter. Its postinstall
+  # is not needed for the browser bundle, but pnpm requires an explicit decision.
+  protobufjs: true
   sharp: true
   workerd: true
