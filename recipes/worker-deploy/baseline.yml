@@ -1,0 +1,57 @@
+# Recipe: deploy on default-branch push — BASELINE (without FlareDispatch)
+#
+# This is what you'd maintain on plain GitHub Actions to build and deploy a
+# Cloudflare Worker on every push to main. Shown here ONLY as a comparison —
+# see ./worker-deploy.run.ts for the FlareDispatch version (Webhook mode:
+# no workflow file at all, zero GHA minutes).
+#
+# Notable costs of the GHA-only path:
+#   - The build + deploy burn GHA minutes on every push — the expensive half
+#     of the workflow is exactly what FlareDispatch offloads.
+#   - Credentials live as repo Actions secrets, per repo. Rotating the
+#     Cloudflare API token means touching every repo that deploys. With
+#     FlareDispatch they live once in the dispatcher's config store, and a
+#     rotation is one KV write.
+#   - Concurrency control (two rapid pushes racing the deploy) is a
+#     `concurrency:` block you must remember; dispatch dedup + the recipe's
+#     stale-push guard cover it receiver-side.
+#   - Onboarding another repo means copying this file and its secrets.
+#     Webhook mode onboards a repo with a single KV write.
+
+name: deploy
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Deploy to Cloudflare Workers
+        run: pnpm exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
