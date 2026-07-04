@@ -1,12 +1,29 @@
 # 08 — Self-Healing PRs
 
-> **Status: Design (V0 not built).** This spec defines the design. It composes
-> mechanisms that are already Live — `signals/v1` ([02-runs § Signals](02-runs.md#signals)),
-> post-run writeback ([01-architecture § Post-run writeback](01-architecture.md#post-run-writeback)),
-> the Sandbox ([01-architecture § Sandbox / Container](01-architecture.md#sandbox--container)),
+> **Status: V0 shipped (live at HEAD); V1/V2 planned.** The V0 pipeline is live —
+> the `self-heal-pr` run ([`runs/self-heal-pr.ts`](../runs/self-heal-pr.ts)) is
+> registered in [`registry.ts`](../apps/dispatcher/src/registry.ts) and dispatchable
+> at `POST /v1/dispatch/self-heal-pr` (#212). It composes the agent-tier Sandbox
+> image ([`infra/Dockerfile.sandbox`](../infra/Dockerfile.sandbox), `WITH_AGENT`), the
+> `flare-agent` coding-agent CLI ([`packages/flare-agent`](../packages/flare-agent/)),
+> the model-proxy + per-execution budget DO ([`agent-inference.ts`](../apps/dispatcher/src/routes/agent-inference.ts),
+> [`agent-budget-do.ts`](../apps/dispatcher/src/agent-budget-do.ts)), the `incident/v1`
+> pack ([`packages/core/src/incident.ts`](../packages/core/src/incident.ts)), and the
+> extended post-run writeback gate ([01-architecture § Post-run writeback](01-architecture.md#post-run-writeback)).
+> Both auto-triggers are wired but **gated OFF by default** in `CONFIG_KV`: `ci`-class
+> failures escalate from `offload-test` (#215, `self-heal.ci.enabled`) and confirmed
+> demo failures from `product-demo` ([`runs/product-demo.ts`](../runs/product-demo.ts),
+> `self-heal.demo.enabled`); executions that drove a fix PR are tagged in the viewer (#216).
+> **V1** (application-class correlation, edge-pull [§ 6.4](#64-on-demand-context-pull--full-context-without-a-store),
+> vendor `dedupKey` [§ 9.2](#92-incident-fingerprint--vendor-native-dedup)) and **V2**
+> (incident memory [§ 9.1](#91-incident-memory--the-one-store-worth-keeping), multi-candidate,
+> cost accounting) remain design — see [§ 13](#13-phased-rollout).
+>
+> The base mechanisms it composes were already Live — `signals/v1` ([02-runs § Signals](02-runs.md#signals)),
+> post-run writeback, the Sandbox ([01-architecture § Sandbox / Container](01-architecture.md#sandbox--container)),
 > and the `modelGateway` engine ([the review-agent `completeStructured` engine](02-runs.md)).
-> The open PR stack #119 / #121 / #122 / #123 lands the ingestion half; this
-> spec is the *fix* half. Nothing here requires a new vendor integration.
+> The ingestion-half PR stack #119 / #121 / #122 / #123 was the other half; this spec
+> is the *fix* half. Nothing here required a new vendor integration.
 
 A **self-healing PR** is a draft pull request that proposes an actual fix for a
 failure — opened automatically, by a coding agent that ran in a Sandbox
@@ -1039,19 +1056,19 @@ untrusted-input hardening (#5). Numbers reference [§ 10.1](#101-adversarial-tel
 
 | Phase | Scope | New surface |
 |---|---|---|
-| **V0 — CI-class, verified, action-mode** | Self-heal only the strong-repro CI class. Synthesis = first-party only (no signal correlation). Agent tier image (egress-allowlisted). Model via proxy (A), step-scoped token. Verify = re-run failing command in the sandbox. Draft PR, verified-only, silent on no-fix. | `incident/v1` contract; agent-tier Dockerfile + egress allowlist; manifest-gate extension; `flare-agent` adapter; `/v1/agent/:exec/inference` proxy + `AgentBudget` DO; `self-heal-pr` run + extended writeback. |
+| **V0 — CI-class, verified, action-mode** ✅ **shipped** | Self-heal only the strong-repro CI class. Synthesis = first-party only (no signal correlation). Agent tier image (egress-allowlisted). Model via proxy (A), step-scoped token. Verify = re-run failing command in the sandbox. Draft PR, verified-only, silent on no-fix. | `incident/v1` contract; agent-tier Dockerfile + egress allowlist; manifest-gate extension; `flare-agent` adapter; `/v1/agent/:exec/inference` proxy + `AgentBudget` DO; `self-heal-pr` run + extended writeback. **Live:** registered + dispatchable (#212); CI/demo auto-triggers wired, gated OFF by default (#215); viewer tags fix-PR executions (#216). |
 | **V1 — application-class (experimental) + correlation + edge pull** | Behind an experimental flag. Add signal→execution time correlation, stack-frame→file mapping, derived-repro (agent writes a failing test first). On-demand context-pull adapter ([§ 6.4](#64-on-demand-context-pull--full-context-without-a-store)). Vendor-native `dedupKey` passthrough ([§ 9.2](#92-incident-fingerprint--vendor-native-dedup)). Webhook auto-escalation. Triage escalation. | Synthesis correlation; context-pull adapter contract; `dedupKey` (additive `signals/v1`); `auto-escalate` branch; unverified-label path. |
 | **V2 — memory, governance & breadth** | Incident-memory store + fix priors ([§ 9.1](#91-incident-memory--the-one-store-worth-keeping)). Token-budget accounting into [06-cost](06-cost.md); multi-candidate (N agents, pick the one whose fix verifies — the judge-panel pattern); cooldown/fingerprint tuning; optional consumer-owned auto-merge policy gate; opt-in signal retention for APM-less consumers. | incident-memory D1 table; cost accounting; candidate fan-out via [fan-out model](01-architecture.md#fan-out-model). |
 
 ### Open questions
 
-1. **Agent runtime default.** opencode, Claude Code, or a
-   bespoke Effect CLI like `demo-agent`? (`opencode`/`reasonix` are no longer
-   model-route backend names — those collapsed to `workers-ai` — so the name is
-   free to mean the actual coding-agent CLI here.) The `agent/v1` contract makes it
-   swappable, but V0 needs one default. *Recommendation: a thin Effect CLI driving
-   the model-proxy, so the loop/iteration/budget controls live in our code, not the
-   agent's.*
+1. **Agent runtime default. — RESOLVED (V0).** The recommendation was adopted:
+   the V0 default is [`flare-agent`](../packages/flare-agent/), a thin Effect CLI
+   driving the model-proxy, so the loop/iteration/budget controls live in our code,
+   not the agent's. opencode / Claude Code stay swappable behind the `agent/v1`
+   contract (`opencode`/`reasonix` are no longer model-route backend names — those
+   collapsed to `workers-ai` — so the name is free to mean an actual coding-agent
+   CLI; see [09-agentic-review](09-agentic-review.md) for the heavier sibling tier).
 2. **Repro strength for application errors — V1 is experimental, label it so.**
    When `repro.kind = "derived"` the agent writes a failing test, then fixes — and
    autonomous agents frequently produce plausible-but-wrong diffs or **vacuously-
