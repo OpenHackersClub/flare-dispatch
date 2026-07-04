@@ -129,6 +129,7 @@ describe("GET /health", () => {
         "self-heal-pr",
         "spec-drift-pr",
         "vitest-shard",
+        "worker-deploy",
       ],
     });
   });

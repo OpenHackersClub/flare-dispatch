@@ -11,6 +11,7 @@
 export { offloadTest } from "./offload-test";
 export { cdpAcceptance } from "./cdp-acceptance";
 export { deploySmoke } from "./deploy-smoke";
+export { workerDeploy } from "./worker-deploy";
 export { matrixFanout } from "./matrix-fanout";
 export { vitestShard } from "./vitest-shard";
 export { playwrightE2E } from "./playwright-e2e";

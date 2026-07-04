@@ -28,6 +28,7 @@ import {
   selfHealPr,
   specDriftPr,
   vitestShard,
+  workerDeploy,
 } from "@flare-dispatch/runs";
 
 /** name → Run. The single seam new runs are registered through. */
@@ -53,6 +54,7 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [vitestShard.name]: vitestShard as Run<unknown, unknown>,
   [emailOtpLogin.name]: emailOtpLogin as Run<unknown, unknown>,
   [finopsAudit.name]: finopsAudit as Run<unknown, unknown>,
+  [workerDeploy.name]: workerDeploy as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */

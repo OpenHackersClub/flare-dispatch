@@ -51,6 +51,7 @@ This axis is deliberately **distinct** from `limits.requiresBrowser`: `requiresB
 | 4 | [`cdp-acceptance`](#4-cdp-acceptance) | Boot an app + assert via CDP observations | **Live at HEAD** (V2) |
 | 5 | [`product-demo`](#5-product-demo) | AI-driven product demo over CDP, Action + Schedule mode; on completion, GIF + summary PR comment | **Live at HEAD** (V3) |
 | 6 | [`deploy-smoke`](../runs/deploy-smoke.ts) | Post-deploy smoke test against a live URL, Webhook-mode-first | **Live at HEAD** (V2) |
+| 6b | [`worker-deploy`](../runs/worker-deploy.ts) | CD on default-branch push — build + `wrangler deploy` in a container, credentials from the config store, Webhook-mode-first (`check_suite.requested` gated to the default branch; no `push` subscription needed); unconfigured repos no-op green. Recipe: [`recipes/worker-deploy`](../recipes/worker-deploy/README.md) | **Live at HEAD** — Webhook mode |
 | 7 | [`playwright-demo`](../runs/playwright-demo.ts) | Record a Playwright walkthrough of a deployed surface | **Live at HEAD** (V3) |
 | 8 | [`security-scan`](#6-security-scan) | `npm audit` / `cargo audit` / `trivy` / `grype` | Planned (V3) |
 | 9 | [`custom-sandbox`](#7-custom-sandbox) | Escape hatch — run any bash in a container | Planned (V3) |
