@@ -41,3 +41,7 @@ coverage/
 
 # Local scratch (PR bodies, commit messages, etc.)
 .tmp/
+
+# Local git worktrees (agent + manual) — never track checkouts inside the repo
+.claude/worktrees/
+.worktrees/
