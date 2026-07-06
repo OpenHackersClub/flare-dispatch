@@ -13,6 +13,7 @@ import type { Run, ScheduleSpec, TriggerSpec } from "@flare-dispatch/core";
 import {
   cdpAcceptance,
   ciTriagePr,
+  demoReel,
   deploySmoke,
   emailOtpLogin,
   finopsAudit,
@@ -55,6 +56,12 @@ const RUN_REGISTRY: Record<string, Run<unknown, unknown>> = {
   [emailOtpLogin.name]: emailOtpLogin as Run<unknown, unknown>,
   [finopsAudit.name]: finopsAudit as Run<unknown, unknown>,
   [workerDeploy.name]: workerDeploy as Run<unknown, unknown>,
+  // Presentation stage for a captured demo: consumes a product-demo
+  // execution's demo-bundle/v1 and renders a deck (+ MP4 when the image
+  // carries ffmpeg) via autopresenter. Spawned as a child by product-demo
+  // when `demo-reel.enabled=true`; also Action-mode dispatchable with an
+  // explicit `bundleUrl`. specs/10-demo-bundle.md.
+  [demoReel.name]: demoReel as Run<unknown, unknown>,
 };
 
 /** Resolve a run by name; `undefined` for an unknown run (→ 404). */
