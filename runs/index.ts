@@ -26,3 +26,4 @@ export { releaseNotes } from "./release-notes";
 export { oxlint } from "./oxlint";
 export { emailOtpLogin } from "./email-otp-login";
 export { finopsAudit } from "./finops-audit";
+export { demoReel } from "./demo-reel";

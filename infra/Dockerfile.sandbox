@@ -169,6 +169,31 @@ RUN if [ "$WITH_BUILD_TOOLS" = "true" ]; then \
       echo "WITH_BUILD_TOOLS=false — no native toolchain baked. Lean image."; \
     fi
 
+# ── Optional presentation toolchain (gated by the WITH_PRESENT build arg) ────
+#
+# `demo-reel` (runs/demo-reel.ts) renders its baseline HTML deck with the
+# image's Node alone; only the narrated MP4 needs native encoders —
+# autopresenter's video projector shells out to ffmpeg/ffprobe (encode) and
+# rsvg-convert (poster rasterization for non-capture scenes). ~120MB via apt.
+# Default ON so a `demo-reel.enabled=true` deploy produces reels out of the
+# box; flip the image_var to false for a leaner image — the run then degrades
+# to deck-only and reports `videoSkipped` (never fails on missing tools).
+# recipes/demo-reel/Dockerfile.example mirrors this layer for BYOC images.
+# Unlike the chromium bake above, this is a plain apt layer (no post-download
+# registry-push stall — same shape as WITH_BUILD_TOOLS, which deploys fine).
+ARG WITH_PRESENT=true
+RUN if [ "$WITH_PRESENT" = "true" ]; then \
+      set -eux; \
+      export DEBIAN_FRONTEND=noninteractive; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends ffmpeg librsvg2-bin; \
+      rm -rf /var/lib/apt/lists/*; \
+      ffmpeg -version > /dev/null; \
+      rsvg-convert --version > /dev/null; \
+    else \
+      echo "WITH_PRESENT=false — demo-reel renders decks only (no MP4)."; \
+    fi
+
 # ── Optional Playwright browser layer (gated by the WITH_BROWSER build arg) ──
 #
 # This single Dockerfile produces BOTH sandbox images via Cloudflare's
