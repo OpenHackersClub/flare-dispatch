@@ -17,7 +17,11 @@ import { it } from "@effect/vitest";
 import { Cause, Effect, Exit, Match, Option } from "effect";
 import { describe, expect } from "vitest";
 import { makeCFRuntimeTest } from "@flare-dispatch/core/testing";
-import { productDemo, parseStoriesMarkdown } from "./product-demo";
+import {
+  buildDemoBundleManifest,
+  parseStoriesMarkdown,
+  productDemo,
+} from "./product-demo";
 
 const baseInput = {
   repo: "owner/app",
@@ -283,6 +287,189 @@ describe("product-demo self-heal auto-dispatch (gated)", () => {
         >[0]),
       );
       expect(handles.childRuns.spawned).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("buildDemoBundleManifest (demo-bundle/v1)", () => {
+  const fullChapter = {
+    name: "checkout",
+    status: "failed" as const,
+    failureKind: "assertion" as const,
+    durationMs: 1200,
+    chapterStartMs: 0,
+    chapterEndMs: 1200,
+    narrative: "the checkout button did nothing",
+    keyScreenshotUri: "/v1/artifacts/e/checkout.png",
+    chapterGifUri: "/v1/artifacts/e/chapter-0.gif",
+    replayJsonUri: "/v1/artifacts/e/replay-0.json",
+  };
+  const base = {
+    repo: "owner/app",
+    sha: "deadbeef",
+    target: "https://staging.example.com",
+    proseByName: new Map([["checkout", "Buy an item."]]),
+    hasGif: true,
+    hasFramesArchive: true,
+  };
+
+  it("maps chapters to RELATIVE artifact names (relocatable bundle)", () => {
+    const manifest = buildDemoBundleManifest({
+      ...base,
+      chapters: [fullChapter],
+    });
+    expect(manifest.kind).toBe("demo-bundle/v1");
+    expect(manifest.summary).toBe("summary.md");
+    expect(manifest.gif).toBe("demo.gif");
+    expect(manifest.framesArchive).toBe("frames.tar");
+    expect(manifest.stories).toEqual([
+      {
+        name: "checkout",
+        prose: "Buy an item.",
+        status: "failed",
+        failureKind: "assertion",
+        narrative: "the checkout button did nothing",
+        durationMs: 1200,
+        chapterStartMs: 0,
+        chapterEndMs: 1200,
+        framesPrefix: "checkout-",
+        keyScreenshot: "checkout.png",
+        gif: "chapter-0.gif",
+        replayJson: "replay-0.json",
+      },
+    ]);
+  });
+
+  it("omits every optional entry whose upload never landed", () => {
+    const manifest = buildDemoBundleManifest({
+      ...base,
+      hasGif: false,
+      hasFramesArchive: false,
+      chapters: [
+        {
+          ...fullChapter,
+          status: "passed" as const,
+          failureKind: undefined,
+          keyScreenshotUri: "",
+          chapterGifUri: undefined,
+          replayJsonUri: "",
+        },
+      ],
+    });
+    expect(manifest.gif).toBeUndefined();
+    expect(manifest.framesArchive).toBeUndefined();
+    const story = manifest.stories[0]!;
+    expect(story.failureKind).toBeUndefined();
+    expect(story.keyScreenshot).toBeUndefined();
+    expect(story.gif).toBeUndefined();
+    expect(story.replayJson).toBeUndefined();
+    // The frames prefix is always present — it names files inside a FUTURE
+    // frames archive, and the consumer already gates on `framesArchive`.
+    expect(story.framesPrefix).toBe("checkout-");
+  });
+
+  it("indexes chapter GIF / replay names by POSITION, prose by NAME", () => {
+    const manifest = buildDemoBundleManifest({
+      ...base,
+      proseByName: new Map([
+        ["a", "First journey."],
+        ["b", "Second journey."],
+      ]),
+      chapters: [
+        { ...fullChapter, name: "a" },
+        { ...fullChapter, name: "b" },
+      ],
+    });
+    expect(manifest.stories[0]).toMatchObject({
+      name: "a",
+      prose: "First journey.",
+      gif: "chapter-0.gif",
+      replayJson: "replay-0.json",
+    });
+    expect(manifest.stories[1]).toMatchObject({
+      name: "b",
+      prose: "Second journey.",
+      gif: "chapter-1.gif",
+      replayJson: "replay-1.json",
+    });
+  });
+
+  it("falls back to empty prose for a chapter missing from the story list", () => {
+    const manifest = buildDemoBundleManifest({
+      ...base,
+      proseByName: new Map(),
+      chapters: [fullChapter],
+    });
+    expect(manifest.stories[0]!.prose).toBe("");
+  });
+});
+
+describe("product-demo bundle persistence (demo-bundle/v1)", () => {
+  const secrets = {
+    "product-demo.secret/CF_AI_GATEWAY_ID": "gw",
+    "product-demo.secret/CLOUDFLARE_ACCOUNT_ID": "acct",
+    "product-demo.secret/CLOUDFLARE_API_TOKEN": "tok",
+    "product-demo.model.play": "claude-opus-4-7",
+  };
+
+  it.effect(
+    "uploads manifest.json + frames.tar even when every chapter fails (red demo ships its bundle)",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: secrets,
+        sandboxProgram: {
+          // Every sentinel poll reads an exited play → the chapter fails.
+          ".done": { exitCode: 0, stdout: "DONE:1" },
+          // The archive-frames guard finds frames and tars them.
+          "tar -cf": { exitCode: 0, stdout: "TAR_OK" },
+        },
+      });
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(
+          productDemo.run({
+            repo: "owner/app",
+            sha: "deadbeef",
+            deployedUrl: "https://staging.example.com",
+            stories: [{ name: "landing", prose: "Visit the homepage." }],
+          } as Parameters<typeof productDemo.run>[0]),
+        );
+        // 0/1 chapters passed ⇒ the honest check fails the run …
+        expect(Exit.isFailure(exit)).toBe(true);
+        // … but the bundle artifacts were persisted BEFORE the verdict.
+        const uploads = handles.artifact.uploads;
+        const names = uploads.map((u) => u.name);
+        expect(names).toContain("manifest.json");
+        expect(names).toContain("frames.tar");
+        expect(
+          uploads.find((u) => u.name === "manifest.json")?.contentType,
+        ).toBe("application/json");
+        expect(uploads.find((u) => u.name === "frames.tar")?.contentType).toBe(
+          "application/x-tar",
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("skips frames.tar when no frames were captured (TAR_EMPTY)", () => {
+    const { layer, handles } = makeCFRuntimeTest({
+      config: secrets,
+      // No "tar -cf" entry: the archive-frames exec falls through to the
+      // fake's default (exit 0, empty stdout) — no TAR_OK sentinel.
+      sandboxProgram: { ".done": { exitCode: 0, stdout: "DONE:1" } },
+    });
+    return Effect.gen(function* () {
+      yield* Effect.exit(
+        productDemo.run({
+          repo: "owner/app",
+          sha: "deadbeef",
+          deployedUrl: "https://staging.example.com",
+          stories: [{ name: "landing", prose: "Visit the homepage." }],
+        } as Parameters<typeof productDemo.run>[0]),
+      );
+      const names = handles.artifact.uploads.map((u) => u.name);
+      expect(names).not.toContain("frames.tar");
+      // The manifest still ships — it simply omits `framesArchive`.
+      expect(names).toContain("manifest.json");
     }).pipe(Effect.provide(layer));
   });
 });
