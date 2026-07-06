@@ -300,10 +300,11 @@ Schema.Struct({
   replayJsonUri: Schema.String,
   summaryMd: Schema.String,                  // holistic Markdown summary (built in-run)
   gifUri: Schema.optional(Schema.String),    // stable artifact URL to the walkthrough GIF (absent if no frames / encode skipped)
+  bundleUri: Schema.optional(Schema.String), // stable artifact URL to the demo-bundle/v1 manifest (see 10-demo-bundle.md)
 })
 ```
 
-**Steps:** `acquire → warmup → per story (parallel): { attach-cdp → record-start → play (+ per-action frame capture) → record-stop → upload-replay → upload-screenshot } → upload-summary → render-gif → upload-gif → post-pr-comment`
+**Steps:** `acquire → warmup → per story (parallel): { attach-cdp → record-start → play (+ per-action frame capture) → record-stop → upload-replay → upload-screenshot } → upload-summary → render-gif → upload-gif → archive-frames → upload-frames-archive → upload-manifest.json → post-pr-comment`
 
 **Platform:** Browser Rendering (CDP + native rrweb recording), Sandbox (`demo-agent` shell-out for play + GIF encode), R2 (rrweb JSON + screenshots + GIF + summary), D1, Check Runs, GitHub PR comment (`github.pullReview`). No repo checkout.
 
@@ -321,6 +322,12 @@ Whenever a `product-demo` execution **completes** — success or failure — and
 - **Encoding.** A `render-gif` step shells out to the `demo-agent gif` subcommand — pure-JS (`pngjs` decode + `gifenc` quantise/encode, bundled into the lean sandbox image, no ffmpeg/ImageMagick). It box-downscales to ≤ 800 px wide and holds the output under ≤ 10 MB (GitHub's camo image proxy won't render larger) by **dropping frames evenly first, then shrinking width** — never failing on an oversized input.
 - **URL stability.** The comment embeds the dispatcher's stable artifact URL (`GET /v1/artifacts/:execution/demo.gif`, [§ r2-artifacts](#primitive-r2-artifacts)) with `image/gif` content type, never a raw presigned R2 URL — camo fetches it server-side, so the image keeps rendering after any presign would have rotated. The artifact route must be publicly readable on the deploy for camo to fetch it (the per-deploy public/private toggle); on a private deploy the embed shows broken and the comment's replay link still works.
 - **Skip + failure semantics.** Same posture as [writeback](#writeback-runs-that-propose-prs): the comment is **best-effort reporting**. No `pr` on the dispatch → no comment, the check-run remains the report. A GIF-encode, upload, or comment-post failure logs (`io.log`) and is swallowed — it never flips the run's conclusion (which derives purely from how many chapters passed). A completion with zero captured frames posts the comment without the image. Each completion posts its own comment (matching `pullReview` semantics — the current run is authoritative).
+
+### Demo bundle (`demo-bundle/v1`)
+
+> **Status: Live at HEAD.** Source: the `archive-frames` / `upload-frames-archive` / `upload-manifest.json` steps + the exported `buildDemoBundleManifest` in [`runs/product-demo.ts`](../runs/product-demo.ts). Contract: [10-demo-bundle.md](10-demo-bundle.md).
+
+Every execution — pass or fail — additionally publishes a **relocatable capture bundle**: `frames.tar` (the raw, full-resolution per-action PNG frames; the GIFs above are lossy + ≤ 800 px by design) and `manifest.json`, a `demo-bundle/v1` index whose entries are *relative artifact names*. A downstream presentation consumer (autopresenter's `import demo`, the `demo-reel` child run) fetches the manifest once and resolves every sibling artifact next to it — from the public `/v1/artifacts/:execution/` route or from a plain local directory holding the same files. Best-effort like every diagnostics upload: a bundle failure never flips the verdict.
 
 ---
 

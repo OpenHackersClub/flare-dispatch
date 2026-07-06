@@ -200,6 +200,110 @@ export const parseStoriesMarkdown = (
   }));
 };
 
+/**
+ * `demo-bundle/v1` — the machine-readable index of a product-demo execution's
+ * artifacts (specs/10-demo-bundle.md). Every reference is a RELATIVE artifact
+ * name, resolvable against R2 (`artifacts/<exec>/<name>`), the public
+ * `/v1/artifacts/<exec>/<name>` route, or a plain local directory holding the
+ * same files — so the bundle is relocatable and a downstream presentation
+ * consumer (autopresenter's `import demo`, the `demo-reel` child run) needs no
+ * dispatcher coupling beyond fetching sibling files next to the manifest.
+ */
+export type DemoBundleManifest = {
+  readonly kind: "demo-bundle/v1";
+  readonly repo: string;
+  readonly sha: string;
+  /** The deployed URL the demo drove. */
+  readonly target: string;
+  /** Always `summary.md` — the human-readable per-chapter table. */
+  readonly summary: string;
+  /** `demo.gif` when the combined walkthrough GIF was encoded + uploaded. */
+  readonly gif?: string;
+  /**
+   * `frames.tar` when the raw per-action PNG frames were archived. The frames
+   * inside are named `<story>-NNNN.png` (see each story's `framesPrefix`) —
+   * full-resolution footage, unlike the ≤800px camo-budgeted GIFs.
+   */
+  readonly framesArchive?: string;
+  readonly stories: ReadonlyArray<{
+    readonly name: string;
+    /** The operator-authored story prose — the narration source. */
+    readonly prose: string;
+    readonly status: "passed" | "failed";
+    readonly failureKind?: DemoFailureKindT;
+    /** UNTRUSTED (LLM-written over a live page) — display, don't execute. */
+    readonly narrative: string;
+    readonly durationMs: number;
+    readonly chapterStartMs: number;
+    readonly chapterEndMs: number;
+    /** Frame-file prefix (`<name>-`) selecting this chapter inside `framesArchive`. */
+    readonly framesPrefix: string;
+    /** `<name>.png` when the key screenshot uploaded. */
+    readonly keyScreenshot?: string;
+    /** `chapter-<i>.gif` when this chapter's own GIF uploaded. */
+    readonly gif?: string;
+    /** `replay-<i>.json` (rrweb events) when the recording uploaded. */
+    readonly replayJson?: string;
+  }>;
+};
+
+/** The per-chapter fields the manifest builder reads — structurally satisfied
+ * by the run's `StoryOutcome` (+ folded `chapterGifUri`), kept narrow so the
+ * builder stays pure and unit-testable without the run body. */
+export type DemoBundleChapter = {
+  readonly name: string;
+  readonly status: "passed" | "failed";
+  readonly failureKind?: DemoFailureKindT;
+  readonly durationMs: number;
+  readonly chapterStartMs: number;
+  readonly chapterEndMs: number;
+  readonly narrative: string;
+  readonly keyScreenshotUri: string;
+  readonly chapterGifUri?: string;
+  readonly replayJsonUri: string;
+};
+
+/**
+ * Build the `demo-bundle/v1` manifest from the played chapters. Pure +
+ * deterministic (no Date / random / I/O). Optional entries appear only when
+ * the corresponding upload actually landed (signalled by a non-empty URI on
+ * the chapter / the `hasGif` / `hasFramesArchive` flags), so a consumer can
+ * trust that every name in the manifest resolves.
+ */
+export const buildDemoBundleManifest = (opts: {
+  readonly repo: string;
+  readonly sha: string;
+  readonly target: string;
+  readonly chapters: ReadonlyArray<DemoBundleChapter>;
+  readonly proseByName: ReadonlyMap<string, string>;
+  readonly hasGif: boolean;
+  readonly hasFramesArchive: boolean;
+}): DemoBundleManifest => ({
+  kind: "demo-bundle/v1",
+  repo: opts.repo,
+  sha: opts.sha,
+  target: opts.target,
+  summary: "summary.md",
+  ...(opts.hasGif ? { gif: "demo.gif" } : {}),
+  ...(opts.hasFramesArchive ? { framesArchive: "frames.tar" } : {}),
+  stories: opts.chapters.map((c, i) => ({
+    name: c.name,
+    prose: opts.proseByName.get(c.name) ?? "",
+    status: c.status,
+    ...(c.failureKind !== undefined ? { failureKind: c.failureKind } : {}),
+    narrative: c.narrative,
+    durationMs: c.durationMs,
+    chapterStartMs: c.chapterStartMs,
+    chapterEndMs: c.chapterEndMs,
+    framesPrefix: `${c.name}-`,
+    ...(c.keyScreenshotUri !== "" ? { keyScreenshot: `${c.name}.png` } : {}),
+    ...(c.chapterGifUri !== undefined && c.chapterGifUri !== ""
+      ? { gif: `chapter-${i}.gif` }
+      : {}),
+    ...(c.replayJsonUri !== "" ? { replayJson: `replay-${i}.json` } : {}),
+  })),
+});
+
 const Input = Schema.Struct({
   // The deployed URL the demo runs against. No checkout — this is the
   // target site, not the repo. `repo` and `sha` are still required because
@@ -302,6 +406,13 @@ const Output = Schema.Struct({
   // GIF the run stitched from the per-action frames + embedded in the PR
   // comment. Absent when no frames were captured or the encode was skipped.
   gifUri: Schema.optional(Schema.String),
+  // Stable artifact URL (`/v1/artifacts/<exec>/manifest.json`) to the
+  // `demo-bundle/v1` manifest — the machine-readable index of this execution's
+  // demo artifacts (frames archive, per-chapter GIFs, screenshots, replay
+  // JSONs). A presentation consumer (the `demo-reel` child run / autopresenter
+  // `import demo`) resolves sibling artifacts relative to this URL. Absent
+  // when the manifest upload failed. See specs/10-demo-bundle.md.
+  bundleUri: Schema.optional(Schema.String),
 });
 
 export const productDemo = defineRun({
@@ -1289,6 +1400,75 @@ export const productDemo = defineRun({
       yield* persistJsonArtifact("stories.json", storiesWithGifs);
       yield* persistJsonArtifact("signals.json", signals);
 
+      // Story name → operator-authored prose. Feeds the bundle manifest's
+      // narration source (3.92) and the self-heal confirm re-plays (3.95).
+      const proseByName = new Map(resolvedStories.map((s) => [s.name, s.prose]));
+
+      // 3.92. demo-bundle/v1 (specs/10-demo-bundle.md): archive the raw
+      //       per-action PNG frames and publish a machine-readable manifest of
+      //       this execution's demo artifacts. The GIFs above are lossy +
+      //       downscaled for GitHub's camo budget; `frames.tar` keeps the
+      //       full-resolution footage so a downstream presentation consumer
+      //       (autopresenter via the `demo-reel` child run) can render real
+      //       video from it. Manifest entries are RELATIVE artifact names, so
+      //       the bundle works as an R2 prefix, a `/v1/artifacts/<exec>/`
+      //       fetch, or a plain local directory. Best-effort on BOTH paths (a
+      //       red demo still ships its bundle — failing footage is exactly
+      //       what a triager wants to watch); never flips the verdict.
+      const framesTarStdout = yield* step("archive-frames", () =>
+        sandbox
+          .exec({
+            container,
+            // Plain tar, no gzip: the PNGs are already compressed. TAR_OK on
+            // the last line is the success sentinel; an absent/empty frames
+            // dir (no story captured a frame) reports TAR_EMPTY and skips.
+            command:
+              `if [ -d ${framesDir} ] && [ -n "$(ls -A ${framesDir} 2>/dev/null)" ]; ` +
+              `then tar -cf /tmp/demo/frames.tar -C ${framesDir} . && echo TAR_OK; ` +
+              `else echo TAR_EMPTY; fi`,
+          })
+          .pipe(
+            Effect.timeout("120 seconds"),
+            Effect.map((r) => r.stdout),
+            Effect.catchAll(() => Effect.succeed("")),
+          ),
+      );
+      const framesTarUri = !framesTarStdout.includes("TAR_OK")
+        ? ""
+        : yield* step("upload-frames-archive", () =>
+            artifact
+              .upload({
+                name: "frames.tar",
+                path: "/tmp/demo/frames.tar",
+                container,
+                contentType: "application/x-tar",
+                signedUrlTTL: "30 days",
+              })
+              .pipe(
+                Effect.timeout("3 minutes"),
+                Effect.catchAllCause((cause) =>
+                  io
+                    .log(
+                      "warn",
+                      `product-demo: frames.tar upload failed (best-effort) — ${Cause.pretty(cause).slice(0, 400)}`,
+                    )
+                    .pipe(Effect.as("")),
+                ),
+              ),
+          );
+      const bundleUri = yield* persistJsonArtifact(
+        "manifest.json",
+        buildDemoBundleManifest({
+          repo: input.repo,
+          sha: input.sha,
+          target: input.deployedUrl,
+          chapters: storiesWithGifs,
+          proseByName,
+          hasGif: gifUri !== "",
+          hasFramesArchive: framesTarUri !== "",
+        }),
+      );
+
       // 3.95. (gated, OFF by default) Auto-dispatch self-heal for assertion
       //       failures. A demo verdict is LLM-driven, so a single red chapter is
       //       NOT ground truth — re-play each assertion failure k-of-n times and
@@ -1318,7 +1498,6 @@ export const productDemo = defineRun({
           clampInt(yield* config.get("self-heal.demo.confirm-threshold"), 2, 1, 5),
         );
         const maxChapters = clampInt(yield* config.get("self-heal.demo.max-chapters"), 3, 1, 10);
-        const proseByName = new Map(resolvedStories.map((s) => [s.name, s.prose]));
 
         // One confirmation re-play on a fresh NON-recording session (cheaper than
         // playStory: no rrweb, no frames, no uploads). Returns the agent verdict,
@@ -1495,6 +1674,7 @@ export const productDemo = defineRun({
         stories: storiesWithGifs,
         signals,
         ...(gifUri !== "" ? { gifUri } : {}),
+        ...(bundleUri !== "" ? { bundleUri } : {}),
       };
     }),
 });
