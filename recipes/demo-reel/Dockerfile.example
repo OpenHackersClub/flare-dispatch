@@ -1,0 +1,38 @@
+# Reference sandbox layer enabling `demo-reel`'s MP4 output.
+#
+# DROP THIS INTO YOUR OWN `Dockerfile.sandbox` (the one referenced by your
+# `wrangler.jsonc` `containers[].image`). The `demo-reel` run needs NOTHING
+# baked for its baseline deliverable — the HTML deck renders with the Node
+# already in the canonical sandbox image, and autopresenter itself is
+# `git clone`d at run time (zero runtime deps, executed straight off
+# `node src/cli.ts`). Only the narrated MP4 reel is tool-gated:
+# autopresenter's video projector shells out to `ffmpeg`/`ffprobe` (encode)
+# and `rsvg-convert` (poster rasterization for non-capture scenes).
+#
+# Without this layer the run still succeeds — it probes for the tools and
+# reports `videoSkipped` with a pointer here. With it, the same run also
+# uploads `demo-reel.mp4`.
+#
+# Narration (optional): autopresenter synthesizes TTS through Cloudflare
+# Workers AI when `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` are
+# present — demo-reel threads them from `product-demo.secret/*` in
+# CONFIG_KV, so no image change is needed for narration.
+
+# ── Append to your sandbox Dockerfile (after the canonical base stages) ─────
+#
+# ffmpeg pulls its own codec set on bookworm; librsvg2-bin provides
+# rsvg-convert. ~120MB together — gate behind a build arg like the
+# WITH_BUILD_TOOLS layer in infra/Dockerfile.sandbox if you want the default
+# image to stay lean.
+ARG WITH_PRESENT=true
+RUN if [ "$WITH_PRESENT" = "true" ]; then \
+      set -eux; \
+      export DEBIAN_FRONTEND=noninteractive; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends ffmpeg librsvg2-bin; \
+      rm -rf /var/lib/apt/lists/*; \
+      ffmpeg -version >/dev/null; \
+      rsvg-convert --version >/dev/null; \
+    else \
+      echo "WITH_PRESENT=false — demo-reel renders decks only (no MP4)."; \
+    fi

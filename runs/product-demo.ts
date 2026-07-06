@@ -1469,6 +1469,48 @@ export const productDemo = defineRun({
         }),
       );
 
+      // 3.93. (gated, OFF by default) Ride the bundle into a presentation:
+      //       dispatch the `demo-reel` child run, which renders a narrated
+      //       deck (+ MP4 when the image carries ffmpeg) from this
+      //       execution's demo-bundle/v1 via autopresenter. Opt-in
+      //       (`demo-reel.enabled` = "true") because every reel is a
+      //       container + (potentially) TTS/encode spend; deduped on the
+      //       bundle URL so a Workflow replay never double-renders.
+      //       Best-effort — a reel dispatch failure never flips the demo
+      //       verdict. See runs/demo-reel.ts + specs/10-demo-bundle.md.
+      const reelEnabled =
+        (yield* config.get("demo-reel.enabled")) === "true";
+      if (reelEnabled && bundleUri !== "") {
+        yield* step("dispatch-demo-reel", () =>
+          spawnChildRun({
+            run: "demo-reel",
+            input: {
+              repo: input.repo,
+              sha: input.sha,
+              bundleUrl: bundleUri,
+              ...(input.pr !== undefined ? { pr: input.pr } : {}),
+              ...(input.installationId !== undefined
+                ? { installationId: input.installationId }
+                : {}),
+            },
+            instanceId: `demo-reel:${bundleUri}`.slice(0, 200),
+          }),
+        ).pipe(
+          Effect.flatMap((handle) =>
+            io.log(
+              "info",
+              `product-demo: dispatched demo-reel ${handle.executionId}${handle.created ? "" : " (deduped — already dispatched)"}`,
+            ),
+          ),
+          Effect.catchAllCause((cause) =>
+            io.log(
+              "warn",
+              `product-demo: demo-reel dispatch failed (best-effort) — ${Cause.pretty(cause).slice(0, 400)}`,
+            ),
+          ),
+        );
+      }
+
       // 3.95. (gated, OFF by default) Auto-dispatch self-heal for assertion
       //       failures. A demo verdict is LLM-driven, so a single red chapter is
       //       NOT ground truth — re-play each assertion failure k-of-n times and

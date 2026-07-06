@@ -101,9 +101,11 @@ dual-publish during migration (same policy as `signals/v1`).
 
 ## Consumers
 
-- **`demo-reel`** (this repo): child run spawned after a product-demo
-  execution; fetches the bundle over the artifact route, renders a narrated
-  deck/MP4 via autopresenter in the sandbox. See [02-runs.md](02-runs.md).
+- **`demo-reel`** (this repo, [`runs/demo-reel.ts`](../runs/demo-reel.ts)):
+  child run spawned after a product-demo execution when
+  `demo-reel.enabled=true`; fetches the bundle over the artifact route,
+  renders a deck (always) + narrated MP4 (tool-gated) via autopresenter in
+  the sandbox. Operator guide: [recipes/demo-reel/](../recipes/demo-reel/README.md).
 - **autopresenter `import demo <dir|url>`** (external): lowers a bundle into a
   SceneGraph composition — one story per scene, `prose` as narration, frames /
   chapter GIF / key screenshot as the scene's footage.

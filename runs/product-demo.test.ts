@@ -450,6 +450,42 @@ describe("product-demo bundle persistence (demo-bundle/v1)", () => {
     },
   );
 
+  it.effect(
+    "dispatches the demo-reel child with the bundle URL when demo-reel.enabled=true",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        config: { ...secrets, "demo-reel.enabled": "true" },
+        sandboxProgram: { ".done": { exitCode: 0, stdout: "DONE:1" } },
+      });
+      return Effect.gen(function* () {
+        yield* Effect.exit(
+          productDemo.run({
+            repo: "owner/app",
+            sha: "deadbeef",
+            deployedUrl: "https://staging.example.com",
+            pr: 7,
+            stories: [{ name: "landing", prose: "Visit the homepage." }],
+          } as Parameters<typeof productDemo.run>[0]),
+        );
+        const reelSpawns = handles.childRuns.spawned.filter(
+          (s) => s.run === "demo-reel",
+        );
+        expect(reelSpawns).toHaveLength(1);
+        const spawn = reelSpawns[0]!;
+        expect(spawn.instanceId).toContain("demo-reel:");
+        const reelInput = spawn.input as {
+          repo: string;
+          bundleUrl: string;
+          pr?: number;
+        };
+        expect(reelInput.repo).toBe("owner/app");
+        expect(reelInput.pr).toBe(7);
+        // The bundle URL is the manifest upload's own artifact URL.
+        expect(reelInput.bundleUrl).toBeTruthy();
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("skips frames.tar when no frames were captured (TAR_EMPTY)", () => {
     const { layer, handles } = makeCFRuntimeTest({
       config: secrets,
