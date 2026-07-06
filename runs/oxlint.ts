@@ -165,11 +165,11 @@ export const oxlint = defineRun({
       // Please check your paths and ignore patterns.` before
       // `Finished in ... on 0 files ...`. That is not a violation — there is
       // nothing to fix — so failing the check-run here would be a false red
-      // (observed on fractalboxdev/client). Detected from the checkpointed
-      // `exec` step's inlined `stdout` tail (`ExecResult.stdout`), which is
-      // replay-safe (see header note "Determinism"): no extra step, no extra
-      // non-determinism. A genuine finding never prints this marker, so it
-      // still fails below unchanged.
+      // (observed on fractalboxdev/client). Detection is a plain string
+      // inclusion over the checkpointed `exec` step's captured `stdout`
+      // (`ExecResult.stdout`) — replay-safe because it reads only the
+      // checkpointed step result (see header note "Determinism"). A genuine
+      // finding never prints this marker, so it still fails below unchanged.
       const ranWithNoFiles = result.stdout.includes("No files found to lint");
       if (input.failOnNonZeroExit && result.exitCode !== 0 && !ranWithNoFiles) {
         return yield* Effect.fail(

@@ -112,7 +112,7 @@ describe("oxlint", () => {
   );
 
   it.effect(
-    "no files to lint — exit 1 carrying the marker stays a successful Effect (false-red guard)",
+    "no files to lint — exit 1 with the 'No files found to lint' marker is treated as green in checker mode instead of a false red",
     () => {
       const noFilesLog = [
         "No files found to lint. Please check your paths and ignore patterns.",
