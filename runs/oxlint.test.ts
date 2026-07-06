@@ -11,6 +11,9 @@
 //   (d) command     — `version` + `args` compose the `npx oxlint@<v> <args>` line
 //   (e) webhook trig — the pull_request payload maps to inputs; gate skips
 //                     drafts/dependabot
+//   (f) no-files    — exit 1 carrying the "No files found to lint" marker in
+//                     `stdout` is a successful Effect (false-red guard), while
+//                     a genuine exit 1 (no marker, case (b)) still fails
 //
 // Spec: specs/03-dsl.md § Unit-testing runs.
 
@@ -104,6 +107,35 @@ describe("oxlint", () => {
         const exit = yield* Effect.exit(oxlint.run(input));
         expect(Exit.isSuccess(exit)).toBe(true);
         if (Exit.isSuccess(exit)) expect(exit.value.exitCode).toBe(1);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "no files to lint — exit 1 carrying the marker stays a successful Effect (false-red guard)",
+    () => {
+      const noFilesLog = [
+        "No files found to lint. Please check your paths and ignore patterns.",
+        "Finished in 5ms on 0 files with 95 rules using 4 threads.",
+      ].join("\n");
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { [DEFAULT_CMD]: { exitCode: 1, stdout: noFilesLog } },
+      });
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(oxlint.run(baseInput));
+
+        expect(Exit.isSuccess(exit)).toBe(true);
+        // The true oxlint exit code is still surfaced, unmasked — only the
+        // Effect's own success/failure (i.e. the check colour) changes.
+        if (Exit.isSuccess(exit)) expect(exit.value.exitCode).toBe(1);
+
+        // The lint still ran end-to-end — same three steps as the green path.
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "exec",
+          "upload-log",
+        ]);
       }).pipe(Effect.provide(layer));
     },
   );
