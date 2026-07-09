@@ -157,7 +157,21 @@ export const oxlint = defineRun({
       // `npx oxlint` can exit non-zero without a genuine finding (an unfetchable
       // version, a malformed `.oxlintrc.json`) still land here, so the wording
       // points at the log rather than asserting violations outright.
-      if (input.failOnNonZeroExit && result.exitCode !== 0) {
+      //
+      // ANOTHER non-finding case, carved out explicitly: a content-only repo
+      // (docs, markdown, rendered HTML — no JS/TS sources oxlint understands)
+      // has nothing for oxlint to lint. oxlint still exits non-zero when it
+      // discovers zero lintable files, printing `No files found to lint.
+      // Please check your paths and ignore patterns.` before
+      // `Finished in ... on 0 files ...`. That is not a violation — there is
+      // nothing to fix — so failing the check-run here would be a false red
+      // (observed on fractalboxdev/client). Detection is a plain string
+      // inclusion over the checkpointed `exec` step's captured `stdout`
+      // (`ExecResult.stdout`) — replay-safe because it reads only the
+      // checkpointed step result (see header note "Determinism"). A genuine
+      // finding never prints this marker, so it still fails below unchanged.
+      const ranWithNoFiles = result.stdout.includes("No files found to lint");
+      if (input.failOnNonZeroExit && result.exitCode !== 0 && !ranWithNoFiles) {
         return yield* Effect.fail(
           new AcceptanceFailed({
             exitCode: result.exitCode,

@@ -18,6 +18,10 @@
 //   (e) install     — `install: true` runs the R2-cached dependency install
 //                      inside the checkout step; the `image` override reaches
 //                      the container acquire
+//   (f) preflight    — no `package.json` in the checkout → the run skips the
+//                      suite with a green result and no `exec`/`upload-log`
+//                      (false-red guard for content-only repos); a
+//                      `package.json` present proceeds exactly as before
 //
 // Plus a determinism guard: the run body must not call `Date.now()` /
 // `crypto.randomUUID()` directly — non-determinism flows only through `io`,
@@ -57,9 +61,12 @@ describe("offload-test", () => {
       expect(typeof result.logUri).toBe("string");
       expect(result.logUri.length).toBeGreaterThan(0);
 
-      // checkout → exec → upload-log, each recorded once, all successful.
+      // checkout → preflight → exec → upload-log, each recorded once, all
+      // successful. `preflight` finds `package.json` (default fake exec
+      // exits 0 for an unseeded command) and falls through unchanged.
       expect(handles.executions.steps.map((s) => s.name)).toEqual([
         "checkout",
+        "preflight",
         "exec",
         "upload-log",
       ]);
@@ -170,10 +177,65 @@ describe("offload-test", () => {
           commands.indexOf("pnpm test"),
         );
 
-        // Still exactly the three run steps — the install lives inside
-        // `checkout`, not a fourth step.
+        // Still exactly the four run steps — the install lives inside
+        // `checkout`, not an extra step.
         expect(handles.executions.steps.map((s) => s.name)).toEqual([
           "checkout",
+          "preflight",
+          "exec",
+          "upload-log",
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  // --- Preflight (false-red guard for content-only repos) --------------------
+
+  it.effect(
+    "preflight — no package.json skips the suite: green result, no exec, empty logUri",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: { "test -f package.json": { exitCode: 1 } },
+      });
+
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(offloadTest.run(baseInput));
+
+        expect(Exit.isSuccess(exit)).toBe(true);
+        if (Exit.isSuccess(exit)) {
+          expect(exit.value.exitCode).toBe(0);
+          expect(exit.value.logUri).toBe("");
+        }
+
+        // checkout → preflight only — the command never ran, nothing to
+        // upload a log for.
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "preflight",
+        ]);
+        expect(handles.sandbox.execs.map((e) => e.command)).toEqual([
+          "test -f package.json",
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "preflight — package.json present proceeds to run the suite exactly as before",
+    () => {
+      const { layer, handles } = makeCFRuntimeTest({
+        sandboxProgram: {
+          "test -f package.json": { exitCode: 0 },
+          "pnpm test": { exitCode: 0 },
+        },
+      });
+
+      return Effect.gen(function* () {
+        const result = yield* offloadTest.run(baseInput);
+        expect(result.exitCode).toBe(0);
+        expect(handles.executions.steps.map((s) => s.name)).toEqual([
+          "checkout",
+          "preflight",
           "exec",
           "upload-log",
         ]);
@@ -238,8 +300,12 @@ describe("offload-test", () => {
           : undefined;
         expect(tag).toBe("SecretsMissing");
 
-        // Fail-fast: the command never ran.
-        expect(handles.sandbox.execs).toHaveLength(0);
+        // Fail-fast: the command itself never ran — only the `preflight`
+        // manifest probe (which passes, since the default fake exec exits 0
+        // for the unseeded `test -f package.json` command) executed first.
+        expect(handles.sandbox.execs.map((e) => e.command)).toEqual([
+          "test -f package.json",
+        ]);
       }).pipe(Effect.provide(layer));
     },
   );
@@ -334,10 +400,11 @@ describe("offload-test", () => {
         const result = yield* offloadTest.run(input);
         expect(result.exitCode).toBe(0);
 
-        // The resolve-command step precedes the usual three.
+        // The resolve-command step precedes the usual four.
         expect(handles.executions.steps.map((s) => s.name)).toEqual([
           "resolve-command",
           "checkout",
+          "preflight",
           "exec",
           "upload-log",
         ]);
@@ -424,9 +491,10 @@ describe("offload-test", () => {
         expect((failure as { exitCode?: number })?.exitCode).toBe(2);
 
         // The suite still ran end-to-end — the failure is the verdict, not a
-        // skipped step. checkout → exec → upload-log all recorded.
+        // skipped step. checkout → preflight → exec → upload-log all recorded.
         expect(handles.executions.steps.map((s) => s.name)).toEqual([
           "checkout",
+          "preflight",
           "exec",
           "upload-log",
         ]);

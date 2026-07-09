@@ -129,7 +129,7 @@ const OffloadTestInput = Schema.Struct({
 const OffloadTestOutput = Schema.Struct({
   exitCode: Schema.Number,
   durationMs: Schema.Number,
-  logUri: Schema.String, // signed R2 URL to the step log
+  logUri: Schema.String, // signed R2 URL to the step log; "" on a preflight skip (nothing ran)
 });
 
 /** Default `exec` timeout when the caller omits `timeoutSec`. */
@@ -236,6 +236,46 @@ export const offloadTest = defineRun({
           install: input.install,
         }),
       );
+
+      // preflight — webhook mode fires this run on EVERY PR of every repo the
+      // GitHub App is installed on (specs/04-gha-integration.md § Pure webhook
+      // mode), including content-only repos (docs, markdown, rendered HTML —
+      // no package.json, no test suite at all). Running `command` there is not
+      // a real test failure, just "no such file" / "command not found" noise —
+      // a false red with nothing to evaluate (observed on both PRs of
+      // fractalboxdev/client, including one that only touched markdown). Skip
+      // fast with a green result when the checkout has no `package.json`:
+      // there is nothing to test, so there is nothing to report against.
+      // Repos that DO have a package.json are unaffected — same exec path as
+      // before, and a `command` that later fails for unrelated reasons still
+      // reds out normally.
+      //
+      // Deliberately narrow: this checks for `package.json` specifically, the
+      // Node/JS project marker. A repo whose real suite is Cargo/uv/Go-based
+      // (no package.json — e.g. the `cargo test --workspace` CONFIG_KV example
+      // above) would also have no `package.json` and would be skipped here
+      // too. Every repo this dispatcher serves today is either Node/pnpm or
+      // content-only, so that edge case isn't currently hit; broadening the
+      // probe to other ecosystem manifests is possible future work if a
+      // non-Node repo starts dispatching this run.
+      const manifestProbe = yield* step("preflight", () =>
+        sandbox.exec({
+          cwd: dir,
+          container,
+          command: ["test", "-f", "package.json"],
+        }),
+      );
+      if (manifestProbe.exitCode !== 0) {
+        yield* io.log(
+          "info",
+          `offload-test: no package.json in ${input.repo}@${input.sha.slice(0, 12)} — nothing to test, skipping`,
+        );
+        return {
+          exitCode: 0,
+          durationMs: manifestProbe.durationMs,
+          logUri: "",
+        };
+      }
 
       // load-secrets — resolve the named credentials from the config store
       // into the env injected below. Called INLINE, not in a `step`: secrets

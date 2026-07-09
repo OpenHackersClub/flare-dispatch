@@ -194,9 +194,12 @@ describe("CFRuntimeLive — offload-test end-to-end", () => {
       .first<{ status: string }>();
     expect(execRow?.status).toBe("success");
 
-    // `offload-test` has three run-body steps — checkout, exec, upload-log —
-    // each one `steps` row (plan § 6: D1 write count stays bounded).
-    expect(await countRows(bindings.db, "steps")).toBe(3);
+    // `offload-test` has four run-body steps — checkout, preflight, exec,
+    // upload-log — each one `steps` row (plan § 6: D1 write count stays
+    // bounded). `preflight`'s `test -f package.json` probe is an unseeded
+    // command in this program, so the sandbox fake's default (exit 0 — file
+    // found) lets the run fall through to `exec` exactly as before.
+    expect(await countRows(bindings.db, "steps")).toBe(4);
     const stepRows = await bindings.db
       .prepare(`SELECT name, status FROM steps WHERE execution_id = ?`)
       .bind(executionId)
@@ -204,6 +207,7 @@ describe("CFRuntimeLive — offload-test end-to-end", () => {
     expect(stepRows.results.map((r) => r.name).sort()).toEqual([
       "checkout",
       "exec",
+      "preflight",
       "upload-log",
     ]);
     expect(stepRows.results.every((r) => r.status === "success")).toBe(true);
